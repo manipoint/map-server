@@ -24,10 +24,10 @@ Booking, payment, cancellation, and refund workflows are intentionally deferred 
 ```mermaid
 flowchart LR
     flutter["Flutter App"] <-->|"REST and WebSocket"| fastapi["FastAPI Backend"]
-    fastapi -->|"Runs"| graph["LangGraph Orchestrator"]
-    graph -->|"Calls"| mcp["Travel MCP Server"]
+    fastapi -->|"Runs"| orchestrator["LangGraph Orchestrator"]
+    orchestrator -->|"Calls"| mcp["Travel MCP Server"]
     fastapi -->|"Persists"| postgres[("PostgreSQL")]
-    graph -.->|"Traces"| langsmith["LangSmith"]
+    orchestrator -.->|"Traces"| langsmith["LangSmith"]
     mcp -.->|"Searches"| providers["Travel Provider APIs"]
 ```
 

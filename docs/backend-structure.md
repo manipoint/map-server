@@ -98,18 +98,18 @@ tests/evaluations/ # LangSmith datasets and quality checks
 ```mermaid
 flowchart LR
     api["API and WebSocket"] --> services["Application Services"]
-    api --> graph["LangGraph"]
-    graph --> services
-    graph --> mcpClient["MCP Client"]
+    api --> orchestrator["LangGraph"]
+    orchestrator --> services
+    orchestrator --> mcpClient["MCP Client"]
     services --> repositories["Repositories"]
     mcpClient --> mcpTools["MCP Tools"]
     mcpTools --> providers["Provider Adapters"]
     repositories --> database[("PostgreSQL")]
     api -.-> observability["Observability"]
-    graph -.-> observability
+    orchestrator -.-> observability
     mcpTools -.-> observability
     domain["Domain Schemas"] --> api
-    domain --> graph
+    domain --> orchestrator
     domain --> services
     domain --> mcpTools
 ```
