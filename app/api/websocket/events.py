@@ -1,0 +1,1 @@
+"""Versioned WebSocket event schemas."""

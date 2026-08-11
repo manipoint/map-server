@@ -1,0 +1,1 @@
+"""Application resource lifecycle management."""

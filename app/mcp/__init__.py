@@ -1,0 +1,1 @@
+"""Internal MCP integration package."""

@@ -1,12 +1,35 @@
 [project]
 name = "map-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "FastAPI and MCP backend for a Flutter travel assistant"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.141.1",
     "fastmcp>=3.4.6",
+    "httpx>=0.28.1",
+    "langchain>=1.0.0",
     "langchain-groq>=1.1.3",
     "langchain-mcp-adapters>=0.3.2",
     "langgraph>=1.2.10",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "uvicorn[standard]>=0.52.1",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.10.0",
+    "pytest>=9.1.1",
+    "ruff>=0.16.2",
+]
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
