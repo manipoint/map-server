@@ -4,6 +4,10 @@ import json
 import logging
 
 from app.observability.logging import JsonFormatter, configure_logging
+from app.observability.request_context import (
+    reset_request_id,
+    set_request_id,
+)
 
 
 def make_log_record() -> logging.LogRecord:
@@ -64,3 +68,16 @@ def test_configure_logging_does_not_duplicate_handlers(monkeypatch) -> None:
     configure_logging("INFO")
 
     assert len(test_logger.handlers) == 1
+
+
+def test_json_formatter_includes_context_request_id() -> None:
+    """The formatter should include the active request ID."""
+
+    token = set_request_id("request-123")
+
+    try:
+        payload = json.loads(JsonFormatter().format(make_log_record()))
+    finally:
+        reset_request_id(token)
+
+    assert payload["request_id"] == "request-123"

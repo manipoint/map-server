@@ -5,6 +5,8 @@ description = "FastAPI and MCP backend for a Flutter travel assistant"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "alembic>=1.19.1",
+    "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
     "fastmcp>=3.4.6",
     "httpx>=0.28.1",
@@ -14,6 +16,7 @@ dependencies = [
     "langgraph>=1.2.10",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
+    "sqlalchemy[asyncio]>=2.0.52",
     "uvicorn[standard]>=0.52.1",
 ]
 

@@ -6,6 +6,8 @@ import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
+from app.observability.request_context import get_request_id
+
 _REDACTED_KEYS = frozenset(
     {
         "access_token",
@@ -65,6 +67,10 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+
+        request_id = get_request_id()
+        if request_id is not None:
+            payload["request_id"] = request_id
         for key, value in record.__dict__.items():
             if key not in _STANDARD_LOG_FIELDS and not key.startswith("_"):
                 if _is_sensitive_key(key):
