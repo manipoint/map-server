@@ -1,9 +1,9 @@
 """Typed application configuration."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,7 +30,19 @@ class Settings(BaseSettings):
     )
 
     # PostgreSQL
-    database_url: SecretStr
+    database_connection_mode: Literal["url", "cloud_sql"] = "url"
+
+    # Local PostgreSQL / tests
+    database_url: SecretStr | None = None
+
+    # Google Cloud SQL
+    cloud_sql_instance_connection_name: str | None = None
+    cloud_sql_ip_type: Literal["public", "private"] = "public"
+    database_user: str | None = None
+    database_name: str | None = None
+    database_password: SecretStr | None = None
+
+    # SQLAlchemy connection pool
     database_echo: bool = False
     database_pool_size: int = Field(default=5, ge=1, le=50)
     database_max_overflow: int = Field(default=10, ge=0, le=100)
@@ -63,6 +75,32 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=30.0, gt=0)
     max_search_results: int = Field(default=10, ge=1, le=100)
     max_model_attempts: int = Field(default=3, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def validate_database_configuration(self) -> Self:
+        """Ensure the selected database mode has all required settings."""
+        if self.database_connection_mode == "url":
+            if self.database_url is None:
+                raise ValueError("DATABASE_URL is required in url mode")
+            return self
+
+        required_cloud_sql_settings = {
+            "CLOUD_SQL_INSTANCE_CONNECTION_NAME": (
+                self.cloud_sql_instance_connection_name
+            ),
+            "DATABASE_USER": self.database_user,
+            "DATABASE_NAME": self.database_name,
+            "DATABASE_PASSWORD": self.database_password,
+        }
+        missing_settings = [
+            name for name, value in required_cloud_sql_settings.items() if value is None
+        ]
+        if missing_settings:
+            missing_names = ", ".join(missing_settings)
+            raise ValueError(
+                f"Cloud SQL mode requires the following settings: {missing_names}"
+            )
+        return self
 
 
 @lru_cache
