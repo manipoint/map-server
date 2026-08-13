@@ -7,6 +7,15 @@ from app.database.models import AuthSession
 
 def test_auth_session_uses_application_schema() -> None:
     """Authentication sessions should live in the application schema."""
+
+    assert AuthSession.__table__.schema == "app"
+    assert AuthSession.__table__.name == "auth_sessions"
+    assert AuthSession.__table__.fullname == "app.auth_sessions"
+
+
+def test_auth_session_contains_required_columns() -> None:
+    """Authentication sessions should contain security and device fields."""
+
     assert set(AuthSession.__table__.columns.keys()) == {
         "id",
         "user_id",
@@ -28,16 +37,16 @@ def test_auth_session_uses_application_schema() -> None:
 
 def test_auth_session_foreign_keys_define_delete_behavior() -> None:
     """User deletion and rotation links should have explicit behavior."""
-    user_foregn_key = next(iter(AuthSession.__table__.c.user_id.foreign_keys))
-    replacement_foregn_key = next(
+
+    user_foreign_key = next(iter(AuthSession.__table__.c.user_id.foreign_keys))
+    replacement_foreign_key = next(
         iter(AuthSession.__table__.c.replaced_by_session_id.foreign_keys)
     )
-    assert user_foregn_key.target_fullname == "app.users.id"
-    assert user_foregn_key.ondelete == "CASCADE"
+    assert user_foreign_key.target_fullname == "app.users.id"
+    assert user_foreign_key.ondelete == "CASCADE"
 
-    assert replacement_foregn_key.target_fullname == "app.auth_sessions.id"
-    assert replacement_foregn_key.target_fullname == "app.auth_sessions.id"
-    assert replacement_foregn_key.ondelete == "SET NULL"
+    assert replacement_foreign_key.target_fullname == "app.auth_sessions.id"
+    assert replacement_foreign_key.ondelete == "SET NULL"
 
 
 def test_refresh_token_hash_is_unique() -> None:
