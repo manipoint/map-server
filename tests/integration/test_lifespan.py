@@ -12,11 +12,30 @@ import app.main as main_module
 from app.config import Settings
 
 
-def test_application_lifespan_logs_startup_and_shutdown(caplog) -> None:
+def create_url_settings() -> Settings:
+    """Create deterministic URL-mode settings for lifespan tests."""
+
+    return Settings(
+        _env_file=None,
+        database_connection_mode="url",
+        database_url=SecretStr(
+            "postgresql+asyncpg://travel_user:test@localhost/travel_test"
+        ),
+        jwt_signing_key=SecretStr("test-signing-key"),
+    )
+
+
+def test_application_lifespan_logs_startup_and_shutdown(caplog, monkeypatch) -> None:
     """Application lifespan should log startup and shutdown."""
 
+    def preserve_test_logging(log_level):
+        """Keep pytest's log-capture handler installed."""
+
+    monkeypatch.setattr(main_module, "configure_logging", preserve_test_logging)
+    application = main_module.create_app(create_url_settings())
+
     with caplog.at_level(logging.INFO, logger="app.lifespan"):
-        with TestClient(main_module.app):
+        with TestClient(application):
             pass
 
     messages = [
@@ -59,7 +78,7 @@ def test_lifespan_creates_and_disposes_database_resources(
         fake_create_session_factory,
     )
 
-    application = main_module.create_app()
+    application = main_module.create_app(create_url_settings())
 
     with TestClient(application):
         assert application.state.database_engine is fake_engine

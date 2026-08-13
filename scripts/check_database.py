@@ -1,7 +1,9 @@
 """Verify the configured Cloud SQL database connection."""
 
 import asyncio
+
 from sqlalchemy import text
+
 from app.config import get_settings
 from app.database.session import create_cloud_sql_resources
 
@@ -16,11 +18,13 @@ async def check_database_connection() -> None:
     engine, connector = await create_cloud_sql_resources(settings)
     try:
         async with engine.connect() as connection:
-            result = await connection.execute(text(""" SELECT
+            result = await connection.execute(
+                text(""" SELECT
                         current_database(),
                         current_user,
                         version()
-    """))
+    """)
+            )
             database_name, database_user, database_version = result.one()
             print(f"Database: {database_name}")
             print(f"User: {database_user}")
@@ -32,6 +36,6 @@ async def check_database_connection() -> None:
         finally:
             await connector.close_async()
 
-if __name__ == "__main__":
-    asyncio.run(check_database_connection())            
 
+if __name__ == "__main__":
+    asyncio.run(check_database_connection())
