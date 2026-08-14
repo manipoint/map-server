@@ -14,7 +14,8 @@ def test_url_database_mode_requires_database_url() -> None:
             _env_file=None,
             database_connection_mode="url",
             database_url=None,
-            jwt_signing_key=SecretStr("test-signing-key"),
+            jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+            refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
         )
 
 
@@ -31,7 +32,8 @@ def test_cloud_sql_mode_accepts_complete_configuration() -> None:
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-database-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
 
     assert settings.database_connection_mode == "cloud_sql"
@@ -54,5 +56,6 @@ def test_cloud_sql_mode_rejects_missing_settings() -> None:
             database_user=None,
             database_name=None,
             database_password=None,
-            jwt_signing_key=SecretStr("test-signing-key"),
+            jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+            refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
         )

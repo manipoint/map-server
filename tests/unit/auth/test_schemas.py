@@ -87,7 +87,7 @@ def test_secrets_are_masked_in_representations() -> None:
 
 
 def test_token_response_serializes_credentials_for_api_output() -> None:
-    """Token values should be available in JSON responses but masked in repr."""
+    """Token responses should serialize credentials but hide them in repr."""
 
     now = datetime.now(UTC)
     response = TokenPairResponse(
@@ -98,5 +98,9 @@ def test_token_response_serializes_credentials_for_api_output() -> None:
     )
 
     assert "access-secret" not in repr(response)
-    assert response.model_dump(mode="json")["access_token"] == "**********"
-    assert response.access_token.get_secret_value() == "access-secret"
+    assert "refresh-secret" not in repr(response)
+
+    serialized = response.model_dump(mode="json")
+
+    assert serialized["access_token"] == "access-secret"
+    assert serialized["refresh_token"] == "refresh-secret"

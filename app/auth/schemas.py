@@ -82,8 +82,8 @@ class RefreshRequest(BaseModel):
 class TokenPairResponse(BaseModel):
     """New credentials returned after login or refresh."""
 
-    access_token: SecretStr
-    refresh_token: SecretStr
+    access_token: str = Field(min_length=1, repr=False)
+    refresh_token: str = Field(min_length=1, repr=False)
     token_type: str = "bearer"
     access_token_expires_at: datetime
     refresh_token_expires_at: datetime

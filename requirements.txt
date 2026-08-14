@@ -300,7 +300,9 @@ pygments==2.20.0
     #   rich
     #   rich-rst
 pyjwt==2.13.0
-    # via mcp
+    # via
+    #   map-server
+    #   mcp
 pyperclip==1.11.0
     # via fastmcp-slim
 pytest==9.1.1

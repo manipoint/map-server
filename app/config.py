@@ -50,8 +50,13 @@ class Settings(BaseSettings):
     database_pool_recycle_seconds: int = Field(default=1800, ge=60)
 
     # Authentication
-    jwt_signing_key: SecretStr
-    jwt_algorithm: str = "HS256"
+    jwt_signing_key: SecretStr = Field(
+        min_length=32,
+    )
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    jwt_issuer: str = "travel-assistant-api"
+    jwt_audience: str = "travel-assistant-flutter"
+    refresh_token_hash_key: SecretStr = Field(min_length=32)
     access_token_ttl_minutes: int = Field(default=15, ge=1)
     refresh_token_ttl_days: int = Field(default=30, ge=1)
 

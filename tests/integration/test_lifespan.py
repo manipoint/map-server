@@ -21,7 +21,8 @@ def create_url_settings() -> Settings:
         database_url=SecretStr(
             "postgresql+asyncpg://travel_user:test@localhost/travel_test"
         ),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
 
 
@@ -121,7 +122,8 @@ def test_cloud_sql_lifespan_creates_and_closes_resources(monkeypatch) -> None:
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
     application = main_module.create_app(settings)
 
@@ -167,7 +169,8 @@ def test_cloud_sql_lifespan_closes_connector_when_engine_disposal_fails(
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
     application = main_module.create_app(settings)
 

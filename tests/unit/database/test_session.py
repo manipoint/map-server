@@ -84,7 +84,8 @@ def test_create_cloud_sql_resources_uses_async_connector(
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
 
     async def run_test() -> None:
@@ -135,7 +136,8 @@ def test_create_cloud_sql_resources_uses_private_ip(monkeypatch) -> None:
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
 
     asyncio.run(session_module.create_cloud_sql_resources(settings))
@@ -173,7 +175,8 @@ def test_create_cloud_sql_resources_closes_connector_on_engine_failure(
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
-        jwt_signing_key=SecretStr("test-signing-key"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
 
     with pytest.raises(RuntimeError, match="engine creation failed"):
