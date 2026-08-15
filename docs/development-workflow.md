@@ -137,6 +137,18 @@ Run the structured-logging tests:
 uv run pytest tests/unit/observability/test_logging.py
 ```
 
+Run the authentication unit tests:
+
+```bash
+uv run pytest tests/unit/auth tests/unit/database/repositories
+```
+
+Run the authentication API integration tests:
+
+```bash
+uv run pytest tests/integration/api/test_auth_*.py
+```
+
 Stop after the first failure:
 
 ```bash

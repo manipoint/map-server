@@ -1,14 +1,17 @@
 """Authentication routes."""
 
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from uuid import UUID
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Request, Response, status
 
-from app.api.dependencies import AuthServiceDependency
+from app.api.dependencies import AuthServiceDependency, CurrentPrincipal
 from app.auth.schemas import (
     AuthenticationResponse,
     LoginRequest,
+    RefreshRequest,
     RegisterRequest,
+    SessionResponse,
     TokenPairResponse,
     UserResponse,
 )
@@ -88,3 +91,98 @@ async def login_user(
         user_agent=request.headers.get("user-agent"),
     )
     return create_authentication_response(result)
+
+
+@router.post(
+    "/refresh",
+    response_model=AuthenticationResponse,
+    summary="Rotate refresh credentials",
+)
+async def refresh_credentials(
+    payload: RefreshRequest,
+    request: Request,
+    auth_service: AuthServiceDependency,
+) -> AuthenticationResponse:
+    """Rotate a refresh token and return new credentials."""
+
+    result = await auth_service.refresh(
+        refresh_token=payload.refresh_token.get_secret_value(),
+        ip_address=resolve_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return create_authentication_response(result)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Log out the current device",
+)
+async def logout_current_device(
+    principal: CurrentPrincipal,
+    auth_service: AuthServiceDependency,
+) -> Response:
+    """Revoke the authentication session used by this request."""
+
+    await auth_service.logout(
+        user_id=principal.user.id, session_id=principal.auth_session.id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/logout-all",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Log out every device",
+)
+async def logout_all_devices(
+    principal: CurrentPrincipal,
+    auth_service: AuthServiceDependency,
+) -> Response:
+    """Revoke every active session belonging to the user."""
+
+    await auth_service.logout_all(
+        user_id=principal.user.id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/sessions",
+    response_model=list[SessionResponse],
+    summary="List active device sessions",
+)
+async def list_active_sessions(
+    principal: CurrentPrincipal,
+    auth_service: AuthServiceDependency,
+) -> list[SessionResponse]:
+    """Return all active sessions belonging to the authenticated user."""
+
+    sessions = await auth_service.list_active_sessions(
+        user_id=principal.user.id,
+    )
+    return [
+        SessionResponse.model_validate(session).model_copy(
+            update={"is_current": session.id == principal.auth_session.id}
+        )
+        for session in sessions
+    ]
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Log out the selected device",
+)
+async def logout_selected_device(
+    session_id: UUID,
+    principal: CurrentPrincipal,
+    auth_service: AuthServiceDependency,
+) -> Response:
+    """Revoke one session belonging to the authenticated user."""
+
+    await auth_service.logout(user_id=principal.user.id, session_id=session_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

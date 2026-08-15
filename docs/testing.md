@@ -54,6 +54,12 @@ Use an isolated PostgreSQL database and run real migrations. Exercise:
 
 External travel, weather, and LLM services should be replaced with controllable fakes at their adapter boundary.
 
+### Current authentication coverage
+
+The implemented authentication API has deterministic unit and FastAPI integration coverage for registration, login, refresh rotation, access-token authentication, current-device logout, logout-all, active-session listing, selected-session revocation, safe error envelopes, and request validation. Repository and service tests separately protect ownership filtering, transaction rollback, rotation, replay detection, and revocation behavior.
+
+The default authentication API tests use dependency overrides and mocks, so they do not require Cloud SQL or consume external API/model quota. Real migration and PostgreSQL behavior belongs in a separate database-backed integration environment.
+
 ## LangGraph transition tests
 
 Test graphs as state machines, not only through final prose:
@@ -152,4 +158,3 @@ flowchart LR
 ```
 
 A release should not proceed when a required test fails, a migration is unsafe, a secret is detected, or evaluation quality drops below its agreed threshold. Code coverage is useful for finding untested areas, but it is not a substitute for behavior-focused assertions.
-

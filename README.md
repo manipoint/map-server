@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** this repository contains an early FastAPI backend scaffold with typed settings, health checks, structured logging, and tests. The wider production architecture documented under [`docs/`](docs/README.md) is the implementation target, not functionality that is already complete.
+> **Project status:** the FastAPI foundation, structured logging, Cloud SQL-capable asynchronous persistence, Alembic migrations, and revocable multi-device authentication API are implemented and tested. WebSockets, LangGraph orchestration, MCP travel tools, provider adapters, and itinerary persistence remain implementation targets documented under [`docs/`](docs/README.md).
 
 ## Product scope
 
@@ -40,10 +40,14 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/config.py` | Typed settings loaded from environment variables. |
 | `app/main.py` | FastAPI application factory and entry point. |
 | `app/api/routes/health.py` | Process liveness endpoint. |
+| `app/api/routes/auth.py` | Registration, login, token rotation, logout, and device-session endpoints. |
+| `app/auth/` | Password hashing, tokens, authentication services, schemas, and domain errors. |
+| `app/database/` | Async SQLAlchemy sessions, user/session models, and repositories. |
+| `alembic/` | PostgreSQL schema migrations for users and authentication sessions. |
 | `app/observability/logging.py` | Structured JSON logging and sensitive-field redaction. |
 | `tests/` | Unit and integration tests for implemented behavior. |
 
-### Run the backend scaffold
+### Run the backend
 
 Requirements:
 
@@ -127,16 +131,18 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 7. Internal model reasoning is neither sent to Flutter nor stored as conversation content.
 8. Every request carries an idempotent `request_id` and every conversation has a stable `conversation_id`.
 
-## Planned implementation order
+## Implementation order
 
-1. FastAPI application shell, settings, health endpoints, and structured logging.
-2. Async PostgreSQL, migrations, users, and revocable auth sessions.
-3. Versioned REST API and authenticated WebSocket protocol.
-4. LangGraph state, request router, interrupts, and PostgreSQL checkpointer.
-5. Mounted FastMCP server and migration of the weather tool.
-6. Flight, hotel, places, and currency provider adapters.
-7. Model gateway, fallback policy, LangSmith traces, budgets, and evaluations.
-8. Container deployment, managed PostgreSQL, monitoring, and load testing.
+| Phase | Status | Scope |
+| --- | --- | --- |
+| 1 | Complete | FastAPI shell, settings, health endpoints, middleware, and structured logging. |
+| 2 | Complete | Async PostgreSQL, Cloud SQL connector, Alembic migrations, users, and revocable authentication sessions. |
+| 3 | In progress | Versioned REST authentication API is complete; authenticated WebSocket transport is next. |
+| 4 | Planned | LangGraph state, request router, interrupts, and PostgreSQL checkpointer. |
+| 5 | Planned | Mounted FastMCP server and weather-tool migration. |
+| 6 | Planned | Flight, hotel, places, weather, and currency provider adapters. |
+| 7 | Planned | Model gateway, fallback policy, LangSmith traces, budgets, and evaluations. |
+| 8 | Planned | Container deployment, monitoring, and load testing. |
 
 ## Security
 

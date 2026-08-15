@@ -26,7 +26,7 @@ app/
 │   ├── service.py
 │   ├── tokens.py
 │   ├── passwords.py
-│   ├── sessions.py
+│   ├── exceptions.py
 │   └── schemas.py
 ├── graph/
 │   ├── builder.py
@@ -86,7 +86,7 @@ app/
 Repository-level support:
 
 ```text
-migrations/       # Alembic revisions
+alembic/          # Alembic environment and revisions
 tests/unit/        # Pure domain and node tests
 tests/contract/    # Provider and MCP schema fixtures
 tests/integration/ # PostgreSQL, FastAPI, MCP, and graph tests

@@ -68,17 +68,38 @@ The application may silently extend an active session according to configured po
 
 ## FastAPI endpoints
 
-```text
-POST /api/v1/auth/register
-POST /api/v1/auth/login
-POST /api/v1/auth/refresh
-POST /api/v1/auth/logout
-POST /api/v1/auth/logout-all
-GET  /api/v1/auth/sessions
-DELETE /api/v1/auth/sessions/{session_id}
+| Method | Path | Status | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/auth/register` | Implemented | Create a user and their first device session. |
+| `POST` | `/api/v1/auth/login` | Implemented | Verify credentials and create a new device session. |
+| `POST` | `/api/v1/auth/refresh` | Implemented | Rotate the refresh session and return replacement credentials. |
+| `POST` | `/api/v1/auth/logout` | Implemented | Revoke the session associated with the current access token. |
+| `POST` | `/api/v1/auth/logout-all` | Implemented | Revoke every active session owned by the current user. |
+| `GET` | `/api/v1/auth/sessions` | Implemented | List the user's active, unexpired device sessions. |
+| `DELETE` | `/api/v1/auth/sessions/{session_id}` | Implemented | Revoke one user-owned device session without disclosing foreign session IDs. |
+
+Endpoint bodies and rate limits are versioned independently from WebSocket events.
+
+### Device-session response
+
+The sessions endpoint returns safe device metadata only. Refresh-token hashes, token-family identifiers, IP addresses, user agents, and revocation reasons are not exposed.
+
+```json
+[
+  {
+    "id": "83d7f01a-1da4-4bf4-b45b-f078613c37a3",
+    "device_id": "iphone-device-12345",
+    "device_name": "Imran's iPhone",
+    "created_at": "2026-08-15T10:00:00Z",
+    "last_used_at": "2026-08-15T11:00:00Z",
+    "expires_at": "2026-09-14T10:00:00Z",
+    "revoked_at": null,
+    "is_current": true
+  }
+]
 ```
 
-Registration may be deferred if an external identity provider is selected. Endpoint bodies and rate limits are versioned independently from WebSocket events.
+Exactly one returned session should have `is_current=true`: the session that authenticated the request. The repository excludes revoked, rotated, and expired sessions.
 
 ## Access-token claims
 
@@ -112,7 +133,11 @@ Device logout:
 1. Revoke the current server session transactionally.
 2. Close mapped WebSocket connections.
 3. Delete access/refresh credentials from Flutter secure storage.
-4. Return success even when the session was already revoked.
+4. Return `204 No Content` for the successful revocation request.
+
+After current-device logout, the access token references a revoked session. Retrying the protected logout request with that token returns `401 Unauthorized`; Flutter should treat both the original `204` and a retry-time `401` as a terminal signed-out state and clear local credentials.
+
+Deleting a selected session is ownership-safe and idempotent while the caller's own session remains active. An unknown, already revoked, or different user's session identifier returns `204 No Content` without revealing whether that identifier exists.
 
 Logout-all revokes every active user session and forces all devices to reauthenticate.
 
@@ -145,7 +170,8 @@ Require revocation or reauthentication after:
 | Refresh token reused | Revoke session family and require login. |
 | Session revoked | Reject REST/WebSocket and clear local credentials. |
 | Auth database unavailable | Fail closed; do not create an unauthenticated session. |
-| Logout repeated | Return idempotent success. |
+| Current-device logout retried with its revoked access token | Return 401; Flutter treats the device as signed out. |
+| Selected-session deletion repeated by another active session | Return idempotent 204. |
 
 ## Data and tracing
 
