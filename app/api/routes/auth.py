@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, status
 from app.api.dependencies import AuthServiceDependency
 from app.auth.schemas import (
     AuthenticationResponse,
+    LoginRequest,
     RegisterRequest,
     TokenPairResponse,
     UserResponse,
@@ -64,4 +65,26 @@ async def register_user(
         user_agent=request.headers.get("user-agent"),
     )
 
+    return create_authentication_response(result)
+
+
+@router.post(
+    "/login",
+    response_model=AuthenticationResponse,
+    summary="Authenticate a user",
+)
+async def login_user(
+    payload: LoginRequest,
+    request: Request,
+    auth_service: AuthServiceDependency,
+) -> AuthenticationResponse:
+    """Authenticate credentials and create a device session."""
+    result = await auth_service.login(
+        email=str(payload.email),
+        password=payload.password.get_secret_value(),
+        device_id=payload.device_id,
+        device_name=payload.device_name,
+        ip_address=resolve_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     return create_authentication_response(result)
