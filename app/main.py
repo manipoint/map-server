@@ -10,6 +10,7 @@ from app.api.exception_handlers import (
 )
 from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.request_id import RequestIdMiddleware
+from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
 from app.auth.exceptions import AuthenticationError
 from app.config import Settings, get_settings
@@ -56,6 +57,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_middleware(RequestIdMiddleware)
 
     application.include_router(health_router)
+    application.include_router(
+        auth_router,
+        prefix=resolved_settings.api_v1_prefix,
+    )
     application.add_exception_handler(
         AuthenticationError,
         authentication_exception_handler,

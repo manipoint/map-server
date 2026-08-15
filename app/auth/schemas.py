@@ -116,5 +116,6 @@ class SessionResponse(BaseModel):
 
 class AuthenticationResponse(BaseModel):
     """Authenticated user and newly issued credentials."""
-    user:UserResponse
-    tokens:TokenPairResponse
+
+    user: UserResponse
+    tokens: TokenPairResponse
