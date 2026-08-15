@@ -112,3 +112,9 @@ class SessionResponse(BaseModel):
     last_used_at: datetime
     expires_at: datetime
     revoked_at: datetime | None
+
+
+class AuthenticationResponse(BaseModel):
+    """Authenticated user and newly issued credentials."""
+    user:UserResponse
+    tokens:TokenPairResponse
