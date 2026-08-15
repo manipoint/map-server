@@ -5,9 +5,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.exception_handlers import (
+    authentication_exception_handler,
+)
 from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.request_id import RequestIdMiddleware
 from app.api.routes.health import router as health_router
+from app.auth.exceptions import AuthenticationError
 from app.config import Settings, get_settings
 from app.lifespan import lifespan
 from app.observability.logging import configure_logging
@@ -52,6 +56,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_middleware(RequestIdMiddleware)
 
     application.include_router(health_router)
+    application.add_exception_handler(
+        AuthenticationError,
+        authentication_exception_handler,
+    )
     logger.info(
         "Application configured",
         extra={
