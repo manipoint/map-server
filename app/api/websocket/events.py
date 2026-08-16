@@ -1,10 +1,10 @@
 """Versioned WebSocket event schemas."""
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.api.websocket.constants import PROTOCOL_VERSION
 
@@ -68,3 +68,48 @@ class ConnectionPongEvent(WebSocketEvent):
 
     type: Literal["connection.pong"] = "connection.pong"
     payload: EmptyPayload = Field(default_factory=EmptyPayload)
+
+
+class TravelRequestPayload(BaseModel):
+    """A user's natural-language travel request."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    client_message_id: UUID
+    conversation_id: UUID | None = None
+    message: str = Field(min_length=1, max_length=2000)
+    locale: str = Field(default="en", min_length=2, max_length=35)
+
+
+class TravelRequestEvent(ClientWebSocketEvent):
+    """A client request for travel-assistant processing."""
+
+    type: Literal["travel.request"]
+    payload: TravelRequestPayload
+
+
+class TravelRequestAcceptedPayload(BaseModel):
+    """Identify the client request accepted by the server."""
+
+    model_config = ConfigDict(extra="forbid")
+    client_message_id: UUID
+
+
+class TravelRequestAcceptedEvent(WebSocketEvent):
+    """Confirm that a valid travel request was received."""
+
+    type: Literal["travel.request.accepted"] = "travel.request.accepted"
+    payload: TravelRequestAcceptedPayload
+
+
+ClientEvent = Annotated[
+    ConnectionPingEvent | TravelRequestEvent,
+    Field(discriminator="type"),
+]
+CLIENT_EVENT_ADAPTER = TypeAdapter(ClientEvent)
+
+
+def validate_client_event(event_data: object) -> ClientEvent:
+    """Validate and route a client event according to its type."""
+
+    return CLIENT_EVENT_ADAPTER.validate_python(event_data)

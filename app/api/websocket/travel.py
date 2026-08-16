@@ -28,6 +28,9 @@ from app.api.websocket.events import (
     ConnectionPongEvent,
     ConnectionReadyEvent,
     ConnectionReadyPayload,
+    TravelRequestAcceptedEvent,
+    TravelRequestAcceptedPayload,
+    validate_client_event,
 )
 
 router = APIRouter(tags=["travel-websocket"])
@@ -102,15 +105,22 @@ async def travel_websocket(
                 return
 
             try:
-                ConnectionPingEvent.model_validate(raw_event)
+                client_event = validate_client_event(raw_event)
             except ValidationError:
                 await websocket.close(
                     code=WS_POLICY_VIOLATION_CODE,
                     reason=WS_POLICY_VIOLATION_REASON,
                 )
                 return
-
-            pong_event = ConnectionPongEvent()
-            await websocket.send_json(pong_event.model_dump(mode="json"))
+            if isinstance(client_event, ConnectionPingEvent):
+                pong_event = ConnectionPongEvent()
+                await websocket.send_json(pong_event.model_dump(mode="json"))
+                continue
+            accepted_event = TravelRequestAcceptedEvent(
+                payload=TravelRequestAcceptedPayload(
+                    client_message_id=client_event.payload.client_message_id
+                )
+            )
+            await websocket.send_json(accepted_event.model_dump(mode="json"))
     finally:
         await connection_manager.unregister(connection_id=connection.connection_id)
