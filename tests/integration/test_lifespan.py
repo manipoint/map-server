@@ -1,7 +1,7 @@
 """Integration tests for application lifespan."""
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +9,7 @@ from pydantic import SecretStr
 
 import app.lifespan as lifespan_module
 import app.main as main_module
+from app.api.websocket.connection_manager import ConnectionManager
 from app.config import Settings
 
 
@@ -84,8 +85,105 @@ def test_lifespan_creates_and_disposes_database_resources(
     with TestClient(application):
         assert application.state.database_engine is fake_engine
         assert application.state.session_factory is fake_session_factory
+        assert isinstance(application.state.connection_manager, ConnectionManager)
 
     fake_engine.dispose.assert_awaited_once()
+
+
+def test_lifespan_closes_websockets_before_disposing_database(
+    monkeypatch,
+) -> None:
+    """Shutdown should stop live sockets before tearing down persistence."""
+
+    operations: list[str] = []
+    fake_engine = AsyncMock()
+    fake_manager = MagicMock(spec=ConnectionManager)
+
+    async def close_all() -> int:
+        operations.append("websockets_closed")
+        return 2
+
+    async def dispose_engine() -> None:
+        operations.append("database_disposed")
+
+    def fake_create_engine(settings):
+        assert settings is not None
+        return fake_engine
+
+    def fake_create_session_factory(engine):
+        assert engine is fake_engine
+        return object()
+
+    fake_manager.close_all = AsyncMock(side_effect=close_all)
+    fake_engine.dispose = AsyncMock(side_effect=dispose_engine)
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        fake_create_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        fake_create_session_factory,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "ConnectionManager",
+        lambda: fake_manager,
+    )
+    application = main_module.create_app(create_url_settings())
+
+    with TestClient(application):
+        assert application.state.connection_manager is fake_manager
+
+    assert operations == ["websockets_closed", "database_disposed"]
+    fake_manager.close_all.assert_awaited_once_with()
+    fake_engine.dispose.assert_awaited_once_with()
+
+
+def test_lifespan_creates_an_isolated_connection_manager_per_application(
+    monkeypatch,
+) -> None:
+    """Separate application instances must not share active socket state."""
+
+    fake_engines: list[AsyncMock] = []
+
+    def fake_create_engine(settings):
+        assert settings is not None
+        engine = AsyncMock()
+        fake_engines.append(engine)
+        return engine
+
+    def fake_create_session_factory(engine):
+        assert engine in fake_engines
+        return object()
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        fake_create_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        fake_create_session_factory,
+    )
+
+    first_application = main_module.create_app(create_url_settings())
+    second_application = main_module.create_app(create_url_settings())
+
+    with TestClient(first_application):
+        first_manager = first_application.state.connection_manager
+
+    with TestClient(second_application):
+        second_manager = second_application.state.connection_manager
+
+    assert isinstance(first_manager, ConnectionManager)
+    assert isinstance(second_manager, ConnectionManager)
+    assert first_manager is not second_manager
+    assert len(fake_engines) == 2
+    for engine in fake_engines:
+        engine.dispose.assert_awaited_once_with()
 
 
 def test_cloud_sql_lifespan_creates_and_closes_resources(monkeypatch) -> None:
@@ -178,4 +276,59 @@ def test_cloud_sql_lifespan_closes_connector_when_engine_disposal_fails(
         with TestClient(application):
             pass
 
+    fake_connector.close_async.assert_awaited_once_with()
+
+
+def test_cloud_sql_cleanup_runs_when_websocket_cleanup_fails(monkeypatch) -> None:
+    """A manager shutdown error must not leak database or connector resources."""
+
+    fake_engine = AsyncMock()
+    fake_connector = AsyncMock()
+    fake_manager = MagicMock(spec=ConnectionManager)
+    fake_manager.close_all = AsyncMock(
+        side_effect=RuntimeError("websocket cleanup failed")
+    )
+
+    async def fake_create_cloud_sql_resources(settings):
+        assert settings.database_connection_mode == "cloud_sql"
+        return fake_engine, fake_connector
+
+    def fake_create_session_factory(engine):
+        assert engine is fake_engine
+        return object()
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_cloud_sql_resources",
+        fake_create_cloud_sql_resources,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        fake_create_session_factory,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "ConnectionManager",
+        lambda: fake_manager,
+    )
+    settings = Settings(
+        _env_file=None,
+        database_connection_mode="cloud_sql",
+        database_url=None,
+        cloud_sql_instance_connection_name="project:region:instance",
+        database_user="travel_app",
+        database_name="travel_assistant",
+        database_password=SecretStr("test-password"),
+        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
+    )
+    application = main_module.create_app(settings)
+
+    with pytest.raises(RuntimeError, match="websocket cleanup failed"):
+        with TestClient(application):
+            pass
+
+    fake_manager.close_all.assert_awaited_once_with()
+    fake_engine.dispose.assert_awaited_once_with()
     fake_connector.close_async.assert_awaited_once_with()

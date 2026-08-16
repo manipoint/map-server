@@ -5,7 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request, Response, status
 
-from app.api.dependencies import AuthServiceDependency, CurrentPrincipal
+from app.api.dependencies import (
+    AuthServiceDependency,
+    ConnectionManagerDependency,
+    CurrentPrincipal,
+)
 from app.auth.schemas import (
     AuthenticationResponse,
     LoginRequest,
@@ -122,12 +126,15 @@ async def refresh_credentials(
 async def logout_current_device(
     principal: CurrentPrincipal,
     auth_service: AuthServiceDependency,
+    connection_manager: ConnectionManagerDependency,
 ) -> Response:
     """Revoke the authentication session used by this request."""
 
-    await auth_service.logout(
+    session_revoked = await auth_service.logout(
         user_id=principal.user.id, session_id=principal.auth_session.id
     )
+    if session_revoked:
+        await connection_manager.close_session(principal.auth_session.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -140,12 +147,14 @@ async def logout_current_device(
 async def logout_all_devices(
     principal: CurrentPrincipal,
     auth_service: AuthServiceDependency,
+    connection_manager: ConnectionManagerDependency,
 ) -> Response:
     """Revoke every active session belonging to the user."""
 
     await auth_service.logout_all(
         user_id=principal.user.id,
     )
+    await connection_manager.close_user(principal.user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -181,8 +190,13 @@ async def logout_selected_device(
     session_id: UUID,
     principal: CurrentPrincipal,
     auth_service: AuthServiceDependency,
+    connection_manager: ConnectionManagerDependency,
 ) -> Response:
     """Revoke one session belonging to the authenticated user."""
 
-    await auth_service.logout(user_id=principal.user.id, session_id=session_id)
+    session_revoked = await auth_service.logout(
+        user_id=principal.user.id, session_id=session_id
+    )
+    if session_revoked:
+        await connection_manager.close_session(session_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

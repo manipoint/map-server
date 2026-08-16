@@ -11,6 +11,7 @@ from app.api.dependencies import get_auth_service, get_current_principal
 from app.api.exception_handlers import authentication_exception_handler
 from app.api.middleware.request_id import RequestIdMiddleware
 from app.api.routes.auth import router
+from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import AuthenticationError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.auth.tokens import AccessTokenClaims
@@ -21,6 +22,7 @@ from app.database.models.user import User
 def create_sessions_app(
     auth_service: MagicMock,
     principal: AuthenticatedPrincipal | None = None,
+    connection_manager: MagicMock | None = None,
 ) -> FastAPI:
     """Create an application containing the protected session routes."""
 
@@ -32,6 +34,9 @@ def create_sessions_app(
     )
     application.include_router(router, prefix="/api/v1")
     application.dependency_overrides[get_auth_service] = lambda: auth_service
+    application.state.connection_manager = connection_manager or MagicMock(
+        spec=ConnectionManager
+    )
 
     if principal is not None:
         application.dependency_overrides[get_current_principal] = lambda: principal
@@ -163,7 +168,13 @@ def test_delete_session_revokes_the_selected_user_session() -> None:
     selected_session_id = uuid4()
     auth_service = MagicMock(spec=AuthService)
     auth_service.logout = AsyncMock(return_value=True)
-    application = create_sessions_app(auth_service, principal)
+    connection_manager = MagicMock(spec=ConnectionManager)
+    connection_manager.close_session = AsyncMock(return_value=1)
+    application = create_sessions_app(
+        auth_service,
+        principal,
+        connection_manager,
+    )
 
     with TestClient(application) as client:
         response = client.delete(f"/api/v1/auth/sessions/{selected_session_id}")
@@ -174,6 +185,7 @@ def test_delete_session_revokes_the_selected_user_session() -> None:
         user_id=principal.user.id,
         session_id=selected_session_id,
     )
+    connection_manager.close_session.assert_awaited_once_with(selected_session_id)
 
 
 def test_delete_session_is_idempotent_when_no_owned_session_exists() -> None:
@@ -183,7 +195,13 @@ def test_delete_session_is_idempotent_when_no_owned_session_exists() -> None:
     selected_session_id = uuid4()
     auth_service = MagicMock(spec=AuthService)
     auth_service.logout = AsyncMock(return_value=False)
-    application = create_sessions_app(auth_service, principal)
+    connection_manager = MagicMock(spec=ConnectionManager)
+    connection_manager.close_session = AsyncMock()
+    application = create_sessions_app(
+        auth_service,
+        principal,
+        connection_manager,
+    )
 
     with TestClient(application) as client:
         response = client.delete(f"/api/v1/auth/sessions/{selected_session_id}")
@@ -193,6 +211,7 @@ def test_delete_session_is_idempotent_when_no_owned_session_exists() -> None:
         user_id=principal.user.id,
         session_id=selected_session_id,
     )
+    connection_manager.close_session.assert_not_awaited()
 
 
 def test_delete_session_rejects_an_invalid_session_identifier() -> None:
@@ -201,13 +220,20 @@ def test_delete_session_rejects_an_invalid_session_identifier() -> None:
     principal = create_principal()
     auth_service = MagicMock(spec=AuthService)
     auth_service.logout = AsyncMock()
-    application = create_sessions_app(auth_service, principal)
+    connection_manager = MagicMock(spec=ConnectionManager)
+    connection_manager.close_session = AsyncMock()
+    application = create_sessions_app(
+        auth_service,
+        principal,
+        connection_manager,
+    )
 
     with TestClient(application) as client:
         response = client.delete("/api/v1/auth/sessions/not-a-uuid")
 
     assert response.status_code == 422
     auth_service.logout.assert_not_awaited()
+    connection_manager.close_session.assert_not_awaited()
 
 
 def test_delete_session_rejects_an_unauthenticated_request() -> None:
@@ -217,7 +243,12 @@ def test_delete_session_rejects_an_unauthenticated_request() -> None:
     auth_service = MagicMock(spec=AuthService)
     auth_service.authenticate_access_token = AsyncMock()
     auth_service.logout = AsyncMock()
-    application = create_sessions_app(auth_service)
+    connection_manager = MagicMock(spec=ConnectionManager)
+    connection_manager.close_session = AsyncMock()
+    application = create_sessions_app(
+        auth_service,
+        connection_manager=connection_manager,
+    )
 
     with TestClient(application) as client:
         response = client.delete(f"/api/v1/auth/sessions/{selected_session_id}")
@@ -226,3 +257,4 @@ def test_delete_session_rejects_an_unauthenticated_request() -> None:
     assert response.headers["WWW-Authenticate"] == "Bearer"
     assert response.json()["error"]["code"] == "invalid_access_token"
     auth_service.logout.assert_not_awaited()
+    connection_manager.close_session.assert_not_awaited()

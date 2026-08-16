@@ -7,6 +7,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
 from app.auth.service import (
     AuthenticatedPrincipal,
@@ -85,4 +86,14 @@ async def get_current_principal(
 CurrentPrincipal = Annotated[
     AuthenticatedPrincipal,
     Depends(get_current_principal),
+]
+
+
+def get_connection_manager(request: Request) -> ConnectionManager:
+    """Return the application WebSocket connection manager."""
+    return request.app.state.connection_manager
+
+
+ConnectionManagerDependency = Annotated[
+    ConnectionManager, Depends(get_connection_manager)
 ]

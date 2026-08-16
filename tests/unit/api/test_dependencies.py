@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
     get_auth_service,
+    get_connection_manager,
     get_current_principal,
     get_database_session,
 )
+from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
@@ -90,6 +92,22 @@ def test_auth_service_uses_request_settings_and_database_session() -> None:
     assert isinstance(service, AuthService)
     assert service.session is database_session
     assert service.settings is settings
+
+
+def test_connection_manager_uses_the_application_resource() -> None:
+    """HTTP routes should share the manager created by application lifespan."""
+
+    application = FastAPI()
+    connection_manager = ConnectionManager()
+    application.state.connection_manager = connection_manager
+    request = Request(
+        {
+            "type": "http",
+            "app": application,
+        }
+    )
+
+    assert get_connection_manager(request) is connection_manager
 
 
 def test_current_principal_rejects_missing_credentials() -> None:

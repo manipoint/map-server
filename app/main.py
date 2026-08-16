@@ -12,6 +12,7 @@ from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.request_id import RequestIdMiddleware
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
+from app.api.websocket.travel import router as travel_websocket_router
 from app.auth.exceptions import AuthenticationError
 from app.config import Settings, get_settings
 from app.lifespan import lifespan
@@ -61,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         auth_router,
         prefix=resolved_settings.api_v1_prefix,
     )
+    application.include_router(travel_websocket_router)
     application.add_exception_handler(
         AuthenticationError,
         authentication_exception_handler,
