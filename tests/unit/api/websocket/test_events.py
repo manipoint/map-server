@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.api.websocket.constants import PROTOCOL_VERSION
 from app.api.websocket.events import (
-    PROTOCOL_VERSION,
     ConnectionPingEvent,
     ConnectionPongEvent,
     ConnectionReadyEvent,
@@ -15,12 +15,28 @@ from app.api.websocket.events import (
 )
 
 
+def create_ready_payload_data() -> dict[str, object]:
+    """Return one valid connection-ready payload dictionary."""
+
+    return {
+        "connection_id": str(uuid4()),
+        "heartbeat_interval_seconds": 30.0,
+        "idle_timeout_seconds": 90.0,
+        "max_message_bytes": 65536,
+    }
+
+
 def test_connection_ready_event_contains_the_protocol_envelope() -> None:
     """A ready event should include version, type, timestamp, and payload."""
 
     connection_id = uuid4()
     event = ConnectionReadyEvent(
-        payload=ConnectionReadyPayload(connection_id=connection_id)
+        payload=ConnectionReadyPayload(
+            connection_id=connection_id,
+            heartbeat_interval_seconds=30.0,
+            idle_timeout_seconds=90.0,
+            max_message_bytes=65536,
+        )
     )
 
     assert event.version == PROTOCOL_VERSION
@@ -37,14 +53,24 @@ def test_connection_ready_event_serializes_for_json_transport() -> None:
     sent_at = datetime(2026, 8, 15, 12, 30, tzinfo=UTC)
     event = ConnectionReadyEvent(
         sent_at=sent_at,
-        payload=ConnectionReadyPayload(connection_id=connection_id),
+        payload=ConnectionReadyPayload(
+            connection_id=connection_id,
+            heartbeat_interval_seconds=30.0,
+            idle_timeout_seconds=90.0,
+            max_message_bytes=65536,
+        ),
     )
 
     assert event.model_dump(mode="json") == {
         "version": 1,
         "sent_at": "2026-08-15T12:30:00Z",
         "type": "connection.ready",
-        "payload": {"connection_id": str(connection_id)},
+        "payload": {
+            "connection_id": str(connection_id),
+            "heartbeat_interval_seconds": 30.0,
+            "idle_timeout_seconds": 90.0,
+            "max_message_bytes": 65536,
+        },
     }
 
 
@@ -55,7 +81,7 @@ def test_connection_ready_event_rejects_an_unsupported_version() -> None:
         ConnectionReadyEvent.model_validate(
             {
                 "version": 2,
-                "payload": {"connection_id": str(uuid4())},
+                "payload": create_ready_payload_data(),
             }
         )
 
@@ -67,7 +93,7 @@ def test_connection_ready_event_rejects_an_unknown_event_type() -> None:
         ConnectionReadyEvent.model_validate(
             {
                 "type": "connection.closed",
-                "payload": {"connection_id": str(uuid4())},
+                "payload": create_ready_payload_data(),
             }
         )
 
@@ -76,12 +102,12 @@ def test_connection_ready_event_rejects_an_unknown_event_type() -> None:
     "event_data",
     [
         {
-            "payload": {"connection_id": str(uuid4())},
+            "payload": create_ready_payload_data(),
             "unexpected": True,
         },
         {
             "payload": {
-                "connection_id": str(uuid4()),
+                **create_ready_payload_data(),
                 "unexpected": True,
             }
         },
@@ -94,6 +120,26 @@ def test_connection_ready_event_rejects_unknown_fields(
 
     with pytest.raises(ValidationError):
         ConnectionReadyEvent.model_validate(event_data)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "heartbeat_interval_seconds",
+        "idle_timeout_seconds",
+        "max_message_bytes",
+    ],
+)
+def test_connection_ready_payload_rejects_nonpositive_limits(
+    field_name: str,
+) -> None:
+    """Advertised runtime limits must always be positive client values."""
+
+    payload = create_ready_payload_data()
+    payload[field_name] = 0
+
+    with pytest.raises(ValidationError):
+        ConnectionReadyPayload.model_validate(payload)
 
 
 def test_connection_ping_event_validates_a_complete_client_envelope() -> None:

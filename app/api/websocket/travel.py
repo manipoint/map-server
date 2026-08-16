@@ -1,13 +1,27 @@
 """Travel WebSocket endpoint."""
 
+from asyncio import wait_for
 from json import JSONDecodeError, loads
 
 from fastapi import APIRouter, WebSocket
 from pydantic import ValidationError
 
+from app.api.websocket.constants import (
+    WS_IDLE_TIMEOUT_CODE,
+    WS_IDLE_TIMEOUT_REASON,
+    WS_INVALID_PAYLOAD_CODE,
+    WS_INVALID_PAYLOAD_REASON,
+    WS_MESSAGE_TOO_LARGE_CODE,
+    WS_MESSAGE_TOO_LARGE_REASON,
+    WS_POLICY_VIOLATION_CODE,
+    WS_POLICY_VIOLATION_REASON,
+    WS_UNSUPPORTED_DATA_CODE,
+    WS_UNSUPPORTED_DATA_REASON,
+)
 from app.api.websocket.dependencies import (
     ConnectionManagerDependency,
     WebSocketPrincipal,
+    WebSocketSettingsDependency,
 )
 from app.api.websocket.events import (
     ConnectionPingEvent,
@@ -18,16 +32,13 @@ from app.api.websocket.events import (
 
 router = APIRouter(tags=["travel-websocket"])
 
-WS_UNSUPPORTED_DATA_CODE = 1003
-WS_INVALID_PAYLOAD_CODE = 1007
-WS_POLICY_VIOLATION_CODE = 1008
-
 
 @router.websocket("/ws/travel", name="travel_websocket")
 async def travel_websocket(
     websocket: WebSocket,
     principal: WebSocketPrincipal,
     connection_manager: ConnectionManagerDependency,
+    settings: WebSocketSettingsDependency,
 ) -> None:
     """Accept and track an authenticated travel WebSocket connection."""
 
@@ -39,13 +50,28 @@ async def travel_websocket(
     )
     try:
         ready_event = ConnectionReadyEvent(
-            payload=ConnectionReadyPayload(connection_id=connection.connection_id)
+            payload=ConnectionReadyPayload(
+                connection_id=connection.connection_id,
+                heartbeat_interval_seconds=settings.websocket_heartbeat_interval_seconds,
+                idle_timeout_seconds=settings.websocket_idle_timeout_seconds,
+                max_message_bytes=settings.websocket_max_message_bytes,
+            )
         )
         await websocket.send_json(
             ready_event.model_dump(mode="json"),
         )
         while True:
-            message = await websocket.receive()
+            try:
+                message = await wait_for(
+                    websocket.receive(),
+                    timeout=settings.websocket_idle_timeout_seconds,
+                )
+            except TimeoutError:
+                await websocket.close(
+                    code=WS_IDLE_TIMEOUT_CODE,
+                    reason=WS_IDLE_TIMEOUT_REASON,
+                )
+                return
 
             if message["type"] == "websocket.disconnect":
                 return
@@ -54,16 +80,24 @@ async def travel_websocket(
             if text is None:
                 await websocket.close(
                     code=WS_UNSUPPORTED_DATA_CODE,
-                    reason="Text JSON messages are required",
+                    reason=WS_UNSUPPORTED_DATA_REASON,
                 )
                 return
-
+            message_size = len(
+                text.encode("utf-8"),
+            )
+            if message_size > settings.websocket_max_message_bytes:
+                await websocket.close(
+                    code=WS_MESSAGE_TOO_LARGE_CODE,
+                    reason=WS_MESSAGE_TOO_LARGE_REASON,
+                )
+                return
             try:
                 raw_event = loads(text)
             except (JSONDecodeError, TypeError):
                 await websocket.close(
                     code=WS_INVALID_PAYLOAD_CODE,
-                    reason="Invalid JSON payload",
+                    reason=WS_INVALID_PAYLOAD_REASON,
                 )
                 return
 
@@ -72,7 +106,7 @@ async def travel_websocket(
             except ValidationError:
                 await websocket.close(
                     code=WS_POLICY_VIOLATION_CODE,
-                    reason="Invalid client event",
+                    reason=WS_POLICY_VIOLATION_REASON,
                 )
                 return
 

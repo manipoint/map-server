@@ -9,10 +9,11 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.websocket import dependencies
-from app.api.websocket.dependencies import (
+from app.api.websocket.constants import (
     WS_UNAUTHORIZED_CODE,
-    WebSocketPrincipal,
+    WS_UNAUTHORIZED_REASON,
 )
+from app.api.websocket.dependencies import WebSocketPrincipal
 from app.auth.exceptions import SessionRevokedError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
@@ -111,7 +112,7 @@ def test_websocket_authentication_rejects_a_missing_token(
                 pass
 
     assert raised.value.code == WS_UNAUTHORIZED_CODE
-    assert raised.value.reason == "Unauthorized"
+    assert raised.value.reason == WS_UNAUTHORIZED_REASON
     auth_service.authenticate_access_token.assert_not_awaited()
     assert session_context.entered is False
 
@@ -136,7 +137,7 @@ def test_websocket_authentication_hides_session_failure_details(
                 pass
 
     assert raised.value.code == WS_UNAUTHORIZED_CODE
-    assert raised.value.reason == "Unauthorized"
+    assert raised.value.reason == WS_UNAUTHORIZED_REASON
     assert "private revocation detail" not in raised.value.reason
     assert session_context.entered is True
     assert session_context.exited is True

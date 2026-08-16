@@ -8,12 +8,14 @@ from uuid import UUID, uuid4
 
 from fastapi import WebSocket
 
-logger = logging.getLogger(__name__)
+from app.api.websocket.constants import (
+    WS_SERVICE_RESTART_CODE,
+    WS_SERVICE_RESTART_REASON,
+    WS_SESSION_REVOKED_CODE,
+    WS_SESSION_REVOKED_REASON,
+)
 
-WS_SESSION_REVOKED_CODE = 4401
-WS_SERVICE_RESTART_CODE = 1012
-WS_SESSION_REVOKED_REASON = "Authentication session revoked"
-WS_SERVICE_RESTART_REASON = "Service restarting"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

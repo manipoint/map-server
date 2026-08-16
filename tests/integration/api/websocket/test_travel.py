@@ -1,5 +1,7 @@
 """Integration tests for the authenticated travel WebSocket endpoint."""
 
+from json import dumps
+from time import sleep
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -9,18 +11,30 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.websocket.connection_manager import ConnectionManager
+from app.api.websocket.constants import (
+    WS_IDLE_TIMEOUT_CODE,
+    WS_IDLE_TIMEOUT_REASON,
+    WS_INVALID_PAYLOAD_CODE,
+    WS_INVALID_PAYLOAD_REASON,
+    WS_MESSAGE_TOO_LARGE_CODE,
+    WS_MESSAGE_TOO_LARGE_REASON,
+    WS_POLICY_VIOLATION_CODE,
+    WS_POLICY_VIOLATION_REASON,
+    WS_UNSUPPORTED_DATA_CODE,
+    WS_UNSUPPORTED_DATA_REASON,
+)
 from app.api.websocket.dependencies import get_websocket_principal
 from app.api.websocket.events import ConnectionPongEvent, ConnectionReadyEvent
-from app.api.websocket.travel import (
-    WS_INVALID_PAYLOAD_CODE,
-    WS_POLICY_VIOLATION_CODE,
-    WS_UNSUPPORTED_DATA_CODE,
-    router,
-)
+from app.api.websocket.travel import router
 from app.auth.service import AuthenticatedPrincipal
+from app.config import Settings
 
 
-def create_travel_websocket_app() -> FastAPI:
+def create_travel_websocket_app(
+    *,
+    idle_timeout_seconds: float = 75.0,
+    max_message_bytes: int = 32768,
+) -> FastAPI:
     """Create an application with an authenticated travel socket."""
 
     application = FastAPI()
@@ -28,7 +42,12 @@ def create_travel_websocket_app() -> FastAPI:
     principal = MagicMock(spec=AuthenticatedPrincipal)
     principal.user.id = uuid4()
     principal.auth_session.id = uuid4()
+    settings = MagicMock(spec=Settings)
+    settings.websocket_heartbeat_interval_seconds = 20.0
+    settings.websocket_idle_timeout_seconds = idle_timeout_seconds
+    settings.websocket_max_message_bytes = max_message_bytes
     application.state.connection_manager = ConnectionManager()
+    application.state.settings = settings
     application.dependency_overrides[get_websocket_principal] = lambda: principal
     return application
 
@@ -42,6 +61,12 @@ def create_ping_event() -> dict[str, object]:
         "sent_at": "2026-08-15T16:30:00Z",
         "payload": {},
     }
+
+
+def serialize_ping_event() -> str:
+    """Serialize a valid heartbeat without optional JSON whitespace."""
+
+    return dumps(create_ping_event(), separators=(",", ":"))
 
 
 def test_travel_websocket_sends_a_typed_ready_event() -> None:
@@ -62,7 +87,15 @@ def test_travel_websocket_sends_a_typed_ready_event() -> None:
     assert event.version == 1
     assert event.type == "connection.ready"
     assert event.sent_at.tzinfo is not None
-    assert set(message["payload"]) == {"connection_id"}
+    assert set(message["payload"]) == {
+        "connection_id",
+        "heartbeat_interval_seconds",
+        "idle_timeout_seconds",
+        "max_message_bytes",
+    }
+    assert message["payload"]["heartbeat_interval_seconds"] == 20.0
+    assert message["payload"]["idle_timeout_seconds"] == 75.0
+    assert message["payload"]["max_message_bytes"] == 32768
     assert "user_id" not in message
     assert "session_id" not in message
     assert connection_manager.active_connection_count == 0
@@ -126,6 +159,102 @@ def test_travel_websocket_supports_repeated_heartbeats() -> None:
     assert second_pong["type"] == "connection.pong"
 
 
+def test_travel_websocket_closes_an_idle_connection() -> None:
+    """A connection without inbound activity should expire and unregister."""
+
+    application = create_travel_websocket_app(idle_timeout_seconds=0.01)
+    connection_manager = application.state.connection_manager
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+
+            with pytest.raises(WebSocketDisconnect) as raised:
+                websocket.receive_json()
+
+    assert raised.value.code == WS_IDLE_TIMEOUT_CODE
+    assert raised.value.reason == WS_IDLE_TIMEOUT_REASON
+    assert connection_manager.active_connection_count == 0
+
+
+def test_travel_websocket_activity_resets_the_idle_timeout() -> None:
+    """Each valid heartbeat should begin a fresh idle-timeout period."""
+
+    application = create_travel_websocket_app(idle_timeout_seconds=0.3)
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+
+            sleep(0.2)
+            websocket.send_json(create_ping_event())
+            first_pong = websocket.receive_json()
+
+            sleep(0.2)
+            websocket.send_json(create_ping_event())
+            second_pong = websocket.receive_json()
+
+    assert first_pong["type"] == "connection.pong"
+    assert second_pong["type"] == "connection.pong"
+
+
+def test_travel_websocket_accepts_a_message_at_the_size_limit() -> None:
+    """The configured maximum should be inclusive rather than off by one."""
+
+    text = serialize_ping_event()
+    application = create_travel_websocket_app(
+        max_message_bytes=len(text.encode("utf-8")),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_text(text)
+            message = websocket.receive_json()
+
+    assert message["type"] == "connection.pong"
+
+
+def test_travel_websocket_rejects_a_message_over_the_size_limit() -> None:
+    """A text frame one byte over the limit should close and unregister."""
+
+    text = serialize_ping_event()
+    application = create_travel_websocket_app(
+        max_message_bytes=len(text.encode("utf-8")) - 1,
+    )
+    connection_manager = application.state.connection_manager
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_text(text)
+
+            with pytest.raises(WebSocketDisconnect) as raised:
+                websocket.receive_json()
+
+    assert raised.value.code == WS_MESSAGE_TOO_LARGE_CODE
+    assert raised.value.reason == WS_MESSAGE_TOO_LARGE_REASON
+    assert connection_manager.active_connection_count == 0
+
+
+def test_travel_websocket_measures_message_size_in_utf8_bytes() -> None:
+    """Multibyte text should be limited by wire bytes, not Python characters."""
+
+    text = dumps("🌍", ensure_ascii=False)
+    application = create_travel_websocket_app(max_message_bytes=len(text))
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_text(text)
+
+            with pytest.raises(WebSocketDisconnect) as raised:
+                websocket.receive_json()
+
+    assert len(text.encode("utf-8")) > len(text)
+    assert raised.value.code == WS_MESSAGE_TOO_LARGE_CODE
+
+
 def test_travel_websocket_rejects_binary_frames() -> None:
     """The JSON protocol should reject non-text WebSocket messages."""
 
@@ -141,7 +270,7 @@ def test_travel_websocket_rejects_binary_frames() -> None:
                 websocket.receive_json()
 
     assert raised.value.code == WS_UNSUPPORTED_DATA_CODE
-    assert raised.value.reason == "Text JSON messages are required"
+    assert raised.value.reason == WS_UNSUPPORTED_DATA_REASON
     assert connection_manager.active_connection_count == 0
 
 
@@ -160,7 +289,7 @@ def test_travel_websocket_rejects_malformed_json() -> None:
                 websocket.receive_json()
 
     assert raised.value.code == WS_INVALID_PAYLOAD_CODE
-    assert raised.value.reason == "Invalid JSON payload"
+    assert raised.value.reason == WS_INVALID_PAYLOAD_REASON
     assert connection_manager.active_connection_count == 0
 
 
@@ -199,5 +328,5 @@ def test_travel_websocket_rejects_an_invalid_client_event(
                 websocket.receive_json()
 
     assert raised.value.code == WS_POLICY_VIOLATION_CODE
-    assert raised.value.reason == "Invalid client event"
+    assert raised.value.reason == WS_POLICY_VIOLATION_REASON
     assert connection_manager.active_connection_count == 0

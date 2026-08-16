@@ -5,12 +5,11 @@ from typing import Annotated
 from fastapi import Depends, WebSocket, WebSocketException
 
 from app.api.websocket.connection_manager import ConnectionManager
+from app.api.websocket.constants import WS_UNAUTHORIZED_CODE, WS_UNAUTHORIZED_REASON
 from app.auth.exceptions import AuthenticationError, InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
-
-WS_UNAUTHORIZED_CODE = 4401
 
 
 def extract_bearer_token(authorization: str | None) -> str:
@@ -45,13 +44,19 @@ async def get_websocket_principal(websocket: WebSocket) -> AuthenticatedPrincipa
             )
     except AuthenticationError as e:
         raise WebSocketException(
-            code=WS_UNAUTHORIZED_CODE, reason="Unauthorized"
+            code=WS_UNAUTHORIZED_CODE,
+            reason=WS_UNAUTHORIZED_REASON,
         ) from e
 
 
 def get_connection_manager(websocket: WebSocket) -> ConnectionManager:
     """Return the application WebSocket connection manager."""
     return websocket.app.state.connection_manager
+
+
+def get_websocket_settings(websocket: WebSocket) -> Settings:
+    """Return application settings for a WebSocket connection."""
+    return websocket.app.state.settings
 
 
 WebSocketPrincipal = Annotated[
@@ -61,3 +66,4 @@ WebSocketPrincipal = Annotated[
 ConnectionManagerDependency = Annotated[
     ConnectionManager, Depends(get_connection_manager)
 ]
+WebSocketSettingsDependency = Annotated[Settings, Depends(get_websocket_settings)]

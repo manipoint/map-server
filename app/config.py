@@ -80,6 +80,21 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=30.0, gt=0)
     max_search_results: int = Field(default=10, ge=1, le=100)
     max_model_attempts: int = Field(default=3, ge=1, le=5)
+    websocket_max_message_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
+    websocket_heartbeat_interval_seconds: float = Field(
+        default=30.0,
+        ge=5.0,
+        le=300.0,
+    )
+    websocket_idle_timeout_seconds: float = Field(
+        default=90.0,
+        ge=10.0,
+        le=600.0,
+    )
 
     @model_validator(mode="after")
     def validate_database_configuration(self) -> Self:
@@ -104,6 +119,19 @@ class Settings(BaseSettings):
             missing_names = ", ".join(missing_settings)
             raise ValueError(
                 f"Cloud SQL mode requires the following settings: {missing_names}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_websocket_configuration(self) -> Self:
+        """Ensure heartbeat timing leaves enough room before idle timeout."""
+        if (
+            self.websocket_heartbeat_interval_seconds
+            >= self.websocket_idle_timeout_seconds
+        ):
+            raise ValueError(
+                "WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS must be less than "
+                "WEBSOCKET_IDLE_TIMEOUT_SECONDS"
             )
         return self
 

@@ -1,12 +1,12 @@
 """Versioned WebSocket event schemas."""
 
 from datetime import UTC, datetime
-from typing import Final, Literal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-PROTOCOL_VERSION: Final = 1
+from app.api.websocket.constants import PROTOCOL_VERSION
 
 
 def utc_now() -> datetime:
@@ -29,6 +29,9 @@ class ConnectionReadyPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     connection_id: UUID
+    heartbeat_interval_seconds: float = Field(gt=0)
+    idle_timeout_seconds: float = Field(gt=0)
+    max_message_bytes: int = Field(gt=0)
 
 
 class ConnectionReadyEvent(WebSocketEvent):

@@ -10,8 +10,10 @@ from app.api.websocket.connection_manager import ConnectionManager
 from app.api.websocket.dependencies import (
     extract_bearer_token,
     get_connection_manager,
+    get_websocket_settings,
 )
 from app.auth.exceptions import InvalidAccessTokenError
+from app.config import Settings
 
 
 @pytest.mark.parametrize(
@@ -60,3 +62,13 @@ def test_get_connection_manager_returns_the_application_resource() -> None:
     )
 
     assert get_connection_manager(websocket) is connection_manager
+
+
+def test_get_websocket_settings_returns_the_application_resource() -> None:
+    """The dependency should expose settings owned by this application."""
+
+    settings = MagicMock(spec=Settings)
+    websocket = MagicMock(spec=WebSocket)
+    websocket.app = SimpleNamespace(state=SimpleNamespace(settings=settings))
+
+    assert get_websocket_settings(websocket) is settings

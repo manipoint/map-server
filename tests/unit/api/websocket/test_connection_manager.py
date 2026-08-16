@@ -7,12 +7,12 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
-from app.api.websocket.connection_manager import (
+from app.api.websocket.connection_manager import ConnectionManager
+from app.api.websocket.constants import (
     WS_SERVICE_RESTART_CODE,
     WS_SERVICE_RESTART_REASON,
     WS_SESSION_REVOKED_CODE,
     WS_SESSION_REVOKED_REASON,
-    ConnectionManager,
 )
 
 
