@@ -10,6 +10,7 @@ from app.api.websocket.connection_manager import ConnectionManager
 from app.api.websocket.dependencies import (
     extract_bearer_token,
     get_connection_manager,
+    get_websocket_session_factory,
     get_websocket_settings,
 )
 from app.auth.exceptions import InvalidAccessTokenError
@@ -72,3 +73,15 @@ def test_get_websocket_settings_returns_the_application_resource() -> None:
     websocket.app = SimpleNamespace(state=SimpleNamespace(settings=settings))
 
     assert get_websocket_settings(websocket) is settings
+
+
+def test_get_websocket_session_factory_returns_the_application_resource() -> None:
+    """The dependency should expose the shared async-session factory."""
+
+    session_factory = MagicMock()
+    websocket = MagicMock(spec=WebSocket)
+    websocket.app = SimpleNamespace(
+        state=SimpleNamespace(session_factory=session_factory)
+    )
+
+    assert get_websocket_session_factory(websocket) is session_factory

@@ -95,6 +95,7 @@ class Settings(BaseSettings):
         ge=10.0,
         le=600.0,
     )
+    conversation_history_message_limit: int = Field(default=20, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_database_configuration(self) -> Self:

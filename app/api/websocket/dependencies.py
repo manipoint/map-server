@@ -59,6 +59,12 @@ def get_websocket_settings(websocket: WebSocket) -> Settings:
     return websocket.app.state.settings
 
 
+def get_websocket_session_factory(websocket: WebSocket) -> AsyncSessionFactory:
+    """Return the application database-session factory."""
+
+    return websocket.app.state.session_factory
+
+
 WebSocketPrincipal = Annotated[
     AuthenticatedPrincipal,
     Depends(get_websocket_principal),
@@ -67,3 +73,7 @@ ConnectionManagerDependency = Annotated[
     ConnectionManager, Depends(get_connection_manager)
 ]
 WebSocketSettingsDependency = Annotated[Settings, Depends(get_websocket_settings)]
+
+WebSocketSessionFactoryDependency = Annotated[
+    AsyncSessionFactory, Depends(get_websocket_session_factory)
+]

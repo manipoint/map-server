@@ -152,3 +152,21 @@ def test_websocket_boundary_timings_are_accepted() -> None:
 
     assert settings.websocket_heartbeat_interval_seconds == 5.0
     assert settings.websocket_idle_timeout_seconds == 10.0
+
+
+def test_conversation_history_uses_a_bounded_default() -> None:
+    """Default model context should include only recent conversation messages."""
+
+    settings = create_settings()
+
+    assert settings.conversation_history_message_limit == 20
+
+
+@pytest.mark.parametrize("history_limit", [0, 101])
+def test_conversation_history_limit_rejects_values_outside_bounds(
+    history_limit: int,
+) -> None:
+    """Configuration should prevent empty or excessively large model history."""
+
+    with pytest.raises(ValidationError):
+        create_settings(conversation_history_message_limit=history_limit)

@@ -2,7 +2,7 @@
 
 from json import dumps
 from time import sleep
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from app.api.websocket import travel
 from app.api.websocket.connection_manager import ConnectionManager
 from app.api.websocket.constants import (
     WS_IDLE_TIMEOUT_CODE,
@@ -28,10 +29,18 @@ from app.api.websocket.events import (
     ConnectionPongEvent,
     ConnectionReadyEvent,
     TravelRequestAcceptedEvent,
+    TravelRequestRejectedEvent,
 )
 from app.api.websocket.travel import router
 from app.auth.service import AuthenticatedPrincipal
 from app.config import Settings
+from app.database.models.conversation import Conversation
+from app.database.models.message import Message
+from app.domain.errors import (
+    ClientMessageConflictError,
+    ConversationNotFoundError,
+)
+from app.services.conversation_service import AcceptedTravelRequest
 
 
 def create_travel_websocket_app(
@@ -52,8 +61,26 @@ def create_travel_websocket_app(
     settings.websocket_max_message_bytes = max_message_bytes
     application.state.connection_manager = ConnectionManager()
     application.state.settings = settings
+    application.state.session_factory = MagicMock()
     application.dependency_overrides[get_websocket_principal] = lambda: principal
     return application
+
+
+def create_accepted_request(
+    *,
+    conversation_id: UUID | None = None,
+    is_duplicate: bool = False,
+) -> AcceptedTravelRequest:
+    """Return a persisted-request result for endpoint isolation."""
+
+    conversation = MagicMock(spec=Conversation)
+    conversation.id = conversation_id or uuid4()
+    user_message = MagicMock(spec=Message)
+    return AcceptedTravelRequest(
+        conversation=conversation,
+        user_message=user_message,
+        is_duplicate=is_duplicate,
+    )
 
 
 def create_ping_event() -> dict[str, object]:
@@ -185,11 +212,18 @@ def test_travel_websocket_supports_repeated_heartbeats() -> None:
     assert second_pong["type"] == "connection.pong"
 
 
-def test_travel_websocket_acknowledges_a_valid_travel_request() -> None:
+def test_travel_websocket_acknowledges_a_valid_travel_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A valid request should receive a typed correlation acknowledgement."""
 
     application = create_travel_websocket_app()
     client_message_id = uuid4()
+    conversation_id = uuid4()
+    persist_request = AsyncMock(
+        return_value=create_accepted_request(conversation_id=conversation_id)
+    )
+    monkeypatch.setattr(travel, "persist_travel_request", persist_request)
 
     with TestClient(application) as client:
         with client.websocket_connect("/ws/travel") as websocket:
@@ -203,16 +237,33 @@ def test_travel_websocket_acknowledges_a_valid_travel_request() -> None:
 
     event = TravelRequestAcceptedEvent.model_validate(message)
     assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
     assert event.sent_at.tzinfo is not None
-    assert set(message["payload"]) == {"client_message_id"}
+    assert set(message["payload"]) == {"client_message_id", "conversation_id"}
+    persist_request.assert_awaited_once()
+    call = persist_request.await_args.kwargs
+    assert call["event"].payload.client_message_id == client_message_id
+    assert call["user_id"] is not None
+    assert call["session_factory"] is application.state.session_factory
 
 
-def test_travel_websocket_correlates_repeated_travel_requests() -> None:
+def test_travel_websocket_correlates_repeated_travel_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Sequential requests should each echo their own client-message ID."""
 
     application = create_travel_websocket_app()
     first_message_id = uuid4()
     second_message_id = uuid4()
+    first_conversation_id = uuid4()
+    second_conversation_id = uuid4()
+    persist_request = AsyncMock(
+        side_effect=[
+            create_accepted_request(conversation_id=first_conversation_id),
+            create_accepted_request(conversation_id=second_conversation_id),
+        ]
+    )
+    monkeypatch.setattr(travel, "persist_travel_request", persist_request)
 
     with TestClient(application) as client:
         with client.websocket_connect("/ws/travel") as websocket:
@@ -221,7 +272,7 @@ def test_travel_websocket_correlates_repeated_travel_requests() -> None:
             websocket.send_json(
                 create_travel_request_event(
                     client_message_id=first_message_id,
-                    conversation_id=uuid4(),
+                    conversation_id=first_conversation_id,
                 )
             )
             first_acknowledgement = websocket.receive_json()
@@ -239,12 +290,23 @@ def test_travel_websocket_correlates_repeated_travel_requests() -> None:
     assert second_acknowledgement["payload"]["client_message_id"] == str(
         second_message_id
     )
+    assert first_acknowledgement["payload"]["conversation_id"] == str(
+        first_conversation_id
+    )
+    assert second_acknowledgement["payload"]["conversation_id"] == str(
+        second_conversation_id
+    )
+    assert persist_request.await_count == 2
 
 
-def test_travel_websocket_keeps_heartbeat_routing_after_a_travel_request() -> None:
+def test_travel_websocket_keeps_heartbeat_routing_after_a_travel_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Acknowledging a request should leave the connection ready for heartbeats."""
 
     application = create_travel_websocket_app()
+    persist_request = AsyncMock(return_value=create_accepted_request())
+    monkeypatch.setattr(travel, "persist_travel_request", persist_request)
 
     with TestClient(application) as client:
         with client.websocket_connect("/ws/travel") as websocket:
@@ -257,6 +319,72 @@ def test_travel_websocket_keeps_heartbeat_routing_after_a_travel_request() -> No
 
     assert acknowledgement["type"] == "travel.request.accepted"
     assert pong["type"] == "connection.pong"
+
+
+def test_travel_websocket_acknowledges_an_idempotent_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A durable duplicate should receive the same successful protocol shape."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    persist_request = AsyncMock(
+        return_value=create_accepted_request(
+            conversation_id=conversation_id,
+            is_duplicate=True,
+        )
+    )
+    monkeypatch.setattr(travel, "persist_travel_request", persist_request)
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            message = websocket.receive_json()
+
+    event = TravelRequestAcceptedEvent.model_validate(message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (ConversationNotFoundError("not found"), "conversation_not_found"),
+        (ClientMessageConflictError("conflict"), "client_message_conflict"),
+    ],
+)
+def test_travel_websocket_rejects_a_domain_failure_without_closing(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_code: str,
+) -> None:
+    """A request-specific domain failure should preserve the socket."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    persist_request = AsyncMock(side_effect=error)
+    monkeypatch.setattr(travel, "persist_travel_request", persist_request)
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            rejection_message = websocket.receive_json()
+
+            websocket.send_json(create_ping_event())
+            pong_message = websocket.receive_json()
+
+    event = TravelRequestRejectedEvent.model_validate(rejection_message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.code == expected_code
+    assert set(rejection_message["payload"]) == {"client_message_id", "code"}
+    assert pong_message["type"] == "connection.pong"
 
 
 def test_travel_websocket_closes_an_idle_connection() -> None:

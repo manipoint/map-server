@@ -93,6 +93,7 @@ class TravelRequestAcceptedPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     client_message_id: UUID
+    conversation_id: UUID
 
 
 class TravelRequestAcceptedEvent(WebSocketEvent):
@@ -100,6 +101,25 @@ class TravelRequestAcceptedEvent(WebSocketEvent):
 
     type: Literal["travel.request.accepted"] = "travel.request.accepted"
     payload: TravelRequestAcceptedPayload
+
+
+class TravelRequestRejectedPayload(BaseModel):
+    """Describe a safely rejected travel request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_message_id: UUID
+    code: Literal[
+        "conversation_not_found",
+        "client_message_conflict",
+    ]
+
+
+class TravelRequestRejectedEvent(WebSocketEvent):
+    """Report a request-specific failure without closing the socket."""
+
+    type: Literal["travel.request.rejected"] = "travel.request.rejected"
+    payload: TravelRequestRejectedPayload
 
 
 ClientEvent = Annotated[

@@ -2,6 +2,7 @@
 
 from asyncio import wait_for
 from json import JSONDecodeError, loads
+from uuid import UUID
 
 from fastapi import APIRouter, WebSocket
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from app.api.websocket.constants import (
 from app.api.websocket.dependencies import (
     ConnectionManagerDependency,
     WebSocketPrincipal,
+    WebSocketSessionFactoryDependency,
     WebSocketSettingsDependency,
 )
 from app.api.websocket.events import (
@@ -30,10 +32,31 @@ from app.api.websocket.events import (
     ConnectionReadyPayload,
     TravelRequestAcceptedEvent,
     TravelRequestAcceptedPayload,
+    TravelRequestEvent,
+    TravelRequestRejectedEvent,
+    TravelRequestRejectedPayload,
     validate_client_event,
 )
+from app.database.session import AsyncSessionFactory
+from app.domain.errors import ClientMessageConflictError, ConversationNotFoundError
+from app.services.conversation_service import AcceptedTravelRequest, ConversationService
 
 router = APIRouter(tags=["travel-websocket"])
+
+
+async def persist_travel_request(
+    *, event: TravelRequestEvent, user_id: UUID, session_factory: AsyncSessionFactory
+) -> AcceptedTravelRequest:
+    """Persist one travel request using a short-lived database session."""
+    async with session_factory() as database_session:
+        service = ConversationService(session=database_session)
+        return await service.accept_request(
+            user_id=user_id,
+            client_message_id=event.payload.client_message_id,
+            conversation_id=event.payload.conversation_id,
+            message=event.payload.message,
+            locale=event.payload.locale,
+        )
 
 
 @router.websocket("/ws/travel", name="travel_websocket")
@@ -42,6 +65,7 @@ async def travel_websocket(
     principal: WebSocketPrincipal,
     connection_manager: ConnectionManagerDependency,
     settings: WebSocketSettingsDependency,
+    session_factory: WebSocketSessionFactoryDependency,
 ) -> None:
     """Accept and track an authenticated travel WebSocket connection."""
 
@@ -116,9 +140,35 @@ async def travel_websocket(
                 pong_event = ConnectionPongEvent()
                 await websocket.send_json(pong_event.model_dump(mode="json"))
                 continue
+            try:
+                accepted_request = await persist_travel_request(
+                    event=client_event,
+                    user_id=principal.user.id,
+                    session_factory=session_factory,
+                )
+            except ConversationNotFoundError:
+                rejected_event = TravelRequestRejectedEvent(
+                    payload=TravelRequestRejectedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        code="conversation_not_found",
+                    )
+                )
+
+                await websocket.send_json(rejected_event.model_dump(mode="json"))
+                continue
+            except ClientMessageConflictError:
+                rejected_event = TravelRequestRejectedEvent(
+                    payload=TravelRequestRejectedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        code="client_message_conflict",
+                    )
+                )
+                await websocket.send_json(rejected_event.model_dump(mode="json"))
+                continue
             accepted_event = TravelRequestAcceptedEvent(
                 payload=TravelRequestAcceptedPayload(
-                    client_message_id=client_event.payload.client_message_id
+                    client_message_id=client_event.payload.client_message_id,
+                    conversation_id=accepted_request.conversation.id,
                 )
             )
             await websocket.send_json(accepted_event.model_dump(mode="json"))

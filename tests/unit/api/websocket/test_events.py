@@ -15,6 +15,8 @@ from app.api.websocket.events import (
     TravelRequestAcceptedEvent,
     TravelRequestAcceptedPayload,
     TravelRequestEvent,
+    TravelRequestRejectedEvent,
+    TravelRequestRejectedPayload,
     validate_client_event,
 )
 
@@ -267,11 +269,13 @@ def test_travel_request_accepted_event_generates_the_protocol_envelope() -> None
     """An acknowledgement should identify the accepted client request."""
 
     client_message_id = uuid4()
+    conversation_id = uuid4()
     sent_at = datetime(2026, 8, 16, 12, 45, tzinfo=UTC)
     event = TravelRequestAcceptedEvent(
         sent_at=sent_at,
         payload=TravelRequestAcceptedPayload(
             client_message_id=client_message_id,
+            conversation_id=conversation_id,
         ),
     )
 
@@ -279,19 +283,27 @@ def test_travel_request_accepted_event_generates_the_protocol_envelope() -> None
         "version": PROTOCOL_VERSION,
         "sent_at": "2026-08-16T12:45:00Z",
         "type": "travel.request.accepted",
-        "payload": {"client_message_id": str(client_message_id)},
+        "payload": {
+            "client_message_id": str(client_message_id),
+            "conversation_id": str(conversation_id),
+        },
     }
 
 
-def test_travel_request_accepted_payload_parses_a_uuid_string() -> None:
-    """Wire-format UUID text should become a typed client-message identifier."""
+def test_travel_request_accepted_payload_parses_uuid_strings() -> None:
+    """Wire UUID text should become typed correlation identifiers."""
 
     client_message_id = uuid4()
+    conversation_id = uuid4()
     payload = TravelRequestAcceptedPayload.model_validate(
-        {"client_message_id": str(client_message_id)}
+        {
+            "client_message_id": str(client_message_id),
+            "conversation_id": str(conversation_id),
+        }
     )
 
     assert payload.client_message_id == client_message_id
+    assert payload.conversation_id == conversation_id
 
 
 def test_travel_request_accepted_payload_rejects_an_unknown_field() -> None:
@@ -301,16 +313,25 @@ def test_travel_request_accepted_payload_rejects_an_unknown_field() -> None:
         TravelRequestAcceptedPayload.model_validate(
             {
                 "client_message_id": str(uuid4()),
+                "conversation_id": str(uuid4()),
                 "unexpected": True,
             }
         )
 
 
-def test_travel_request_accepted_payload_requires_a_client_message_id() -> None:
-    """An acknowledgement without correlation metadata should be invalid."""
+@pytest.mark.parametrize("missing_field", ["client_message_id", "conversation_id"])
+def test_travel_request_accepted_payload_requires_correlation_ids(
+    missing_field: str,
+) -> None:
+    """An acknowledgement should require client and conversation IDs."""
 
+    payload = {
+        "client_message_id": str(uuid4()),
+        "conversation_id": str(uuid4()),
+    }
+    payload.pop(missing_field)
     with pytest.raises(ValidationError):
-        TravelRequestAcceptedPayload.model_validate({})
+        TravelRequestAcceptedPayload.model_validate(payload)
 
 
 def test_travel_request_accepted_event_rejects_an_incorrect_type() -> None:
@@ -320,7 +341,90 @@ def test_travel_request_accepted_event_rejects_an_incorrect_type() -> None:
         TravelRequestAcceptedEvent.model_validate(
             {
                 "type": "travel.request.completed",
-                "payload": {"client_message_id": str(uuid4())},
+                "payload": {
+                    "client_message_id": str(uuid4()),
+                    "conversation_id": str(uuid4()),
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["conversation_not_found", "client_message_conflict"],
+)
+def test_travel_request_rejected_event_generates_a_safe_envelope(code: str) -> None:
+    """Each public rejection code should serialize without internal details."""
+
+    client_message_id = uuid4()
+    event = TravelRequestRejectedEvent(
+        payload=TravelRequestRejectedPayload(
+            client_message_id=client_message_id,
+            code=code,
+        )
+    )
+    serialized = event.model_dump(mode="json")
+
+    assert serialized["type"] == "travel.request.rejected"
+    assert serialized["payload"] == {
+        "client_message_id": str(client_message_id),
+        "code": code,
+    }
+    assert set(serialized["payload"]) == {"client_message_id", "code"}
+
+
+def test_travel_request_rejected_payload_rejects_an_unknown_code() -> None:
+    """Internal or unsupported failure codes should not enter the protocol."""
+
+    with pytest.raises(ValidationError):
+        TravelRequestRejectedPayload.model_validate(
+            {
+                "client_message_id": str(uuid4()),
+                "code": "database_error",
+            }
+        )
+
+
+@pytest.mark.parametrize("missing_field", ["client_message_id", "code"])
+def test_travel_request_rejected_payload_requires_all_fields(
+    missing_field: str,
+) -> None:
+    """A rejection needs both request correlation and a public reason code."""
+
+    payload = {
+        "client_message_id": str(uuid4()),
+        "code": "conversation_not_found",
+    }
+    payload.pop(missing_field)
+
+    with pytest.raises(ValidationError):
+        TravelRequestRejectedPayload.model_validate(payload)
+
+
+def test_travel_request_rejected_payload_rejects_unknown_fields() -> None:
+    """A rejection should not accidentally expose additional error details."""
+
+    with pytest.raises(ValidationError):
+        TravelRequestRejectedPayload.model_validate(
+            {
+                "client_message_id": str(uuid4()),
+                "code": "conversation_not_found",
+                "detail": "private database information",
+            }
+        )
+
+
+def test_travel_request_rejected_event_rejects_an_incorrect_type() -> None:
+    """The rejection schema should enforce its server event name."""
+
+    with pytest.raises(ValidationError):
+        TravelRequestRejectedEvent.model_validate(
+            {
+                "type": "travel.request.accepted",
+                "payload": {
+                    "client_message_id": str(uuid4()),
+                    "code": "conversation_not_found",
+                },
             }
         )
 
