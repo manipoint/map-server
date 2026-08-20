@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     weather_api_url: str = "https://api.weatherapi.com/v1/current.json"
     tavily_api_key: SecretStr | None = None
 
+    # LLM models
+    groq_model: str = "openai/gpt-oss-20b"
+    google_model: str = "gemini-2.5-flash"
+    openai_model: str = "gpt-4.1-mini"
+
     # LLM providers
     groq_api_key: SecretStr | None = None
     google_api_key: SecretStr | None = None
@@ -96,6 +101,7 @@ class Settings(BaseSettings):
         le=600.0,
     )
     conversation_history_message_limit: int = Field(default=20, ge=1, le=100)
+    assistant_run_lease_seconds: int = Field(default=120, ge=30, le=900)
 
     @model_validator(mode="after")
     def validate_database_configuration(self) -> Self:
@@ -133,6 +139,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS must be less than "
                 "WEBSOCKET_IDLE_TIMEOUT_SECONDS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_assistant_run_lease(self) -> Self:
+        """Ensure a processing lease outlives one model attempt."""
+
+        if self.assistant_run_lease_seconds <= self.model_timeout_seconds:
+            raise ValueError(
+                "ASSISTANT_RUN_LEASE_SECONDS must be greater than MODEL_TIMEOUT_SECONDS"
             )
         return self
 

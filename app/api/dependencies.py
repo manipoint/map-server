@@ -15,6 +15,10 @@ from app.auth.service import (
 )
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
+from app.services.conversation_processing_service import (
+    ConversationProcessingService,
+)
+from app.services.travel_response_service import TravelResponseService
 
 
 async def get_database_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -96,4 +100,29 @@ def get_connection_manager(request: Request) -> ConnectionManager:
 
 ConnectionManagerDependency = Annotated[
     ConnectionManager, Depends(get_connection_manager)
+]
+
+
+async def get_travel_response_service(
+    request: Request,
+    database_session: DatabaseSession,
+) -> TravelResponseService:
+    """Create one database-bound travel response service."""
+    settings: Settings = request.app.state.settings
+    graph = request.app.state.travel_graph
+    processing_service = ConversationProcessingService(
+        session=database_session,
+        history_limit=settings.conversation_history_message_limit,
+    )
+    return TravelResponseService(
+        processing_service=processing_service,
+        graph=graph,
+        assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
+        max_model_attempts=settings.max_model_attempts,
+    )
+
+
+TravelResponseServiceDependency = Annotated[
+    TravelResponseService,
+    Depends(get_travel_response_service),
 ]

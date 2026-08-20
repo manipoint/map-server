@@ -170,3 +170,59 @@ def test_conversation_history_limit_rejects_values_outside_bounds(
 
     with pytest.raises(ValidationError):
         create_settings(conversation_history_message_limit=history_limit)
+
+
+def test_assistant_run_lease_uses_a_safe_default() -> None:
+    """The default lease should allow one normal model attempt to finish."""
+
+    settings = create_settings()
+
+    assert settings.assistant_run_lease_seconds == 120
+
+
+@pytest.mark.parametrize(
+    ("lease_seconds", "model_timeout_seconds"),
+    [(30, 29.9), (900, 30.0)],
+)
+def test_assistant_run_lease_accepts_documented_boundaries(
+    lease_seconds: int,
+    model_timeout_seconds: float,
+) -> None:
+    """The configured lease range should include both documented endpoints."""
+
+    settings = create_settings(
+        assistant_run_lease_seconds=lease_seconds,
+        model_timeout_seconds=model_timeout_seconds,
+    )
+
+    assert settings.assistant_run_lease_seconds == lease_seconds
+
+
+@pytest.mark.parametrize("lease_seconds", [29, 901])
+def test_assistant_run_lease_rejects_values_outside_its_bounds(
+    lease_seconds: int,
+) -> None:
+    """Leases that are too short or too long should fail configuration."""
+
+    with pytest.raises(ValidationError):
+        create_settings(assistant_run_lease_seconds=lease_seconds)
+
+
+@pytest.mark.parametrize(
+    ("lease_seconds", "model_timeout_seconds"),
+    [(30, 30.0), (30, 31.0)],
+)
+def test_assistant_run_lease_must_outlast_the_model_timeout(
+    lease_seconds: int,
+    model_timeout_seconds: float,
+) -> None:
+    """A worker must retain its lease throughout one model attempt."""
+
+    with pytest.raises(
+        ValidationError,
+        match="ASSISTANT_RUN_LEASE_SECONDS must be greater than MODEL_TIMEOUT_SECONDS",
+    ):
+        create_settings(
+            assistant_run_lease_seconds=lease_seconds,
+            model_timeout_seconds=model_timeout_seconds,
+        )

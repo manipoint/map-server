@@ -133,3 +133,57 @@ def validate_client_event(event_data: object) -> ClientEvent:
     """Validate and route a client event according to its type."""
 
     return CLIENT_EVENT_ADAPTER.validate_python(event_data)
+
+
+class TravelResponseProcessingPayload(BaseModel):
+    """Tell the client that travel response generation is in progress."""
+
+    model_config = ConfigDict(extra="forbid")
+    client_message_id: UUID
+    conversation_id: UUID
+
+
+class TravelResponseProcessingEvent(WebSocketEvent):
+    """Report that one worker owns travel response generation."""
+
+    type: Literal["travel.response.processing"] = "travel.response.processing"
+    payload: TravelResponseProcessingPayload
+
+
+class TravelResponseCompletedPayload(BaseModel):
+    """Return a completed persisted assistant response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_message_id: UUID
+    conversation_id: UUID
+    assistant_message_id: UUID
+    content: str = Field(min_length=1)
+    is_duplicate: bool
+
+
+class TravelResponseCompletedEvent(WebSocketEvent):
+    """Return the final travel-assistant response."""
+
+    type: Literal["travel.response.completed"] = "travel.response.completed"
+    payload: TravelResponseCompletedPayload
+
+
+class TravelResponseFailedPayload(BaseModel):
+    """Report a safe response-generation failure."""
+
+    model_config = ConfigDict(extra="forbid")
+    client_message_id: UUID
+    conversation_id: UUID
+    code: Literal[
+        "model_timeout",
+        "provider_error",
+        "attempts_exhausted",
+    ]
+
+
+class TravelResponseFailedEvent(WebSocketEvent):
+    """Report a failure without exposing provider internals."""
+
+    type: Literal["travel.response.failed"] = "travel.response.failed"
+    payload: TravelResponseFailedPayload

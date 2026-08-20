@@ -13,6 +13,7 @@ from app.api.dependencies import (
     get_connection_manager,
     get_current_principal,
     get_database_session,
+    get_travel_response_service,
 )
 from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
@@ -108,6 +109,39 @@ def test_connection_manager_uses_the_application_resource() -> None:
     )
 
     assert get_connection_manager(request) is connection_manager
+
+
+def test_travel_response_service_uses_shared_graph_and_request_session() -> None:
+    """Travel responses should reuse the startup graph but keep DB work scoped."""
+
+    application = FastAPI()
+    settings = MagicMock(spec=Settings)
+    settings.conversation_history_message_limit = 20
+    settings.assistant_run_lease_seconds = 120
+    settings.max_model_attempts = 3
+    graph = object()
+    application.state.settings = settings
+    application.state.travel_graph = graph
+    request = Request(
+        {
+            "type": "http",
+            "app": application,
+        }
+    )
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = asyncio.run(
+        get_travel_response_service(
+            request=request,
+            database_session=database_session,
+        )
+    )
+
+    assert service.graph is graph
+    assert service.processing.session is database_session
+    assert service.processing.history_limit == 20
+    assert service.assistant_run_lease_seconds == 120
+    assert service.max_model_attempts == 3
 
 
 def test_current_principal_rejects_missing_credentials() -> None:

@@ -14,6 +14,8 @@ from app.database.session import (
     create_database_engine,
     create_session_factory,
 )
+from app.graph.builder import build_travel_graph
+from app.graph.subgraphs.model_gateway import build_model_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,13 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     try:
         session_factory = create_session_factory(database_engine)
+        model_gateway = build_model_gateway(settings=settings)
+        travel_graph = build_travel_graph(model_gateway=model_gateway)
         connection_manager = ConnectionManager()
         application.state.database_engine = database_engine
         application.state.session_factory = session_factory
         application.state.connection_manager = connection_manager
+        application.state.travel_graph = travel_graph
 
         logger.info(
             "Application started",

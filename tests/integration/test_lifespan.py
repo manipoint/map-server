@@ -13,6 +13,14 @@ from app.api.websocket.connection_manager import ConnectionManager
 from app.config import Settings
 
 
+@pytest.fixture(autouse=True)
+def mock_travel_graph_construction(monkeypatch):
+    """Keep lifespan tests independent from external provider configuration."""
+
+    monkeypatch.setattr(lifespan_module, "build_model_gateway", MagicMock())
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", MagicMock())
+
+
 def create_url_settings() -> Settings:
     """Create deterministic URL-mode settings for lifespan tests."""
 
@@ -88,6 +96,37 @@ def test_lifespan_creates_and_disposes_database_resources(
         assert isinstance(application.state.connection_manager, ConnectionManager)
 
     fake_engine.dispose.assert_awaited_once()
+
+
+def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
+    """Startup should construct the provider gateway and compiled graph once."""
+
+    fake_engine = AsyncMock()
+    fake_gateway = object()
+    fake_graph = object()
+    build_gateway = MagicMock(return_value=fake_gateway)
+    build_graph = MagicMock(return_value=fake_graph)
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
+    settings = create_url_settings()
+    application = main_module.create_app(settings)
+
+    with TestClient(application):
+        assert application.state.travel_graph is fake_graph
+
+    build_gateway.assert_called_once_with(settings=settings)
+    build_graph.assert_called_once_with(model_gateway=fake_gateway)
 
 
 def test_lifespan_closes_websockets_before_disposing_database(
