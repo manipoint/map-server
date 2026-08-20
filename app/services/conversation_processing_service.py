@@ -13,6 +13,7 @@ from app.database.repositories.assistant_runs import (
     AssistantRunRepository,
 )
 from app.database.repositories.messages import MessageRepository
+from app.domain.enums import AssistantRunStatus
 from app.services.conversation_service import AcceptedTravelRequest
 
 
@@ -53,6 +54,18 @@ class ProcessingStart:
             self.context.cached_reply is None
             and self.claim is not None
             and self.claim.acquired
+        )
+
+    def is_attempts_exhausted(self, *, max_attempts: int) -> bool:
+        """Return whether a failed run has no retry attempts remaining."""
+
+        if self.context.cached_reply is not None or self.claim is None:
+            return False
+
+        return (
+            not self.claim.acquired
+            and self.claim.run.status == AssistantRunStatus.FAILED
+            and self.claim.run.attempt_count >= max_attempts
         )
 
 

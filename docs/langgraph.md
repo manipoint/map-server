@@ -6,6 +6,32 @@ The graph must minimize unnecessary LLM calls, support missing-input pauses, iso
 
 Authentication and WebSocket transport remain outside the graph. A request enters only after FastAPI has authenticated the session and validated the outer event envelope.
 
+## Current implemented baseline
+
+The current graph is deliberately small while provider tools are still being built:
+
+```text
+START → invoke_model → build_response → END
+```
+
+- Persisted bounded conversation history is converted to `HumanMessage` and `AIMessage` values.
+- `FallbackModelGateway` tries configured providers in order: Groq, Google, then OpenAI.
+- A provider exception, non-AI response, or blank text moves to the next provider. Task cancellation propagates and never triggers fallback.
+- The final node accepts only a non-empty plain-text `AIMessage` and exposes it as `assistant_response`.
+- The graph has no tool loop yet. Flight, hotel, places, weather, and currency flows remain planned subgraphs.
+
+The implemented state is intentionally narrower than the target state below:
+
+```python
+class TravelGraphState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    locale: str
+    assistant_response: NotRequired[str]
+    error_code: NotRequired[str]
+```
+
+`ConversationProcessingService` remains outside the graph. It owns database leases and atomic message persistence; the graph never receives an `AsyncSession`, a WebSocket, API keys, or raw provider payloads.
+
 ## State contract
 
 The initial state should be a typed mapping with compact, serializable values:

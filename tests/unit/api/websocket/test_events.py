@@ -17,8 +17,11 @@ from app.api.websocket.events import (
     TravelRequestEvent,
     TravelRequestRejectedEvent,
     TravelRequestRejectedPayload,
+    TravelResponseFailedEvent,
+    TravelResponseFailedPayload,
     validate_client_event,
 )
+from app.domain.enums import TravelResponseErrorCode
 
 
 def create_ready_payload_data() -> dict[str, object]:
@@ -192,6 +195,35 @@ def test_connection_ping_event_validates_a_complete_client_envelope() -> None:
     assert event.type == "connection.ping"
     assert event.sent_at == sent_at
     assert event.payload.model_dump() == {}
+
+
+@pytest.mark.parametrize("code", list(TravelResponseErrorCode))
+def test_travel_response_failed_event_serializes_only_shared_safe_codes(
+    code: TravelResponseErrorCode,
+) -> None:
+    """Every public response failure code should serialize consistently."""
+
+    event = TravelResponseFailedEvent(
+        payload=TravelResponseFailedPayload(
+            client_message_id=uuid4(),
+            conversation_id=uuid4(),
+            code=code,
+        )
+    )
+
+    assert event.payload.code is code
+    assert event.model_dump(mode="json")["payload"]["code"] == code.value
+
+
+def test_travel_response_failed_payload_rejects_legacy_or_internal_codes() -> None:
+    """Protocol failures must use the centrally defined safe vocabulary."""
+
+    with pytest.raises(ValidationError):
+        TravelResponseFailedPayload(
+            client_message_id=uuid4(),
+            conversation_id=uuid4(),
+            code="model_timeout",
+        )
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,24 @@ wss://api.example.com/ws/travel
 
 Local development may use `ws://127.0.0.1`, but every shared environment must use WSS.
 
+## Current implemented protocol baseline
+
+The current endpoint is `/ws/travel`. It accepts `connection.ping` and `travel.request` events. `travel.request` contains a `client_message_id`, optional `conversation_id`, message text, and locale.
+
+For each accepted request the server sends `travel.request.accepted` immediately, then one of:
+
+```text
+travel.response.processing
+travel.response.completed
+travel.response.failed
+```
+
+`travel.response.completed` includes the persisted assistant message ID, content, and duplicate indicator. Public response failure codes are `provider_error`, `generation_failed`, and `attempts_exhausted`; no provider body, stack trace, token, or credential is sent to Flutter.
+
+Response generation runs in a background task per accepted request. Each connection serializes outbound events with a per-connection send lock, so a slow model invocation does not block heartbeats or another inbound request. On disconnect, pending response tasks are cancelled and awaited; their assistant-run lease can later expire and be reclaimed safely.
+
+The broader event names and request-ID contract documented below remain the target protocol for MCP search, interrupts, cancellation, and itineraries.
+
 ## Connection lifecycle
 
 ```mermaid

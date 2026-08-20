@@ -6,6 +6,18 @@ The model gateway selects the least expensive capable model, applies a controlle
 
 Structured operations such as flight searches, hotel availability, weather lookup, arithmetic, authentication, and database queries should not use an LLM.
 
+## Current implemented baseline
+
+`FallbackModelGateway` is configured from server-side settings and uses this fixed cost-aware order when the corresponding API key is present:
+
+```text
+Groq → Google Gemini → OpenAI
+```
+
+Each provider client receives `MODEL_TIMEOUT_SECONDS`. Provider-local retries are disabled (`0`) because retry/fallback ownership belongs to the gateway; this prevents hidden repeated calls and keeps cost/latency bounded. The gateway returns the first non-empty `AIMessage` response or raises a safe `ModelGatewayError` after every configured provider fails.
+
+The current route is a single chat-response route. Economy/quality profiles, circuit breakers, token accounting, and LangSmith production telemetry remain planned work.
+
 ## Routing classes
 
 | Route | Appropriate work | Behavior |

@@ -9,6 +9,7 @@ import pytest
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
 from app.database.repositories.assistant_runs import AssistantRunClaim
+from app.domain.enums import TravelResponseErrorCode
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_processing_service import (
     ConversationProcessingContext,
@@ -136,6 +137,38 @@ def test_generate_reply_reports_processing_when_another_worker_owns_claim() -> N
     processing.save_reply.assert_not_awaited()
 
 
+def test_generate_reply_reports_exhausted_attempts_without_model_work() -> None:
+    """A failed run at the retry cap should not spend another model request."""
+
+    request = create_accepted_request()
+    claim = create_claim(acquired=False)
+    claim.run.status = "failed"
+    claim.run.attempt_count = 3
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(request.user_message,),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    service, processing, graph = create_service(start=start)
+
+    result = asyncio.run(
+        service.generate_reply(
+            user_id=request.conversation.user_id,
+            accepted_request=request,
+        )
+    )
+
+    assert result.message is None
+    assert result.is_cached is False
+    assert result.is_processing is False
+    assert result.error_code is TravelResponseErrorCode.ATTEMPTS_EXHAUSTED
+    graph.ainvoke.assert_not_awaited()
+    processing.save_reply.assert_not_awaited()
+
+
 def test_generate_reply_invokes_graph_and_saves_an_owned_response() -> None:
     """An owned claim should generate one reply and persist it atomically."""
 
@@ -214,7 +247,7 @@ def test_generate_reply_marks_an_owned_claim_failed_when_model_is_unavailable() 
 
     processing.fail_processing.assert_awaited_once_with(
         claim=claim,
-        error_code="model_unavailable",
+        error_code=TravelResponseErrorCode.PROVIDER_ERROR,
     )
     processing.save_reply.assert_not_awaited()
 
@@ -245,7 +278,7 @@ def test_generate_reply_marks_an_owned_claim_failed_for_an_unexpected_error() ->
 
     processing.fail_processing.assert_awaited_once_with(
         claim=claim,
-        error_code="generation_failed",
+        error_code=TravelResponseErrorCode.GENERATION_FAILED,
     )
     processing.save_reply.assert_not_awaited()
 

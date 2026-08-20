@@ -243,6 +243,19 @@ Avoid indexing arbitrary JSONB until an observed query needs it.
 - Keep network calls outside long-running database transactions.
 - Use row-level locking or optimistic version checks when replacing an itinerary.
 
+## Implemented assistant-response coordination
+
+The implemented conversation baseline includes `app.conversations`, `app.messages`, and `app.assistant_runs`.
+
+- A user message has a client-generated `client_message_id` for idempotent acceptance.
+- An assistant message references exactly one user message through `reply_to_message_id`.
+- A unique assistant reply per user message prevents duplicate visible responses.
+- `assistant_runs` holds one processing lease per user message. A claim token and expiry let only one worker invoke the model.
+- Reply creation and run completion commit atomically. A stale worker cannot complete or fail a newer claim.
+- Failed runs may be reclaimed only while `attempt_count < MAX_MODEL_ATTEMPTS`; after the cap, the public result is `attempts_exhausted` and no extra model call occurs.
+
+Network/model work happens after the short claim transaction commits. The session is reused only for subsequent reply/failure persistence, so no database transaction is held while awaiting a provider.
+
 ## Raw provider payloads
 
 Raw responses can help diagnose parsing problems, but they may contain personal or commercially sensitive data. If retained:

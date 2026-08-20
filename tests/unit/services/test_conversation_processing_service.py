@@ -16,6 +16,7 @@ from app.database.repositories.assistant_runs import (
     AssistantRunRepository,
 )
 from app.database.repositories.messages import MessageRepository
+from app.domain.enums import AssistantRunStatus
 from app.services.conversation_processing_service import (
     ConversationProcessingContext,
     ConversationProcessingService,
@@ -154,6 +155,25 @@ def test_processing_start_never_invokes_the_model_for_a_cached_reply() -> None:
         context=context,
         claim=create_processing_claim(),
     ).should_invoke_model
+
+
+def test_processing_start_detects_a_failed_run_with_no_attempts_remaining() -> None:
+    """A failed run at the retry cap must not be reported as active processing."""
+
+    claim = create_processing_claim(acquired=False)
+    claim.run.status = AssistantRunStatus.FAILED
+    claim.run.attempt_count = 3
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=create_accepted_request(),
+            history=(),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+
+    assert start.is_attempts_exhausted(max_attempts=3)
+    assert not start.is_attempts_exhausted(max_attempts=4)
 
 
 def test_prepare_returns_cached_reply_without_loading_history() -> None:

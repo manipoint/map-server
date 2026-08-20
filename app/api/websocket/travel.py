@@ -46,6 +46,7 @@ from app.api.websocket.events import (
     validate_client_event,
 )
 from app.database.session import AsyncSessionFactory
+from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import ClientMessageConflictError, ConversationNotFoundError
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_service import AcceptedTravelRequest, ConversationService
@@ -124,6 +125,7 @@ async def travel_websocket(
         *,
         event: TravelRequestEvent,
         accepted_request: AcceptedTravelRequest,
+        code: TravelResponseErrorCode,
     ) -> None:
         """Send a safe failure response without leaking provider details."""
 
@@ -131,7 +133,7 @@ async def travel_websocket(
             payload=TravelResponseFailedPayload(
                 client_message_id=event.payload.client_message_id,
                 conversation_id=accepted_request.conversation.id,
-                code="provider_error",
+                code=code,
             )
         )
         await send_event(failed_event.model_dump(mode="json"))
@@ -155,12 +157,22 @@ async def travel_websocket(
                 await send_failed_response(
                     event=event,
                     accepted_request=accepted_request,
+                    code=TravelResponseErrorCode.PROVIDER_ERROR,
                 )
                 return
             except Exception:
                 await send_failed_response(
                     event=event,
                     accepted_request=accepted_request,
+                    code=TravelResponseErrorCode.GENERATION_FAILED,
+                )
+                return
+
+            if response_result.error_code is not None:
+                await send_failed_response(
+                    event=event,
+                    accepted_request=accepted_request,
+                    code=response_result.error_code,
                 )
                 return
 
@@ -178,6 +190,7 @@ async def travel_websocket(
                 await send_failed_response(
                     event=event,
                     accepted_request=accepted_request,
+                    code=TravelResponseErrorCode.GENERATION_FAILED,
                 )
                 return
 

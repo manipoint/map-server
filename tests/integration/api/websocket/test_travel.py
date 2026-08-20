@@ -40,6 +40,7 @@ from app.auth.service import AuthenticatedPrincipal
 from app.config import Settings
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
+from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import (
     ClientMessageConflictError,
     ConversationNotFoundError,
@@ -101,6 +102,7 @@ def mock_travel_response_generation(monkeypatch: pytest.MonkeyPatch) -> None:
                 message=None,
                 is_cached=False,
                 is_processing=True,
+                error_code=None,
             )
         ),
     )
@@ -326,6 +328,7 @@ def test_travel_websocket_reports_a_completed_response(
                 message=assistant_message,
                 is_cached=False,
                 is_processing=False,
+                error_code=None,
             )
         ),
     )
@@ -380,8 +383,49 @@ def test_travel_websocket_reports_a_safe_model_failure(
     event = TravelResponseFailedEvent.model_validate(message)
     assert event.payload.client_message_id == client_message_id
     assert event.payload.conversation_id == conversation_id
-    assert event.payload.code == "provider_error"
+    assert event.payload.code is TravelResponseErrorCode.PROVIDER_ERROR
     assert "provider secret detail" not in str(message)
+
+
+def test_travel_websocket_reports_exhausted_model_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry exhaustion should become a stable client-visible failure event."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(
+            return_value=create_accepted_request(conversation_id=conversation_id)
+        ),
+    )
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        AsyncMock(
+            return_value=TravelResponseResult(
+                message=None,
+                is_cached=False,
+                is_processing=False,
+                error_code=TravelResponseErrorCode.ATTEMPTS_EXHAUSTED,
+            )
+        ),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            websocket.receive_json()
+            message = websocket.receive_json()
+
+    event = TravelResponseFailedEvent.model_validate(message)
+    assert event.payload.code is TravelResponseErrorCode.ATTEMPTS_EXHAUSTED
 
 
 def test_travel_websocket_correlates_repeated_travel_requests(
@@ -477,6 +521,7 @@ def test_travel_websocket_pongs_while_a_model_response_is_running(
             message=None,
             is_cached=False,
             is_processing=True,
+            error_code=None,
         )
 
     monkeypatch.setattr(

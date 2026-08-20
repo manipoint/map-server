@@ -5,6 +5,7 @@ from uuid import UUID
 from langgraph.graph.state import CompiledStateGraph
 
 from app.database.models.message import Message
+from app.domain.enums import TravelResponseErrorCode
 from app.graph.nodes.input import build_travel_graph_input
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_processing_service import ConversationProcessingService
@@ -16,6 +17,7 @@ class TravelResponseResult:
     message: Message | None
     is_cached: bool
     is_processing: bool
+    error_code: TravelResponseErrorCode | None
 
 
 class TravelResponseService:
@@ -47,12 +49,26 @@ class TravelResponseService:
 
         if start.context.cached_reply is not None:
             return TravelResponseResult(
-                message=start.context.cached_reply, is_cached=True, is_processing=False
+                message=start.context.cached_reply,
+                is_cached=True,
+                is_processing=False,
+                error_code=None,
+            )
+
+        if start.is_attempts_exhausted(max_attempts=self.max_model_attempts):
+            return TravelResponseResult(
+                message=None,
+                is_cached=False,
+                is_processing=False,
+                error_code=TravelResponseErrorCode.ATTEMPTS_EXHAUSTED,
             )
 
         if not start.should_invoke_model:
             return TravelResponseResult(
-                message=None, is_cached=False, is_processing=True
+                message=None,
+                is_cached=False,
+                is_processing=True,
+                error_code=None,
             )
         claim = start.claim
         assert claim is not None
@@ -65,24 +81,26 @@ class TravelResponseService:
             save_reply = await self.processing.save_reply(
                 user_id=user_id,
                 accepted_request=accepted_request,
-                claim=start.claim,
+                claim=claim,
                 content=graph_result["assistant_response"],
             )
             return TravelResponseResult(
                 message=save_reply.message,
                 is_cached=save_reply.is_duplicate,
                 is_processing=False,
+                error_code=None,
             )
         except asyncio.CancelledError:
             raise
         except ModelGatewayError:
             await self.processing.fail_processing(
                 claim=claim,
-                error_code="model_unavailable",
+                error_code=TravelResponseErrorCode.PROVIDER_ERROR,
             )
             raise
         except Exception:
             await self.processing.fail_processing(
-                claim=start.claim, error_code="generation_failed"
+                claim=claim,
+                error_code=TravelResponseErrorCode.GENERATION_FAILED,
             )
             raise

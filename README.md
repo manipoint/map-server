@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, structured logging, Cloud SQL-capable asynchronous persistence, Alembic migrations, and revocable multi-device authentication API are implemented and tested. WebSockets, LangGraph orchestration, MCP travel tools, provider adapters, and itinerary persistence remain implementation targets documented under [`docs/`](docs/README.md).
+> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat transport, conversation persistence, assistant-run leases, a minimal LangGraph response flow, and ordered Groq → Google → OpenAI model fallback are implemented and tested. MCP travel tools, provider adapters, structured trip search, and itinerary persistence remain planned work documented under [`docs/`](docs/README.md).
 
 ## Product scope
 
@@ -43,6 +43,11 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/api/routes/auth.py` | Registration, login, token rotation, logout, and device-session endpoints. |
 | `app/auth/` | Password hashing, tokens, authentication services, schemas, and domain errors. |
 | `app/database/` | Async SQLAlchemy sessions, user/session models, and repositories. |
+| `app/services/conversation_service.py` | Idempotently persists conversations and user messages. |
+| `app/services/conversation_processing_service.py` | Coordinates assistant-run leases and atomic reply persistence. |
+| `app/services/travel_response_service.py` | Orchestrates cached replies, graph execution, retries, and safe failures. |
+| `app/graph/` | Minimal LangGraph state, model node, final-response node, and fallback gateway. |
+| `app/api/websocket/` | Authenticated `/ws/travel` protocol, background response tasks, and event schemas. |
 | `alembic/` | PostgreSQL schema migrations for users and authentication sessions. |
 | `app/observability/logging.py` | Structured JSON logging and sensitive-field redaction. |
 | `tests/` | Unit and integration tests for implemented behavior. |
@@ -137,11 +142,11 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | --- | --- | --- |
 | 1 | Complete | FastAPI shell, settings, health endpoints, middleware, and structured logging. |
 | 2 | Complete | Async PostgreSQL, Cloud SQL connector, Alembic migrations, users, and revocable authentication sessions. |
-| 3 | In progress | Versioned REST authentication API is complete; authenticated WebSocket transport is next. |
-| 4 | Planned | LangGraph state, request router, interrupts, and PostgreSQL checkpointer. |
+| 3 | Complete | Versioned REST authentication API, authenticated WebSocket transport, and durable conversation messages. |
+| 4 | In progress | Minimal LangGraph response flow, bounded history, model fallback, and assistant-run leases are complete; tools, interrupts, and checkpointing remain. |
 | 5 | Planned | Mounted FastMCP server and weather-tool migration. |
 | 6 | Planned | Flight, hotel, places, weather, and currency provider adapters. |
-| 7 | Planned | Model gateway, fallback policy, LangSmith traces, budgets, and evaluations. |
+| 7 | In progress | Ordered model gateway fallback and timeout controls are complete; LangSmith traces, budgets, circuit breaking, and evaluations remain. |
 | 8 | Planned | Container deployment, monitoring, and load testing. |
 
 ## Security

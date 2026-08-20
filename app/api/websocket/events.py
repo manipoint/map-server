@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.api.websocket.constants import PROTOCOL_VERSION
+from app.domain.enums import TravelResponseErrorCode
 
 
 def utc_now() -> datetime:
@@ -175,11 +176,7 @@ class TravelResponseFailedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     client_message_id: UUID
     conversation_id: UUID
-    code: Literal[
-        "model_timeout",
-        "provider_error",
-        "attempts_exhausted",
-    ]
+    code: TravelResponseErrorCode
 
 
 class TravelResponseFailedEvent(WebSocketEvent):
