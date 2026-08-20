@@ -30,6 +30,9 @@ from app.api.websocket.events import (
     ConnectionReadyEvent,
     TravelRequestAcceptedEvent,
     TravelRequestRejectedEvent,
+    TravelResponseCompletedEvent,
+    TravelResponseFailedEvent,
+    TravelResponseProcessingEvent,
 )
 from app.api.websocket.travel import router
 from app.auth.service import AuthenticatedPrincipal
@@ -40,7 +43,9 @@ from app.domain.errors import (
     ClientMessageConflictError,
     ConversationNotFoundError,
 )
+from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_service import AcceptedTravelRequest
+from app.services.travel_response_service import TravelResponseResult
 
 
 def create_travel_websocket_app(
@@ -80,6 +85,23 @@ def create_accepted_request(
         conversation=conversation,
         user_message=user_message,
         is_duplicate=is_duplicate,
+    )
+
+
+@pytest.fixture(autouse=True)
+def mock_travel_response_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep socket protocol tests independent from graph and database work."""
+
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        AsyncMock(
+            return_value=TravelResponseResult(
+                message=None,
+                is_cached=False,
+                is_processing=True,
+            )
+        ),
     )
 
 
@@ -247,6 +269,120 @@ def test_travel_websocket_acknowledges_a_valid_travel_request(
     assert call["session_factory"] is application.state.session_factory
 
 
+def test_travel_websocket_reports_an_existing_response_as_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unowned active claim should become a processing protocol event."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(
+            return_value=create_accepted_request(conversation_id=conversation_id)
+        ),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            websocket.receive_json()
+            message = websocket.receive_json()
+
+    event = TravelResponseProcessingEvent.model_validate(message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
+
+
+def test_travel_websocket_reports_a_completed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generated persisted message should become a completed protocol event."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    assistant_message = MagicMock(spec=Message)
+    assistant_message.id = uuid4()
+    assistant_message.content = "Three-day Lahore itinerary"
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(
+            return_value=create_accepted_request(conversation_id=conversation_id)
+        ),
+    )
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        AsyncMock(
+            return_value=TravelResponseResult(
+                message=assistant_message,
+                is_cached=False,
+                is_processing=False,
+            )
+        ),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            websocket.receive_json()
+            message = websocket.receive_json()
+
+    event = TravelResponseCompletedEvent.model_validate(message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
+    assert event.payload.assistant_message_id == assistant_message.id
+    assert event.payload.content == "Three-day Lahore itinerary"
+    assert event.payload.is_duplicate is False
+
+
+def test_travel_websocket_reports_a_safe_model_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider errors must not leak details through the WebSocket protocol."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(
+            return_value=create_accepted_request(conversation_id=conversation_id)
+        ),
+    )
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        AsyncMock(side_effect=ModelGatewayError("provider secret detail")),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            websocket.receive_json()
+            message = websocket.receive_json()
+
+    event = TravelResponseFailedEvent.model_validate(message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
+    assert event.payload.code == "provider_error"
+    assert "provider secret detail" not in str(message)
+
+
 def test_travel_websocket_correlates_repeated_travel_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -276,6 +412,7 @@ def test_travel_websocket_correlates_repeated_travel_requests(
                 )
             )
             first_acknowledgement = websocket.receive_json()
+            first_processing = websocket.receive_json()
 
             websocket.send_json(
                 create_travel_request_event(
@@ -283,6 +420,7 @@ def test_travel_websocket_correlates_repeated_travel_requests(
                 )
             )
             second_acknowledgement = websocket.receive_json()
+            second_processing = websocket.receive_json()
 
     assert first_acknowledgement["payload"]["client_message_id"] == str(
         first_message_id
@@ -296,6 +434,8 @@ def test_travel_websocket_correlates_repeated_travel_requests(
     assert second_acknowledgement["payload"]["conversation_id"] == str(
         second_conversation_id
     )
+    assert first_processing["type"] == "travel.response.processing"
+    assert second_processing["type"] == "travel.response.processing"
     assert persist_request.await_count == 2
 
 
@@ -313,11 +453,13 @@ def test_travel_websocket_keeps_heartbeat_routing_after_a_travel_request(
             websocket.receive_json()
             websocket.send_json(create_travel_request_event())
             acknowledgement = websocket.receive_json()
+            processing = websocket.receive_json()
 
             websocket.send_json(create_ping_event())
             pong = websocket.receive_json()
 
     assert acknowledgement["type"] == "travel.request.accepted"
+    assert processing["type"] == "travel.response.processing"
     assert pong["type"] == "connection.pong"
 
 

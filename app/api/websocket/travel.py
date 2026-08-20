@@ -24,6 +24,7 @@ from app.api.websocket.dependencies import (
     WebSocketPrincipal,
     WebSocketSessionFactoryDependency,
     WebSocketSettingsDependency,
+    create_travel_response_service,
 )
 from app.api.websocket.events import (
     ConnectionPingEvent,
@@ -35,27 +36,60 @@ from app.api.websocket.events import (
     TravelRequestEvent,
     TravelRequestRejectedEvent,
     TravelRequestRejectedPayload,
+    TravelResponseCompletedEvent,
+    TravelResponseCompletedPayload,
+    TravelResponseFailedEvent,
+    TravelResponseFailedPayload,
+    TravelResponseProcessingEvent,
+    TravelResponseProcessingPayload,
     validate_client_event,
 )
 from app.database.session import AsyncSessionFactory
 from app.domain.errors import ClientMessageConflictError, ConversationNotFoundError
+from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_service import AcceptedTravelRequest, ConversationService
+from app.services.travel_response_service import TravelResponseResult
 
 router = APIRouter(tags=["travel-websocket"])
 
 
 async def persist_travel_request(
-    *, event: TravelRequestEvent, user_id: UUID, session_factory: AsyncSessionFactory
+    *,
+    event: TravelRequestEvent,
+    user_id: UUID,
+    session_factory: AsyncSessionFactory,
 ) -> AcceptedTravelRequest:
     """Persist one travel request using a short-lived database session."""
     async with session_factory() as database_session:
-        service = ConversationService(session=database_session)
-        return await service.accept_request(
+        conversation_service = ConversationService(session=database_session)
+        accepted_request = await conversation_service.accept_request(
             user_id=user_id,
             client_message_id=event.payload.client_message_id,
             conversation_id=event.payload.conversation_id,
             message=event.payload.message,
             locale=event.payload.locale,
+        )
+
+        return accepted_request
+
+
+async def generate_travel_response(
+    *,
+    websocket: WebSocket,
+    user_id: UUID,
+    accepted_request: AcceptedTravelRequest,
+    session_factory: AsyncSessionFactory,
+) -> TravelResponseResult:
+    """Generate one response using a separate short-lived database session."""
+
+    async with session_factory() as database_session:
+        response_service = create_travel_response_service(
+            websocket=websocket,
+            database_session=database_session,
+        )
+        return await response_service.generate_reply(
+            user_id=user_id,
+            accepted_request=accepted_request,
         )
 
 
@@ -172,5 +206,66 @@ async def travel_websocket(
                 )
             )
             await websocket.send_json(accepted_event.model_dump(mode="json"))
+            try:
+                response_result = await generate_travel_response(
+                    websocket=websocket,
+                    user_id=principal.user.id,
+                    accepted_request=accepted_request,
+                    session_factory=session_factory,
+                )
+            except ModelGatewayError:
+                failed_event = TravelResponseFailedEvent(
+                    payload=TravelResponseFailedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        conversation_id=accepted_request.conversation.id,
+                        code="provider_error",
+                    )
+                )
+                await websocket.send_json(failed_event.model_dump(mode="json"))
+                continue
+            except Exception:
+                failed_event = TravelResponseFailedEvent(
+                    payload=TravelResponseFailedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        conversation_id=accepted_request.conversation.id,
+                        code="provider_error",
+                    )
+                )
+                await websocket.send_json(failed_event.model_dump(mode="json"))
+                continue
+
+            if response_result.is_processing:
+                processing_event = TravelResponseProcessingEvent(
+                    payload=TravelResponseProcessingPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        conversation_id=accepted_request.conversation.id,
+                    )
+                )
+                await websocket.send_json(processing_event.model_dump(mode="json"))
+                continue
+
+            if response_result.message is None:
+                failed_event = TravelResponseFailedEvent(
+                    payload=TravelResponseFailedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        conversation_id=accepted_request.conversation.id,
+                        code="provider_error",
+                    )
+                )
+                await websocket.send_json(failed_event.model_dump(mode="json"))
+                continue
+
+            completed_event = TravelResponseCompletedEvent(
+                payload=TravelResponseCompletedPayload(
+                    client_message_id=client_event.payload.client_message_id,
+                    conversation_id=accepted_request.conversation.id,
+                    assistant_message_id=response_result.message.id,
+                    content=response_result.message.content,
+                    is_duplicate=(
+                        accepted_request.is_duplicate or response_result.is_cached
+                    ),
+                )
+            )
+            await websocket.send_json(completed_event.model_dump(mode="json"))
     finally:
         await connection_manager.unregister(connection_id=connection.connection_id)

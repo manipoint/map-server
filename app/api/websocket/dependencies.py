@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import Depends, WebSocket, WebSocketException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.websocket.connection_manager import ConnectionManager
 from app.api.websocket.constants import WS_UNAUTHORIZED_CODE, WS_UNAUTHORIZED_REASON
@@ -10,6 +11,8 @@ from app.auth.exceptions import AuthenticationError, InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
+from app.services.conversation_processing_service import ConversationProcessingService
+from app.services.travel_response_service import TravelResponseService
 
 
 def extract_bearer_token(authorization: str | None) -> str:
@@ -63,6 +66,27 @@ def get_websocket_session_factory(websocket: WebSocket) -> AsyncSessionFactory:
     """Return the application database-session factory."""
 
     return websocket.app.state.session_factory
+
+
+def create_travel_response_service(
+    *,
+    websocket: WebSocket,
+    database_session: AsyncSession,
+) -> TravelResponseService:
+    """Create one message-scoped travel response service."""
+
+    settings: Settings = websocket.app.state.settings
+    processing_service = ConversationProcessingService(
+        session=database_session,
+        history_limit=settings.conversation_history_message_limit,
+    )
+
+    return TravelResponseService(
+        processing_service=processing_service,
+        graph=websocket.app.state.travel_graph,
+        assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
+        max_model_attempts=settings.max_model_attempts,
+    )
 
 
 WebSocketPrincipal = Annotated[
