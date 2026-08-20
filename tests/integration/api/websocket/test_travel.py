@@ -1,5 +1,6 @@
 """Integration tests for the authenticated travel WebSocket endpoint."""
 
+import asyncio
 from json import dumps
 from time import sleep
 from unittest.mock import AsyncMock, MagicMock
@@ -461,6 +462,43 @@ def test_travel_websocket_keeps_heartbeat_routing_after_a_travel_request(
     assert acknowledgement["type"] == "travel.request.accepted"
     assert processing["type"] == "travel.response.processing"
     assert pong["type"] == "connection.pong"
+
+
+def test_travel_websocket_pongs_while_a_model_response_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow response task must not block the WebSocket receive loop."""
+
+    application = create_travel_websocket_app()
+
+    async def delayed_response(**_kwargs) -> TravelResponseResult:
+        await asyncio.sleep(0.2)
+        return TravelResponseResult(
+            message=None,
+            is_cached=False,
+            is_processing=True,
+        )
+
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(return_value=create_accepted_request()),
+    )
+    monkeypatch.setattr(travel, "generate_travel_response", delayed_response)
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(create_travel_request_event())
+            acknowledgement = websocket.receive_json()
+
+            websocket.send_json(create_ping_event())
+            pong = websocket.receive_json()
+            processing = websocket.receive_json()
+
+    assert acknowledgement["type"] == "travel.request.accepted"
+    assert pong["type"] == "connection.pong"
+    assert processing["type"] == "travel.response.processing"
 
 
 def test_travel_websocket_acknowledges_an_idempotent_duplicate(
