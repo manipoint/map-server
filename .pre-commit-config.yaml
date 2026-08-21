@@ -1,0 +1,26 @@
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff lint and safe fixes
+        entry: uv run --locked --no-sync ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --locked --no-sync ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: pytest
+        name: Pytest full suite
+        entry: uv run --locked --no-sync pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true

@@ -13,6 +13,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import StructuredTool
 
+from app.common.exceptions import ProviderUnavailableError
 from app.graph.builder import build_travel_graph
 from app.graph.exceptions import ToolRoundLimitError
 
@@ -42,6 +43,19 @@ def create_weather_tool(cities: list[str] | None = None) -> StructuredTool:
             "condition": "Sunny",
             "temperature_c": 35.0,
         }
+
+    return StructuredTool.from_function(
+        coroutine=get_current_weather,
+        name="get_current_weather",
+        description="Return current verified weather for a city.",
+    )
+
+
+def create_unavailable_weather_tool() -> StructuredTool:
+    """Create a weather tool with one safe expected provider failure."""
+
+    async def get_current_weather(city: str) -> dict[str, object]:
+        raise ProviderUnavailableError("secret provider failure detail")
 
     return StructuredTool.from_function(
         coroutine=get_current_weather,
@@ -161,3 +175,37 @@ def test_travel_graph_stops_repeated_tool_calls_at_the_configured_limit() -> Non
 
     assert cities == ["Lahore", "Lahore"]
     assert len(gateway.calls) == 3
+
+
+def test_travel_graph_recovers_from_an_expected_weather_provider_failure() -> None:
+    """The model should turn a safe tool error into a useful final response."""
+
+    gateway = FakeModelGateway(
+        [
+            weather_tool_call(1),
+            AIMessage(content="Verified weather is temporarily unavailable."),
+        ]
+    )
+    graph = build_travel_graph(
+        model_gateway=gateway,
+        tools=[create_unavailable_weather_tool()],
+        max_tool_rounds=2,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="Weather in Lahore?")],
+                "locale": "en-PK",
+            }
+        )
+    )
+
+    assert result["assistant_response"] == (
+        "Verified weather is temporarily unavailable."
+    )
+    tool_message = gateway.calls[1][-1]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.status == "error"
+    assert tool_message.content == "Verified travel data is temporarily unavailable."
+    assert "secret provider failure detail" not in tool_message.content

@@ -105,6 +105,31 @@ uv run ruff check app/main.py
 uv run ruff format --check app/main.py
 ```
 
+## Automatic checks before commit
+
+Install the repository's Git pre-commit hook once after cloning:
+
+```bash
+uv run pre-commit install
+```
+
+Before each commit, the hook runs Ruff safe fixes and formatting on staged Python
+files, followed by the complete pytest suite. If Ruff modifies a file or any test
+fails, the commit stops. Review and stage Ruff changes explicitly before retrying:
+
+```bash
+git add path/to/fixed_file.py
+git commit
+```
+
+Run the same hooks manually across the repository:
+
+```bash
+uv run pre-commit run --all-files
+```
+
+Do not bypass the hook with `git commit --no-verify` during normal development.
+
 ## Tests
 
 Run the complete test suite:

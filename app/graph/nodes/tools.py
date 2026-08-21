@@ -5,7 +5,14 @@ from collections.abc import Sequence
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import ToolNode
 
+from app.common.exceptions import ProviderError
 from app.graph.state import TravelGraphState
+
+
+def handle_provider_tool_error(error: ProviderError) -> str:
+    """Return safe model-visible text for expected provider failures."""
+
+    return "Verified travel data is temporarily unavailable."
 
 
 def create_tool_node(*, tools: Sequence[BaseTool]) -> ToolNode:
@@ -13,7 +20,11 @@ def create_tool_node(*, tools: Sequence[BaseTool]) -> ToolNode:
     if not tools:
         raise ValueError("at least one graph tool is required")
 
-    return ToolNode(list(tools), name="execute_tools")
+    return ToolNode(
+        list(tools),
+        name="execute_tools",
+        handle_tool_errors=handle_provider_tool_error,
+    )
 
 
 def increment_tool_round(
