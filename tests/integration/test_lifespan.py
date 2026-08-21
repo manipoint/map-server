@@ -30,6 +30,7 @@ def create_url_settings() -> Settings:
         database_url=SecretStr(
             "postgresql+asyncpg://travel_user:test@localhost/travel_test"
         ),
+        weather_api_key=SecretStr("test-weather-api-key"),
         jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
         refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
@@ -129,6 +130,57 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
     build_graph.assert_called_once_with(model_gateway=fake_gateway)
 
 
+def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
+    """Startup should share weather resources and close their HTTP client."""
+
+    fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    fake_weather_provider = object()
+    fake_mcp_server = object()
+    fake_mcp_client = object()
+    create_http_client = MagicMock(return_value=fake_http_client)
+    create_weather_provider = MagicMock(return_value=fake_weather_provider)
+    create_server = MagicMock(return_value=fake_mcp_server)
+    create_client = MagicMock(return_value=fake_mcp_client)
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(lifespan_module.httpx, "AsyncClient", create_http_client)
+    monkeypatch.setattr(
+        lifespan_module,
+        "WeatherApiClient",
+        create_weather_provider,
+    )
+    monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
+    monkeypatch.setattr(lifespan_module, "TravelMcpClient", create_client)
+    settings = create_url_settings()
+    application = main_module.create_app(settings)
+
+    with TestClient(application):
+        assert application.state.http_client is fake_http_client
+        assert application.state.weather_provider is fake_weather_provider
+        assert application.state.mcp_server is fake_mcp_server
+        assert application.state.mcp_client is fake_mcp_client
+
+    create_http_client.assert_called_once_with()
+    create_weather_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_server.assert_called_once_with(weather_provider=fake_weather_provider)
+    create_client.assert_called_once_with(mcp_server=fake_mcp_server)
+    fake_http_client.aclose.assert_awaited_once_with()
+
+
 def test_lifespan_closes_websockets_before_disposing_database(
     monkeypatch,
 ) -> None:
@@ -136,6 +188,7 @@ def test_lifespan_closes_websockets_before_disposing_database(
 
     operations: list[str] = []
     fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
     fake_manager = MagicMock(spec=ConnectionManager)
 
     async def close_all() -> int:
@@ -144,6 +197,9 @@ def test_lifespan_closes_websockets_before_disposing_database(
 
     async def dispose_engine() -> None:
         operations.append("database_disposed")
+
+    async def close_http_client() -> None:
+        operations.append("http_client_closed")
 
     def fake_create_engine(settings):
         assert settings is not None
@@ -155,6 +211,7 @@ def test_lifespan_closes_websockets_before_disposing_database(
 
     fake_manager.close_all = AsyncMock(side_effect=close_all)
     fake_engine.dispose = AsyncMock(side_effect=dispose_engine)
+    fake_http_client.aclose = AsyncMock(side_effect=close_http_client)
     monkeypatch.setattr(
         lifespan_module,
         "create_database_engine",
@@ -170,13 +227,57 @@ def test_lifespan_closes_websockets_before_disposing_database(
         "ConnectionManager",
         lambda: fake_manager,
     )
+    monkeypatch.setattr(
+        lifespan_module.httpx,
+        "AsyncClient",
+        lambda: fake_http_client,
+    )
     application = main_module.create_app(create_url_settings())
 
     with TestClient(application):
         assert application.state.connection_manager is fake_manager
 
-    assert operations == ["websockets_closed", "database_disposed"]
+    assert operations == [
+        "websockets_closed",
+        "http_client_closed",
+        "database_disposed",
+    ]
     fake_manager.close_all.assert_awaited_once_with()
+    fake_http_client.aclose.assert_awaited_once_with()
+    fake_engine.dispose.assert_awaited_once_with()
+
+
+def test_lifespan_disposes_database_when_http_cleanup_fails(monkeypatch) -> None:
+    """An HTTP cleanup failure must not leak the database engine."""
+
+    fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock(
+        side_effect=RuntimeError("http client cleanup failed")
+    )
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(
+        lifespan_module.httpx,
+        "AsyncClient",
+        lambda: fake_http_client,
+    )
+    application = main_module.create_app(create_url_settings())
+
+    with pytest.raises(RuntimeError, match="http client cleanup failed"):
+        with TestClient(application):
+            pass
+
+    fake_http_client.aclose.assert_awaited_once_with()
     fake_engine.dispose.assert_awaited_once_with()
 
 
@@ -259,6 +360,7 @@ def test_cloud_sql_lifespan_creates_and_closes_resources(monkeypatch) -> None:
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
+        weather_api_key=SecretStr("test-weather-api-key"),
         jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
         refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
@@ -306,6 +408,7 @@ def test_cloud_sql_lifespan_closes_connector_when_engine_disposal_fails(
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
+        weather_api_key=SecretStr("test-weather-api-key"),
         jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
         refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )
@@ -359,6 +462,7 @@ def test_cloud_sql_cleanup_runs_when_websocket_cleanup_fails(monkeypatch) -> Non
         database_user="travel_app",
         database_name="travel_assistant",
         database_password=SecretStr("test-password"),
+        weather_api_key=SecretStr("test-weather-api-key"),
         jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
         refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
     )

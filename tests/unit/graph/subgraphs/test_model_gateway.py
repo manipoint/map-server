@@ -84,6 +84,45 @@ def test_gateway_returns_the_first_valid_provider_response() -> None:
     assert fallback.calls == []
 
 
+def test_gateway_accepts_a_tool_call_without_text() -> None:
+    """A valid tool request should not trigger a fallback model call."""
+
+    tool_response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "get_current_weather",
+                "args": {"city": "Lahore"},
+                "id": "weather-call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    primary = FakeChatModel(tool_response)
+    fallback = FakeChatModel(AIMessage(content="Fallback itinerary"))
+    gateway = FallbackModelGateway(
+        [
+            ModelProvider(name="groq", client=primary),
+            ModelProvider(name="openai", client=fallback),
+        ]
+    )
+    messages = [HumanMessage(content="What is the weather in Lahore?")]
+
+    response = asyncio.run(gateway.generate(messages=messages))
+
+    assert response is tool_response
+    assert response.tool_calls == [
+        {
+            "name": "get_current_weather",
+            "args": {"city": "Lahore"},
+            "id": "weather-call-1",
+            "type": "tool_call",
+        }
+    ]
+    assert primary.calls == [messages]
+    assert fallback.calls == []
+
+
 def test_gateway_falls_back_after_a_provider_failure() -> None:
     """A provider exception should move to the next configured provider."""
 

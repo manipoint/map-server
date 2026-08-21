@@ -44,7 +44,7 @@ class ModelProvider:
 
 
 class FallbackModelGateway:
-    """Try configured chat providers in order until one returns valid text."""
+    """Try providers until one returns valid text or tool calls."""
 
     def __init__(self, providers: Sequence[ModelProvider]) -> None:
         if not providers:
@@ -60,7 +60,7 @@ class FallbackModelGateway:
         self.providers = tuple(providers)
 
     async def generate(self, *, messages: Sequence[BaseMessage]) -> AIMessage:
-        """Return the first valid text response from configured providers."""
+        """Return the first valid assistant or tool-call response."""
         if not messages:
             raise ValueError("model messages must not be empty")
         last_error: Exception | None = None
@@ -75,12 +75,16 @@ class FallbackModelGateway:
             if not isinstance(response, AIMessage):
                 last_error = TypeError("model provider returned a non-AI message")
                 continue
-
-            if not isinstance(response.content, str) or not response.content.strip():
+            has_text_response = isinstance(response.content, str) and bool(
+                response.content.strip()
+            )
+            has_tool_calls = bool(response.tool_calls)
+            if not has_text_response and not has_tool_calls:
                 last_error = ValueError(
-                    "model provider returned an empty or non-text response"
+                    "model provider returned neither text nor tool calls"
                 )
                 continue
+
             return response
         raise ModelGatewayError(
             "No configured model provider returned a valid response"

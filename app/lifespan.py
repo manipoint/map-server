@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from google.cloud.sql.connector import Connector
 
@@ -16,6 +17,9 @@ from app.database.session import (
 )
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
+from app.mcp.client import TravelMcpClient
+from app.mcp.server import create_mcp_server
+from app.providers.weather.client import WeatherApiClient
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     settings: Settings = application.state.settings
     cloud_sql_connector: Connector | None = None
     connection_manager: ConnectionManager | None = None
+    http_client: httpx.AsyncClient | None = None
 
     if settings.database_connection_mode == "cloud_sql":
         database_engine, cloud_sql_connector = await create_cloud_sql_resources(
@@ -39,10 +44,22 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         model_gateway = build_model_gateway(settings=settings)
         travel_graph = build_travel_graph(model_gateway=model_gateway)
         connection_manager = ConnectionManager()
+        http_client = httpx.AsyncClient()
+        weather_provider = WeatherApiClient(
+            http_client=http_client,
+            settings=settings,
+        )
+        mcp_server = create_mcp_server(weather_provider=weather_provider)
+        mcp_client = TravelMcpClient(mcp_server=mcp_server)
+
         application.state.database_engine = database_engine
         application.state.session_factory = session_factory
         application.state.connection_manager = connection_manager
         application.state.travel_graph = travel_graph
+        application.state.http_client = http_client
+        application.state.weather_provider = weather_provider
+        application.state.mcp_server = mcp_server
+        application.state.mcp_client = mcp_client
 
         logger.info(
             "Application started",
@@ -59,11 +76,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 )
         finally:
             try:
-                await database_engine.dispose()
-
+                if http_client is not None:
+                    await http_client.aclose()
             finally:
-                if cloud_sql_connector is not None:
-                    await cloud_sql_connector.close_async()
+                try:
+                    await database_engine.dispose()
+                finally:
+                    if cloud_sql_connector is not None:
+                        await cloud_sql_connector.close_async()
         logger.info(
             "Application stopped",
             extra={"app_env": settings.app_env},
