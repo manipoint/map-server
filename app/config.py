@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     )
     conversation_history_message_limit: int = Field(default=20, ge=1, le=100)
     assistant_run_lease_seconds: int = Field(default=120, ge=30, le=900)
+    max_tool_rounds: int = Field(default=2, ge=1, le=5)
 
     @model_validator(mode="after")
     def validate_database_configuration(self) -> Self:

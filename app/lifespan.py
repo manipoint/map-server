@@ -17,6 +17,7 @@ from app.database.session import (
 )
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
+from app.graph.tools import create_current_weather_tool
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.providers.weather.client import WeatherApiClient
@@ -41,8 +42,6 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     try:
         session_factory = create_session_factory(database_engine)
-        model_gateway = build_model_gateway(settings=settings)
-        travel_graph = build_travel_graph(model_gateway=model_gateway)
         connection_manager = ConnectionManager()
         http_client = httpx.AsyncClient()
         weather_provider = WeatherApiClient(
@@ -51,6 +50,13 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         )
         mcp_server = create_mcp_server(weather_provider=weather_provider)
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
+        weather_tool = create_current_weather_tool(mcp_client=mcp_client)
+        model_gateway = build_model_gateway(settings=settings, tools=[weather_tool])
+        travel_graph = build_travel_graph(
+            model_gateway=model_gateway,
+            tools=[weather_tool],
+            max_tool_rounds=settings.max_tool_rounds,
+        )
 
         application.state.database_engine = database_engine
         application.state.session_factory = session_factory

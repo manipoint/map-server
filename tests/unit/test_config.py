@@ -162,6 +162,22 @@ def test_conversation_history_uses_a_bounded_default() -> None:
     assert settings.conversation_history_message_limit == 20
 
 
+def test_tool_rounds_use_a_cost_bounded_default() -> None:
+    """A request should allow limited tool use without an unbounded model loop."""
+
+    settings = create_settings()
+
+    assert settings.max_tool_rounds == 2
+
+
+@pytest.mark.parametrize("tool_rounds", [0, 6])
+def test_tool_round_limit_rejects_values_outside_bounds(tool_rounds: int) -> None:
+    """Configuration should reject disabled or excessively costly tool loops."""
+
+    with pytest.raises(ValidationError):
+        create_settings(max_tool_rounds=tool_rounds)
+
+
 @pytest.mark.parametrize("history_limit", [0, 101])
 def test_conversation_history_limit_rejects_values_outside_bounds(
     history_limit: int,

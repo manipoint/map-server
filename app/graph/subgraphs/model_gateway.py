@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
@@ -33,6 +34,9 @@ class AsyncChatModel(Protocol):
 
     async def ainvoke(self, input: Sequence[BaseMessage]) -> BaseMessage:
         """Generate one chat response."""
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> "AsyncChatModel":
+        """Return a model configured with callable tools."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +95,9 @@ class FallbackModelGateway:
         ) from last_error
 
 
-def build_model_gateway(settings: Settings) -> FallbackModelGateway:
+def build_model_gateway(
+    settings: Settings, *, tools: Sequence[BaseTool] = ()
+) -> FallbackModelGateway:
     """Build configured model providers in cost-aware fallback order."""
 
     providers: list[ModelProvider] = []
@@ -100,11 +106,14 @@ def build_model_gateway(settings: Settings) -> FallbackModelGateway:
         providers.append(
             ModelProvider(
                 name="groq",
-                client=ChatGroq(
-                    model=settings.groq_model,
-                    api_key=settings.groq_api_key,
-                    timeout=settings.model_timeout_seconds,
-                    max_retries=0,
+                client=bind_model_tools(
+                    ChatGroq(
+                        model=settings.groq_model,
+                        api_key=settings.groq_api_key,
+                        timeout=settings.model_timeout_seconds,
+                        max_retries=0,
+                    ),
+                    tools=tools,
                 ),
             )
         )
@@ -113,11 +122,14 @@ def build_model_gateway(settings: Settings) -> FallbackModelGateway:
         providers.append(
             ModelProvider(
                 name="google",
-                client=ChatGoogleGenerativeAI(
-                    model=settings.google_model,
-                    api_key=settings.google_api_key,
-                    request_timeout=settings.model_timeout_seconds,
-                    retries=0,
+                client=bind_model_tools(
+                    ChatGoogleGenerativeAI(
+                        model=settings.google_model,
+                        api_key=settings.google_api_key,
+                        request_timeout=settings.model_timeout_seconds,
+                        retries=0,
+                    ),
+                    tools=tools,
                 ),
             )
         )
@@ -126,12 +138,27 @@ def build_model_gateway(settings: Settings) -> FallbackModelGateway:
         providers.append(
             ModelProvider(
                 name="openai",
-                client=ChatOpenAI(
-                    model=settings.openai_model,
-                    api_key=settings.openai_api_key,
-                    timeout=settings.model_timeout_seconds,
-                    max_retries=0,
+                client=bind_model_tools(
+                    ChatOpenAI(
+                        model=settings.openai_model,
+                        api_key=settings.openai_api_key,
+                        timeout=settings.model_timeout_seconds,
+                        max_retries=0,
+                    ),
+                    tools=tools,
                 ),
             )
         )
     return FallbackModelGateway(providers=providers)
+
+
+def bind_model_tools(
+    client: AsyncChatModel,
+    *,
+    tools: Sequence[BaseTool],
+) -> AsyncChatModel:
+    """Bind the same tools to a provider when tools are configured."""
+    if not tools:
+        return client
+
+    return client.bind_tools(tools=list(tools))

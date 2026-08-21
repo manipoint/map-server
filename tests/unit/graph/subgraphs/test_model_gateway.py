@@ -2,9 +2,11 @@
 
 import asyncio
 from collections.abc import Sequence
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.tools import BaseTool
 from pydantic import SecretStr
 
 import app.graph.subgraphs.model_gateway as model_gateway
@@ -23,6 +25,7 @@ class FakeChatModel:
     def __init__(self, result: BaseMessage | BaseException) -> None:
         self.result = result
         self.calls: list[list[BaseMessage]] = []
+        self.bound_tools_calls: list[list[BaseTool]] = []
 
     async def ainvoke(self, input: Sequence[BaseMessage]) -> BaseMessage:
         """Record input and return or raise the configured result."""
@@ -34,18 +37,27 @@ class FakeChatModel:
 
         return self.result
 
+    def bind_tools(self, tools: Sequence[BaseTool]) -> "FakeChatModel":
+        """Record model-facing tools and return the configured model."""
+
+        self.bound_tools_calls.append(list(tools))
+        return self
+
 
 class FakeModelConstructor:
     """Record provider client construction without creating network clients."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.models: list[FakeChatModel] = []
 
     def __call__(self, **kwargs: object) -> FakeChatModel:
         """Record keyword arguments and return a harmless async client."""
 
         self.calls.append(kwargs)
-        return FakeChatModel(AIMessage(content="Unused"))
+        model = FakeChatModel(AIMessage(content="Unused"))
+        self.models.append(model)
+        return model
 
 
 def create_settings(**overrides: object) -> Settings:
@@ -314,6 +326,39 @@ def test_build_model_gateway_uses_the_configured_cost_aware_order(
             "max_retries": 0,
         }
     ]
+    assert groq_constructor.models[0].bound_tools_calls == []
+    assert google_constructor.models[0].bound_tools_calls == []
+    assert openai_constructor.models[0].bound_tools_calls == []
+
+
+def test_build_model_gateway_binds_the_same_tools_to_every_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback providers should expose an identical model-facing tool contract."""
+
+    groq_constructor = FakeModelConstructor()
+    google_constructor = FakeModelConstructor()
+    openai_constructor = FakeModelConstructor()
+    monkeypatch.setattr(model_gateway, "ChatGroq", groq_constructor)
+    monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", google_constructor)
+    monkeypatch.setattr(model_gateway, "ChatOpenAI", openai_constructor)
+    weather_tool = MagicMock(spec=BaseTool)
+    settings = create_settings(
+        groq_api_key=SecretStr("test-groq-key"),
+        google_api_key=SecretStr("test-google-key"),
+        openai_api_key=SecretStr("test-openai-key"),
+    )
+
+    gateway = build_model_gateway(settings, tools=[weather_tool])
+
+    assert [provider.name for provider in gateway.providers] == [
+        "groq",
+        "google",
+        "openai",
+    ]
+    assert groq_constructor.models[0].bound_tools_calls == [[weather_tool]]
+    assert google_constructor.models[0].bound_tools_calls == [[weather_tool]]
+    assert openai_constructor.models[0].bound_tools_calls == [[weather_tool]]
 
 
 def test_build_model_gateway_can_use_google_as_the_only_provider(

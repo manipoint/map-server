@@ -105,6 +105,8 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
     fake_engine = AsyncMock()
     fake_gateway = object()
     fake_graph = object()
+    fake_weather_tool = object()
+    create_weather_tool = MagicMock(return_value=fake_weather_tool)
     build_gateway = MagicMock(return_value=fake_gateway)
     build_graph = MagicMock(return_value=fake_graph)
 
@@ -118,6 +120,11 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
         "create_session_factory",
         lambda engine: object(),
     )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_current_weather_tool",
+        create_weather_tool,
+    )
     monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
     monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
     settings = create_url_settings()
@@ -126,8 +133,18 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
     with TestClient(application):
         assert application.state.travel_graph is fake_graph
 
-    build_gateway.assert_called_once_with(settings=settings)
-    build_graph.assert_called_once_with(model_gateway=fake_gateway)
+    create_weather_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    build_gateway.assert_called_once_with(
+        settings=settings,
+        tools=[fake_weather_tool],
+    )
+    build_graph.assert_called_once_with(
+        model_gateway=fake_gateway,
+        tools=[fake_weather_tool],
+        max_tool_rounds=settings.max_tool_rounds,
+    )
 
 
 def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:

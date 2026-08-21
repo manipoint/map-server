@@ -13,3 +13,4 @@ class TravelGraphState(TypedDict):
     locale: str
     assistant_response: NotRequired[str]
     error_code: NotRequired[str]
+    tool_rounds: NotRequired[int]
