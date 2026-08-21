@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Sequence
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from app.graph.builder import build_travel_graph
 
@@ -38,5 +38,8 @@ def test_travel_graph_generates_a_final_assistant_response() -> None:
 
     assert result["assistant_response"] == "Here is your Lahore itinerary."
     assert len(gateway.calls) == 1
-    assert gateway.calls[0][0].content == "Plan Lahore trip"
+    assert isinstance(gateway.calls[0][0], SystemMessage)
+    assert gateway.calls[0][1].content == "Plan Lahore trip"
+    assert len(result["messages"]) == 2
+    assert all(not isinstance(message, SystemMessage) for message in result["messages"])
     assert result["messages"][-1].content == "Here is your Lahore itinerary."
