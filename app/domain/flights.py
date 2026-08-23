@@ -10,3 +10,11 @@ class FlightCabinClass(StrEnum):
     PREMIUM_ECONOMY = "premium_economy"
     BUSINESS = "business"
     FIRST = "first"
+
+
+class FlightSearchStatus(StrEnum):
+    """Normalized outcomes of a flight search."""
+
+    OFFERS_AVAILABLE = "offers_available"
+    NO_OFFERS = "no_offers"
+    GROUP_BOOKING_REQUIRED = "group_booking_required"

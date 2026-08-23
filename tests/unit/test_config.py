@@ -242,3 +242,87 @@ def test_assistant_run_lease_must_outlast_the_model_timeout(
             assistant_run_lease_seconds=lease_seconds,
             model_timeout_seconds=model_timeout_seconds,
         )
+
+
+def test_flight_provider_is_disabled_without_credentials_by_default() -> None:
+    """Non-flight deployments should start without requiring a Duffel token."""
+
+    settings = create_settings()
+
+    assert settings.flight_provider is None
+    assert settings.duffel_api_key is None
+    assert settings.duffel_base_url == "https://api.duffel.com"
+    assert settings.duffel_api_version == "v2"
+    assert settings.duffel_supplier_timeout_ms == 10_000
+
+
+def test_duffel_provider_requires_an_api_key() -> None:
+    """Enabling Duffel without credentials should fail during startup."""
+
+    with pytest.raises(
+        ValidationError,
+        match="DUFFEL_API_KEY is required when FLIGHT_PROVIDER=duffel",
+    ):
+        create_settings(
+            flight_provider="duffel",
+            duffel_api_key=None,
+        )
+
+
+def test_duffel_provider_accepts_safe_complete_configuration() -> None:
+    """A token and shorter supplier timeout should enable flight search."""
+
+    settings = create_settings(
+        flight_provider="duffel",
+        duffel_api_key=SecretStr("test-duffel-token"),
+        duffel_supplier_timeout_ms=10_000,
+        provider_timeout_seconds=15.0,
+    )
+
+    assert settings.flight_provider == "duffel"
+    assert settings.duffel_api_key is not None
+    assert settings.duffel_api_key.get_secret_value() == "test-duffel-token"
+
+
+@pytest.mark.parametrize(
+    ("supplier_timeout_ms", "http_timeout_seconds"),
+    [(15_000, 15.0), (16_000, 15.0)],
+)
+def test_duffel_supplier_timeout_must_be_shorter_than_http_timeout(
+    supplier_timeout_ms: int,
+    http_timeout_seconds: float,
+) -> None:
+    """HTTP should retain enough time to receive and parse Duffel's response."""
+
+    with pytest.raises(
+        ValidationError,
+        match="DUFFEL_SUPPLIER_TIMEOUT_MS must be less than",
+    ):
+        create_settings(
+            flight_provider="duffel",
+            duffel_api_key=SecretStr("test-duffel-token"),
+            duffel_supplier_timeout_ms=supplier_timeout_ms,
+            provider_timeout_seconds=http_timeout_seconds,
+        )
+
+
+@pytest.mark.parametrize("supplier_timeout_ms", [1_999, 60_001])
+def test_duffel_supplier_timeout_rejects_provider_unsupported_values(
+    supplier_timeout_ms: int,
+) -> None:
+    """Supplier timeout should stay inside Duffel's documented range."""
+
+    with pytest.raises(ValidationError):
+        create_settings(duffel_supplier_timeout_ms=supplier_timeout_ms)
+
+
+def test_duffel_configuration_loads_from_environment(monkeypatch) -> None:
+    """Deployment variables should activate Duffel without exposing its token."""
+
+    monkeypatch.setenv("FLIGHT_PROVIDER", "duffel")
+    monkeypatch.setenv("DUFFEL_API_KEY", "test-duffel-token")
+
+    settings = create_settings()
+
+    assert settings.flight_provider == "duffel"
+    assert settings.duffel_api_key is not None

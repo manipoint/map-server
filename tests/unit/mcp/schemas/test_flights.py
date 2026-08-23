@@ -53,8 +53,8 @@ def test_single_parent_can_travel_with_twins_using_one_infant_seat() -> None:
 
     search = create_search(
         adults=1,
-        infants_on_lap=1,
-        infants_with_seat=1,
+        infants_on_lap_ages=[1],
+        infants_with_seat_ages=[1],
     )
 
     assert search.total_travelers == 3
@@ -63,7 +63,7 @@ def test_single_parent_can_travel_with_twins_using_one_infant_seat() -> None:
 def test_two_adults_can_each_accompany_one_lap_infant() -> None:
     """The lap-infant relationship should apply per accompanying adult."""
 
-    search = create_search(adults=2, infants_on_lap=2)
+    search = create_search(adults=2, infants_on_lap_ages=[0, 1])
 
     assert search.total_travelers == 4
 
@@ -75,7 +75,7 @@ def test_excess_lap_infants_receive_an_actionable_validation_error() -> None:
         ValidationError,
         match="book additional infants with their own seat",
     ):
-        create_search(adults=1, infants_on_lap=2)
+        create_search(adults=1, infants_on_lap_ages=[0, 1])
 
 
 def test_flight_search_rejects_the_same_origin_and_destination() -> None:
@@ -106,9 +106,15 @@ def test_flight_search_rejects_return_before_departure() -> None:
         ("currency", "US"),
         ("currency", "123"),
         ("adults", 0),
-        ("children", -1),
-        ("infants_with_seat", -1),
-        ("infants_on_lap", -1),
+        ("children_ages", [1]),
+        ("children_ages", [18]),
+        ("infants_with_seat_ages", [-1]),
+        ("infants_with_seat_ages", [2]),
+        ("infants_on_lap_ages", [-1]),
+        ("infants_on_lap_ages", [2]),
+        ("children", 1),
+        ("infants_with_seat", 1),
+        ("infants_on_lap", 1),
         ("max_results", 0),
         ("max_results", 11),
     ],
@@ -130,9 +136,21 @@ def test_flight_search_accepts_round_trip_and_requested_cabin() -> None:
         return_date=date(2026, 9, 15),
         cabin_class="business",
         adults=2,
-        children=1,
+        children_ages=[8],
     )
 
     assert search.return_date == date(2026, 9, 15)
     assert search.cabin_class is FlightCabinClass.BUSINESS
     assert search.total_travelers == 3
+
+
+def test_flight_search_accepts_passenger_age_boundaries() -> None:
+    """Supported child and infant age endpoints should remain valid."""
+
+    search = create_search(
+        children_ages=[2, 17],
+        infants_with_seat_ages=[0],
+        infants_on_lap_ages=[1],
+    )
+
+    assert search.total_travelers == 5

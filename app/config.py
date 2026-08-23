@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     weather_api_url: str = "https://api.weatherapi.com/v1/current.json"
     tavily_api_key: SecretStr | None = None
 
+    flight_provider: Literal["duffel"] | None = None
+    duffel_api_key: SecretStr | None = None
+    duffel_base_url: str = "https://api.duffel.com"
+    duffel_api_version: Literal["v2"] = "v2"
+    duffel_supplier_timeout_ms: int = Field(
+        default=10_000,
+        ge=2_000,
+        le=60_000,
+    )
     # LLM models
     groq_model: str = "openai/gpt-oss-20b"
     google_model: str = "gemini-2.5-flash"
@@ -150,6 +159,21 @@ class Settings(BaseSettings):
         if self.assistant_run_lease_seconds <= self.model_timeout_seconds:
             raise ValueError(
                 "ASSISTANT_RUN_LEASE_SECONDS must be greater than MODEL_TIMEOUT_SECONDS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_flight_provider_configuration(self) -> Self:
+        """Validate configuration for the selected flight provider."""
+        if self.flight_provider != "duffel":
+            return self
+        if self.duffel_api_key is None:
+            raise ValueError("DUFFEL_API_KEY is required when FLIGHT_PROVIDER=duffel")
+        http_timeout_ms = self.provider_timeout_seconds * 1000
+
+        if self.duffel_supplier_timeout_ms >= http_timeout_ms:
+            raise ValueError(
+                "DUFFEL_SUPPLIER_TIMEOUT_MS must be less than PROVIDER_TIMEOUT_SECONDS"
             )
         return self
 
