@@ -4,12 +4,22 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import httpx
+from pydantic import ValidationError
 
-from app.common.exceptions import ProviderConfigurationError
+from app.common.exceptions import (
+    ProviderConfigurationError,
+    ProviderUnavailableError,
+)
 from app.config import Settings
-from app.providers.flights.duffel_mapper import build_duffel_offer_request
-from app.providers.flights.duffel_schemas import DuffelOfferRequestResponse
-from app.providers.flights.schemas import FlightSearchInput
+from app.providers.flights.duffel_mapper import (
+    build_duffel_offer_request,
+    map_duffel_search_result,
+)
+from app.providers.flights.duffel_schemas import (
+    DuffelOfferRequestResponse,
+    DuffelOffersListResponse,
+)
+from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 
 
 def utc_now() -> datetime:
@@ -86,3 +96,59 @@ class DuffelFlightClient:
 
         parsed_response = DuffelOfferRequestResponse.model_validate(response.json())
         return parsed_response.data.id
+
+    async def _list_offers(
+        self,
+        *,
+        offer_request_id: str,
+        request: FlightSearchInput,
+    ) -> DuffelOffersListResponse:
+        """Fetch a bounded, price-sorted page of Duffel offers."""
+
+        params: dict[str, str | int] = {
+            "offer_request_id": offer_request_id,
+            "limit": request.max_results,
+            "sort": "total_amount",
+        }
+
+        if request.nonstop_only:
+            params["max_connections"] = 0
+
+        response = await self.http_client.get(
+            self.offers_url,
+            headers=self.headers,
+            params=params,
+            timeout=self.settings.provider_timeout_seconds,
+        )
+        response.raise_for_status()
+
+        return DuffelOffersListResponse.model_validate(response.json())
+
+    async def search_flights(
+        self,
+        *,
+        request: FlightSearchInput,
+    ) -> FlightSearchResult:
+        """Search Duffel and return a normalized bounded result."""
+        try:
+            offer_request_id = await self._create_offer_request(request=request)
+            offers_response = await self._list_offers(
+                offer_request_id=offer_request_id, request=request
+            )
+            return map_duffel_search_result(
+                response=offers_response, request=request, searched_at=self.clock()
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {401, 403}:
+                raise ProviderConfigurationError(
+                    "Duffel flight provider credentials were rejected"
+                ) from error
+            raise ProviderUnavailableError("Flight provider is unavailable") from error
+
+        except httpx.HTTPError as error:
+            raise ProviderUnavailableError("Flight provider is unavailable") from error
+
+        except (TypeError, ValueError, ValidationError) as error:
+            raise ProviderUnavailableError(
+                "Flight provider returned an invalid response"
+            ) from error

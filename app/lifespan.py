@@ -17,9 +17,13 @@ from app.database.session import (
 )
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
-from app.graph.tools import create_current_weather_tool
+from app.graph.tools import (
+    create_current_weather_tool,
+    create_flight_search_tool,
+)
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
+from app.providers.flights.duffel_client import DuffelFlightClient
 from app.providers.weather.client import WeatherApiClient
 
 logger = logging.getLogger(__name__)
@@ -32,6 +36,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     cloud_sql_connector: Connector | None = None
     connection_manager: ConnectionManager | None = None
     http_client: httpx.AsyncClient | None = None
+    flight_provider: DuffelFlightClient | None = None
 
     if settings.database_connection_mode == "cloud_sql":
         database_engine, cloud_sql_connector = await create_cloud_sql_resources(
@@ -48,13 +53,28 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             http_client=http_client,
             settings=settings,
         )
-        mcp_server = create_mcp_server(weather_provider=weather_provider)
+        if settings.flight_provider == "duffel":
+            flight_provider = DuffelFlightClient(
+                http_client=http_client,
+                settings=settings,
+            )
+        mcp_server = create_mcp_server(
+            weather_provider=weather_provider,
+            flight_provider=flight_provider,
+        )
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
-        weather_tool = create_current_weather_tool(mcp_client=mcp_client)
-        model_gateway = build_model_gateway(settings=settings, tools=[weather_tool])
+        tools = [
+            create_current_weather_tool(
+                mcp_client=mcp_client,
+            )
+        ]
+        if flight_provider is not None:
+            tools.append(create_flight_search_tool(mcp_client=mcp_client))
+
+        model_gateway = build_model_gateway(settings=settings, tools=tools)
         travel_graph = build_travel_graph(
             model_gateway=model_gateway,
-            tools=[weather_tool],
+            tools=tools,
             max_tool_rounds=settings.max_tool_rounds,
         )
 
@@ -64,6 +84,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         application.state.travel_graph = travel_graph
         application.state.http_client = http_client
         application.state.weather_provider = weather_provider
+        application.state.flight_provider = flight_provider
         application.state.mcp_server = mcp_server
         application.state.mcp_client = mcp_client
 

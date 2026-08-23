@@ -76,6 +76,8 @@ def map_duffel_segment(
         arrival_airport=segment.destination.iata_code,
         departure_at=segment.departing_at,
         arrival_at=segment.arriving_at,
+        departure_time_zone=segment.origin.time_zone,
+        arrival_time_zone=segment.destination.time_zone,
         marketing_carrier_code=segment.marketing_carrier.iata_code,
         marketing_carrier_name=segment.marketing_carrier.name,
         marketing_flight_number=segment.marketing_carrier_flight_number,

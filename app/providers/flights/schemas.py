@@ -103,6 +103,8 @@ class FlightSegment(BaseModel):
 
     departure_at: datetime
     arrival_at: datetime
+    departure_time_zone: str = Field(min_length=1, max_length=64)
+    arrival_time_zone: str = Field(min_length=1, max_length=64)
     marketing_carrier_code: str = Field(
         min_length=2,
         max_length=3,

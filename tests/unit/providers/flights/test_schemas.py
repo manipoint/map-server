@@ -23,6 +23,8 @@ def create_segment(**overrides: object) -> FlightSegment:
         "arrival_airport": "KHI",
         "departure_at": datetime(2026, 9, 10, 8, tzinfo=UTC),
         "arrival_at": datetime(2026, 9, 10, 10, tzinfo=UTC),
+        "departure_time_zone": "Asia/Karachi",
+        "arrival_time_zone": "Asia/Karachi",
         "marketing_carrier_code": "PK",
         "marketing_carrier_name": "Pakistan International Airlines",
         "marketing_flight_number": "303",
@@ -75,6 +77,8 @@ def test_segment_normalizes_codes_and_accepts_timezone_aware_times() -> None:
     assert segment.operating_carrier_name == "Partner Airline"
     assert segment.operating_flight_number == "PA417"
     assert segment.departure_at.utcoffset() == timedelta(0)
+    assert segment.departure_time_zone == "Asia/Karachi"
+    assert segment.arrival_time_zone == "Asia/Karachi"
 
 
 def test_segment_accepts_provider_local_naive_times() -> None:
@@ -156,6 +160,8 @@ def test_segment_rejects_identical_airports() -> None:
         ("operating_flight_number", "PK-303"),
         ("marketing_carrier_name", " "),
         ("operating_carrier_name", " "),
+        ("departure_time_zone", " "),
+        ("arrival_time_zone", " "),
         ("duration_minutes", 0),
     ],
 )

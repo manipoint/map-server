@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
 from app.mcp.schemas.weather import CurrentWeatherInput
+from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.weather.schemas import CurrentWeather
 
 
@@ -47,4 +48,25 @@ class TravelMcpClient:
         except (AttributeError, TypeError, ValidationError) as error:
             raise ProviderUnavailableError(
                 "Current-weather tool returned an invalid response"
+            ) from error
+
+    async def search_flights(self, *, request: FlightSearchInput) -> FlightSearchResult:
+        """Search flights through MCP and validate the normalized result."""
+
+        arguments = request.model_dump(mode="json", exclude_none=True)
+        try:
+            result = await self.mcp_server.call_tool(
+                "search_flights", arguments=arguments
+            )
+        except Exception as error:
+            raise ProviderUnavailableError(
+                "Flight-search tool is unavailable"
+            ) from error
+        if result.is_error:
+            raise ProviderUnavailableError("Flight-search tool failed")
+        try:
+            return FlightSearchResult.model_validate(result.structured_content)
+        except (AttributeError, TypeError, ValidationError) as error:
+            raise ProviderUnavailableError(
+                "Flight-search tool returned an invalid response"
             ) from error

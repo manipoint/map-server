@@ -145,6 +145,7 @@ class DuffelPlace(DuffelResponseModel):
         max_length=3,
         pattern=r"^[A-Z]{3}$",
     )
+    time_zone: str = Field(min_length=1, max_length=64)
 
     @field_validator("iata_code", mode="before")
     @classmethod

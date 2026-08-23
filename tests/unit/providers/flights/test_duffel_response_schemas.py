@@ -16,8 +16,16 @@ def create_segment_payload(**overrides: object) -> dict[str, object]:
     """Create one realistic Duffel segment response payload."""
 
     values: dict[str, object] = {
-        "origin": {"iata_code": " lhe ", "name": "Lahore"},
-        "destination": {"iata_code": " dxb ", "name": "Dubai"},
+        "origin": {
+            "iata_code": " lhe ",
+            "name": "Lahore",
+            "time_zone": "Asia/Karachi",
+        },
+        "destination": {
+            "iata_code": " dxb ",
+            "name": "Dubai",
+            "time_zone": "Asia/Dubai",
+        },
         "departing_at": "2026-09-10T08:00:00",
         "arriving_at": "2026-09-10T10:00:00",
         "duration": "PT2H",
@@ -96,6 +104,8 @@ def test_list_response_parses_normalized_codes_price_duration_and_expiry() -> No
     assert segment.duration == timedelta(hours=2)
     assert segment.origin.iata_code == "LHE"
     assert segment.destination.iata_code == "DXB"
+    assert segment.origin.time_zone == "Asia/Karachi"
+    assert segment.destination.time_zone == "Asia/Dubai"
     assert segment.marketing_carrier.name == "Example Airways"
     assert segment.marketing_carrier.iata_code == "EX"
     assert segment.marketing_carrier_flight_number == "EX101"
@@ -126,7 +136,8 @@ def test_duffel_offer_rejects_naive_expiry() -> None:
     "overrides",
     [
         {"duration": "PT0S"},
-        {"origin": {"iata_code": "12A"}},
+        {"origin": {"iata_code": "12A", "time_zone": "Asia/Karachi"}},
+        {"origin": {"iata_code": "LHE", "time_zone": " "}},
         {"marketing_carrier": {"name": "Example", "iata_code": "E@"}},
     ],
 )

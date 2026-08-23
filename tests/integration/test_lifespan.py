@@ -21,19 +21,21 @@ def mock_travel_graph_construction(monkeypatch):
     monkeypatch.setattr(lifespan_module, "build_travel_graph", MagicMock())
 
 
-def create_url_settings() -> Settings:
-    """Create deterministic URL-mode settings for lifespan tests."""
+def create_url_settings(**overrides: object) -> Settings:
+    """Create deterministic URL-mode settings with optional overrides."""
 
-    return Settings(
-        _env_file=None,
-        database_connection_mode="url",
-        database_url=SecretStr(
+    values: dict[str, object] = {
+        "_env_file": None,
+        "database_connection_mode": "url",
+        "database_url": SecretStr(
             "postgresql+asyncpg://travel_user:test@localhost/travel_test"
         ),
-        weather_api_key=SecretStr("test-weather-api-key"),
-        jwt_signing_key=SecretStr("test-jwt-signing-key-0123456789abcdef"),
-        refresh_token_hash_key=SecretStr("test-refresh-hash-key-0123456789abcdef"),
-    )
+        "weather_api_key": SecretStr("test-weather-api-key"),
+        "jwt_signing_key": SecretStr("test-jwt-signing-key-0123456789abcdef"),
+        "refresh_token_hash_key": SecretStr("test-refresh-hash-key-0123456789abcdef"),
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def test_application_lifespan_logs_startup_and_shutdown(caplog, monkeypatch) -> None:
@@ -185,6 +187,7 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
     with TestClient(application):
         assert application.state.http_client is fake_http_client
         assert application.state.weather_provider is fake_weather_provider
+        assert application.state.flight_provider is None
         assert application.state.mcp_server is fake_mcp_server
         assert application.state.mcp_client is fake_mcp_client
 
@@ -193,8 +196,111 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
         http_client=fake_http_client,
         settings=settings,
     )
-    create_server.assert_called_once_with(weather_provider=fake_weather_provider)
+    create_server.assert_called_once_with(
+        weather_provider=fake_weather_provider,
+        flight_provider=None,
+    )
     create_client.assert_called_once_with(mcp_server=fake_mcp_server)
+    fake_http_client.aclose.assert_awaited_once_with()
+
+
+def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
+    """Duffel configuration should create one provider using the shared client."""
+
+    fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    fake_weather_provider = object()
+    fake_flight_provider = object()
+    fake_mcp_server = object()
+    fake_weather_tool = object()
+    fake_flight_tool = object()
+    fake_gateway = object()
+    fake_graph = object()
+    create_weather_provider = MagicMock(return_value=fake_weather_provider)
+    create_flight_provider = MagicMock(return_value=fake_flight_provider)
+    create_server = MagicMock(return_value=fake_mcp_server)
+    create_weather_tool = MagicMock(return_value=fake_weather_tool)
+    create_flight_tool = MagicMock(return_value=fake_flight_tool)
+    build_gateway = MagicMock(return_value=fake_gateway)
+    build_graph = MagicMock(return_value=fake_graph)
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(
+        lifespan_module.httpx,
+        "AsyncClient",
+        MagicMock(return_value=fake_http_client),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "WeatherApiClient",
+        create_weather_provider,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "DuffelFlightClient",
+        create_flight_provider,
+    )
+    monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_current_weather_tool",
+        create_weather_tool,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_flight_search_tool",
+        create_flight_tool,
+    )
+    monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
+    settings = create_url_settings(
+        flight_provider="duffel",
+        duffel_api_key=SecretStr("test-duffel-key"),
+    )
+    application = main_module.create_app(settings)
+
+    with TestClient(application):
+        assert application.state.flight_provider is fake_flight_provider
+        assert application.state.travel_graph is fake_graph
+
+    create_weather_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_flight_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_server.assert_called_once_with(
+        weather_provider=fake_weather_provider,
+        flight_provider=fake_flight_provider,
+    )
+    create_weather_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    create_flight_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    expected_tools = [fake_weather_tool, fake_flight_tool]
+    build_gateway.assert_called_once_with(
+        settings=settings,
+        tools=expected_tools,
+    )
+    build_graph.assert_called_once_with(
+        model_gateway=fake_gateway,
+        tools=expected_tools,
+        max_tool_rounds=settings.max_tool_rounds,
+    )
     fake_http_client.aclose.assert_awaited_once_with()
 
 

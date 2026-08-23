@@ -35,8 +35,8 @@ def create_segment_payload(**overrides: object) -> dict[str, object]:
     """Create a parsed-response-compatible Duffel segment payload."""
 
     values: dict[str, object] = {
-        "origin": {"iata_code": "LHE"},
-        "destination": {"iata_code": "DXB"},
+        "origin": {"iata_code": "LHE", "time_zone": "Asia/Karachi"},
+        "destination": {"iata_code": "DXB", "time_zone": "Asia/Dubai"},
         "departing_at": "2026-09-10T08:00:00",
         "arriving_at": "2026-09-10T11:00:00",
         "duration": "PT3H",
@@ -106,21 +106,23 @@ def test_offer_mapper_preserves_codeshare_price_currency_and_expiry() -> None:
     assert segment.operating_carrier_code == "PA"
     assert segment.operating_carrier_name == "Partner Air"
     assert segment.operating_flight_number == "501"
+    assert segment.departure_time_zone == "Asia/Karachi"
+    assert segment.arrival_time_zone == "Asia/Dubai"
 
 
 def test_offer_mapper_computes_connection_and_return_itineraries() -> None:
     """Multiple segments and the second slice should remain distinct."""
 
     connection = create_segment_payload(
-        origin={"iata_code": "DXB"},
-        destination={"iata_code": "LHR"},
+        origin={"iata_code": "DXB", "time_zone": "Asia/Dubai"},
+        destination={"iata_code": "LHR", "time_zone": "Europe/London"},
         departing_at="2026-09-10T13:00:00",
         arriving_at="2026-09-10T17:00:00",
         duration="PT4H",
     )
     inbound = create_segment_payload(
-        origin={"iata_code": "LHR"},
-        destination={"iata_code": "LHE"},
+        origin={"iata_code": "LHR", "time_zone": "Europe/London"},
+        destination={"iata_code": "LHE", "time_zone": "Asia/Karachi"},
         departing_at="2026-09-15T09:00:00",
         arriving_at="2026-09-15T17:00:00",
         duration="PT8H",
