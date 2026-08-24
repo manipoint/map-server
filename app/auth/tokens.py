@@ -11,6 +11,7 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 
 from app.auth.exceptions import InvalidAccessTokenError
+from app.common.time import utc_now
 from app.config import Settings
 
 
@@ -50,7 +51,7 @@ def create_access_token(
     issued_at: datetime | None = None,
 ) -> IssuedAccessToken:
     """Create a short-lived signed access token."""
-    issued_at = issued_at or datetime.now(UTC)
+    issued_at = issued_at or utc_now()
     expires_at = issued_at + timedelta(minutes=settings.access_token_ttl_minutes)
 
     payload = {
@@ -123,7 +124,7 @@ def create_refresh_token(
     issued_at: datetime | None = None,
 ) -> IssuedRefreshToken:
     """Create a high-entropy opaque refresh token."""
-    issued_at = issued_at or datetime.now(UTC)
+    issued_at = issued_at or utc_now()
     expires_at = issued_at + timedelta(days=settings.refresh_token_ttl_days)
     token = secrets.token_urlsafe(48)
 

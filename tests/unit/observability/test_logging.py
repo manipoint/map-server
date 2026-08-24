@@ -59,15 +59,29 @@ def test_json_formatter_redacts_sensitive_fields() -> None:
 
 
 def test_configure_logging_does_not_duplicate_handlers(monkeypatch) -> None:
-    """Repeated configuration should keep a single root handler."""
+    """Configuration should suppress HTTP URLs and keep one root handler."""
 
-    test_logger = logging.Logger("logging-configuration-test")
-    monkeypatch.setattr(logging, "getLogger", lambda: test_logger)
+    root_logger = logging.Logger("logging-configuration-test")
+    httpx_logger = logging.Logger("httpx")
+    httpcore_logger = logging.Logger("httpcore")
+    loggers = {
+        None: root_logger,
+        "httpx": httpx_logger,
+        "httpcore": httpcore_logger,
+    }
+    monkeypatch.setattr(
+        logging,
+        "getLogger",
+        lambda name=None: loggers[name],
+    )
 
     configure_logging("INFO")
     configure_logging("INFO")
 
-    assert len(test_logger.handlers) == 1
+    assert len(root_logger.handlers) == 1
+    assert root_logger.level == logging.INFO
+    assert httpx_logger.level == logging.WARNING
+    assert httpcore_logger.level == logging.WARNING
 
 
 def test_json_formatter_includes_context_request_id() -> None:

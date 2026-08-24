@@ -1,8 +1,5 @@
 """Duffel flight provider HTTP adapter."""
 
-from collections.abc import Callable
-from datetime import UTC, datetime
-
 import httpx
 from pydantic import ValidationError
 
@@ -10,7 +7,9 @@ from app.common.exceptions import (
     ProviderConfigurationError,
     ProviderUnavailableError,
 )
+from app.common.time import UtcClock, utc_now
 from app.config import Settings
+from app.providers.duffel import build_duffel_headers, build_duffel_url
 from app.providers.flights.duffel_mapper import (
     build_duffel_offer_request,
     map_duffel_search_result,
@@ -22,12 +21,6 @@ from app.providers.flights.duffel_schemas import (
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 
 
-def utc_now() -> datetime:
-    """Return the current timezone-aware UTC datetime."""
-
-    return datetime.now(UTC)
-
-
 class DuffelFlightClient:
     """Search flights through Duffel and return normalized results."""
 
@@ -36,7 +29,7 @@ class DuffelFlightClient:
         *,
         http_client: httpx.AsyncClient,
         settings: Settings,
-        clock: Callable[[], datetime] = utc_now,
+        clock: UtcClock = utc_now,
     ) -> None:
         if settings.flight_provider != "duffel":
             raise ProviderConfigurationError("Duffel flight provider is not configured")
@@ -47,32 +40,35 @@ class DuffelFlightClient:
             )
         self.http_client = http_client
         self.settings = settings
+        self.api_key = settings.duffel_api_key
         self.clock = clock
 
     @property
     def headers(self) -> dict[str, str]:
         """Return headers required by every Duffel request."""
 
-        return {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Duffel-Version": self.settings.duffel_api_version,
-            "Authorization": (
-                f"Bearer {self.settings.duffel_api_key.get_secret_value()}"
-            ),
-        }
+        return build_duffel_headers(
+            api_key=self.api_key,
+            api_version=self.settings.duffel_api_version,
+        )
 
     @property
     def offer_requests_url(self) -> str:
         """Return the Duffel offer-request endpoint."""
 
-        return f"{self.settings.duffel_base_url.rstrip('/')}/air/offer_requests"
+        return build_duffel_url(
+            base_url=self.settings.duffel_base_url,
+            path="air/offer_requests",
+        )
 
     @property
     def offers_url(self) -> str:
         """Return the Duffel offers-list endpoint."""
 
-        return f"{self.settings.duffel_base_url.rstrip('/')}/air/offers"
+        return build_duffel_url(
+            base_url=self.settings.duffel_base_url,
+            path="air/offers",
+        )
 
     async def _create_offer_request(
         self,

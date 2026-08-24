@@ -3,7 +3,7 @@
 import logging
 from asyncio import Lock
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket
@@ -14,6 +14,7 @@ from app.api.websocket.constants import (
     WS_SESSION_REVOKED_CODE,
     WS_SESSION_REVOKED_REASON,
 )
+from app.common.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class ConnectionManager:
             websocket=websocket,
             user_id=user_id,
             session_id=session_id,
-            connected_at=datetime.now(UTC),
+            connected_at=utc_now(),
         )
 
         async with self._lock:

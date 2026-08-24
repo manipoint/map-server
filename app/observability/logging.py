@@ -4,8 +4,8 @@ import json
 import logging
 import sys
 from collections.abc import Mapping
-from datetime import UTC, datetime
 
+from app.common.time import utc_now
 from app.observability.request_context import get_request_id
 
 _REDACTED_KEYS = frozenset(
@@ -62,7 +62,7 @@ class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Convert a log record into JSON."""
         payload: dict[str, object] = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": utc_now().isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -90,4 +90,6 @@ def configure_logging(log_level: str) -> None:
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
     root_logger.setLevel(log_level.upper())
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.captureWarnings(True)

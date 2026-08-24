@@ -7,8 +7,16 @@ import pytest
 
 from app.common.exceptions import ProviderUnavailableError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
-from app.graph.tools import create_current_weather_tool, create_flight_search_tool
+from app.domain.hotels import HotelSearchStatus
+from app.graph.tools import (
+    create_current_weather_tool,
+    create_flight_search_tool,
+    create_hotel_search_tool,
+)
+from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
+from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
+from app.providers.locations.schemas import ResolvedLocation
 from app.providers.weather.schemas import CurrentWeather
 
 
@@ -48,6 +56,29 @@ class FakeFlightMcpClient:
         return self.result
 
 
+class FakeHotelMcpClient:
+    """Record normalized hotel requests and return a configured response."""
+
+    def __init__(
+        self,
+        result: HotelSearchResult | HotelSearchGuidance | BaseException,
+    ) -> None:
+        self.result = result
+        self.requests: list[HotelSearchInput] = []
+
+    async def search_hotels(
+        self,
+        *,
+        request: HotelSearchInput,
+    ) -> HotelSearchResult | HotelSearchGuidance:
+        """Record the hotel request before returning or raising."""
+
+        self.requests.append(request)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
 def current_weather() -> CurrentWeather:
     """Build deterministic normalized weather for tool tests."""
 
@@ -73,6 +104,22 @@ def no_flight_offers() -> FlightSearchResult:
     )
 
 
+def no_hotel_options() -> HotelSearchResult:
+    """Build a deterministic normalized empty hotel result."""
+
+    return HotelSearchResult(
+        status=HotelSearchStatus.NO_HOTELS,
+        searched_at=datetime(2026, 8, 24, 12, tzinfo=UTC),
+        location=ResolvedLocation(
+            query="London, United Kingdom",
+            display_name="London, United Kingdom",
+            latitude=51.5071,
+            longitude=-0.1276,
+        ),
+        message="No current hotels were found.",
+    )
+
+
 def test_current_weather_tool_exposes_the_bounded_model_schema() -> None:
     """The model should discover one concise and validated city argument."""
 
@@ -81,7 +128,8 @@ def test_current_weather_tool_exposes_the_bounded_model_schema() -> None:
     )
 
     assert tool.name == "get_current_weather"
-    assert "current verified weather" in tool.description
+    assert "verified current conditions" in tool.description
+    assert "not a forecast" in tool.description
     assert tool.args_schema is not None
     schema = tool.args_schema.model_json_schema()
     assert schema["required"] == ["city"]
@@ -138,8 +186,8 @@ def test_flight_search_tool_exposes_bounded_model_schema() -> None:
     tool = create_flight_search_tool(mcp_client=FakeFlightMcpClient(no_flight_offers()))
 
     assert tool.name == "search_flights"
-    assert "exact age" in tool.description
-    assert "does not book" in tool.description
+    assert "exact child ages" in tool.description
+    assert "no booking" in tool.description
     assert tool.args_schema is FlightSearchInput
     schema = tool.args_schema.model_json_schema()
     assert schema["required"] == ["origin", "destination", "departure_date"]
@@ -228,6 +276,128 @@ def test_flight_search_tool_propagates_safe_provider_errors() -> None:
                     "origin": "LHE",
                     "destination": "DXB",
                     "departure_date": "2026-09-10",
+                }
+            )
+
+    asyncio.run(exercise())
+
+
+def test_hotel_search_tool_exposes_bounded_model_schema() -> None:
+    """The model should discover dates, rooms, family ages, and result bounds."""
+
+    tool = create_hotel_search_tool(mcp_client=FakeHotelMcpClient(no_hotel_options()))
+
+    assert tool.name == "search_hotels"
+    assert "every child's exact age" in tool.description
+    assert "no booking" in tool.description
+    assert tool.args_schema is HotelSearchInput
+    schema = tool.args_schema.model_json_schema()
+    assert schema["required"] == [
+        "destination",
+        "check_in_date",
+        "check_out_date",
+    ]
+    assert schema["properties"]["max_results"]["minimum"] == 1
+    assert schema["properties"]["max_results"]["maximum"] == 10
+    assert "children_ages" in schema["properties"]
+
+
+def test_hotel_search_tool_normalizes_family_request_and_returns_json() -> None:
+    """Model arguments should become one validated provider-independent request."""
+
+    async def exercise() -> None:
+        mcp_client = FakeHotelMcpClient(no_hotel_options())
+        tool = create_hotel_search_tool(mcp_client=mcp_client)
+
+        result = await tool.ainvoke(
+            {
+                "destination": " London, United Kingdom ",
+                "check_in_date": "2026-09-10",
+                "check_out_date": "2026-09-12",
+                "adults": 1,
+                "children_ages": [4, 8],
+                "rooms": 1,
+                "free_cancellation_only": True,
+                "max_results": 3,
+            }
+        )
+
+        request = mcp_client.requests[0]
+        assert request.destination == "London, United Kingdom"
+        assert request.total_guests == 3
+        assert request.free_cancellation_only is True
+        assert result["status"] == "no_hotels"
+        assert result["searched_at"] == "2026-08-24T12:00:00Z"
+
+    asyncio.run(exercise())
+
+
+def test_hotel_search_tool_returns_location_guidance_as_json() -> None:
+    """The model should receive actionable candidates for ambiguous locations."""
+
+    async def exercise() -> None:
+        guidance = HotelSearchGuidance(
+            status="location_ambiguous",
+            message="Please select one location.",
+            candidates=[
+                "London, United Kingdom",
+                "London, Ontario, Canada",
+            ],
+        )
+        tool = create_hotel_search_tool(mcp_client=FakeHotelMcpClient(guidance))
+
+        result = await tool.ainvoke(
+            {
+                "destination": "London",
+                "check_in_date": "2026-09-10",
+                "check_out_date": "2026-09-12",
+            }
+        )
+
+        assert result == guidance.model_dump(mode="json")
+
+    asyncio.run(exercise())
+
+
+def test_hotel_search_tool_rejects_invalid_rooms_before_mcp_call() -> None:
+    """Every room should have an adult before spending an MCP request."""
+
+    async def exercise() -> None:
+        mcp_client = FakeHotelMcpClient(no_hotel_options())
+        tool = create_hotel_search_tool(mcp_client=mcp_client)
+
+        with pytest.raises(ValueError, match="each room requires"):
+            await tool.ainvoke(
+                {
+                    "destination": "London, United Kingdom",
+                    "check_in_date": "2026-09-10",
+                    "check_out_date": "2026-09-12",
+                    "adults": 1,
+                    "rooms": 2,
+                }
+            )
+
+        assert mcp_client.requests == []
+
+    asyncio.run(exercise())
+
+
+def test_hotel_search_tool_propagates_safe_provider_errors() -> None:
+    """The graph tool should preserve the MCP client's sanitized failure."""
+
+    async def exercise() -> None:
+        tool = create_hotel_search_tool(
+            mcp_client=FakeHotelMcpClient(
+                ProviderUnavailableError("Hotel-search tool failed")
+            )
+        )
+
+        with pytest.raises(ProviderUnavailableError, match="tool failed"):
+            await tool.ainvoke(
+                {
+                    "destination": "London, United Kingdom",
+                    "check_in_date": "2026-09-10",
+                    "check_out_date": "2026-09-12",
                 }
             )
 

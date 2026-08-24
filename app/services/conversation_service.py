@@ -1,12 +1,12 @@
 """Conversation persistence use cases."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.time import utc_now
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
 from app.database.repositories.conversations import ConversationRepository
@@ -84,7 +84,7 @@ class ConversationService:
                 if conversation is None:
                     raise ConversationNotFoundError("Conversation was not found")
                 conversation.locale = locale
-                conversation.updated_at = datetime.now(UTC)
+                conversation.updated_at = utc_now()
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation.id,
                 client_message_id=client_message_id,

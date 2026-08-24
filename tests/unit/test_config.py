@@ -250,10 +250,12 @@ def test_flight_provider_is_disabled_without_credentials_by_default() -> None:
     settings = create_settings()
 
     assert settings.flight_provider is None
+    assert settings.hotel_provider is None
     assert settings.duffel_api_key is None
     assert settings.duffel_base_url == "https://api.duffel.com"
     assert settings.duffel_api_version == "v2"
     assert settings.duffel_supplier_timeout_ms == 10_000
+    assert settings.duffel_stays_radius_km == 5
 
 
 def test_duffel_provider_requires_an_api_key() -> None:
@@ -261,12 +263,61 @@ def test_duffel_provider_requires_an_api_key() -> None:
 
     with pytest.raises(
         ValidationError,
-        match="DUFFEL_API_KEY is required when FLIGHT_PROVIDER=duffel",
+        match="DUFFEL_API_KEY is required when a Duffel provider is enabled",
     ):
         create_settings(
             flight_provider="duffel",
             duffel_api_key=None,
         )
+
+
+def test_duffel_hotel_provider_requires_an_api_key() -> None:
+    """Stays cannot be enabled without shared Duffel credentials."""
+
+    with pytest.raises(
+        ValidationError,
+        match="DUFFEL_API_KEY is required when a Duffel provider is enabled",
+    ):
+        create_settings(
+            hotel_provider="duffel",
+            duffel_api_key=None,
+        )
+
+
+def test_duffel_hotel_provider_accepts_shared_credentials() -> None:
+    """Hotel-only deployments should reuse one Duffel token."""
+
+    settings = create_settings(
+        hotel_provider="duffel",
+        duffel_api_key=SecretStr("test-duffel-token"),
+        duffel_stays_radius_km=10,
+        provider_timeout_seconds=5.0,
+    )
+
+    assert settings.flight_provider is None
+    assert settings.hotel_provider == "duffel"
+    assert settings.duffel_stays_radius_km == 10
+
+
+def test_duffel_flights_and_hotels_can_be_enabled_together() -> None:
+    """One shared token should support both configured Duffel products."""
+
+    settings = create_settings(
+        flight_provider="duffel",
+        hotel_provider="duffel",
+        duffel_api_key=SecretStr("test-duffel-token"),
+    )
+
+    assert settings.flight_provider == "duffel"
+    assert settings.hotel_provider == "duffel"
+
+
+@pytest.mark.parametrize("radius_km", [0, 101])
+def test_duffel_stays_radius_rejects_unsupported_values(radius_km: int) -> None:
+    """Hotel radius should remain inside Duffel's documented range."""
+
+    with pytest.raises(ValidationError):
+        create_settings(duffel_stays_radius_km=radius_km)
 
 
 def test_duffel_provider_accepts_safe_complete_configuration() -> None:
@@ -320,9 +371,13 @@ def test_duffel_configuration_loads_from_environment(monkeypatch) -> None:
     """Deployment variables should activate Duffel without exposing its token."""
 
     monkeypatch.setenv("FLIGHT_PROVIDER", "duffel")
+    monkeypatch.setenv("HOTEL_PROVIDER", "duffel")
     monkeypatch.setenv("DUFFEL_API_KEY", "test-duffel-token")
+    monkeypatch.setenv("DUFFEL_STAYS_RADIUS_KM", "8")
 
     settings = create_settings()
 
     assert settings.flight_provider == "duffel"
+    assert settings.hotel_provider == "duffel"
+    assert settings.duffel_stays_radius_km == 8
     assert settings.duffel_api_key is not None

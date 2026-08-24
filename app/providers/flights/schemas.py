@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
+from app.domain.value_objects import CurrencyCode
 
 ChildAge = Annotated[int, Field(ge=2, le=17)]
 InfantAge = Annotated[int, Field(ge=0, le=1)]
@@ -38,19 +39,14 @@ class FlightSearchInput(BaseModel):
     infants_on_lap_ages: list[InfantAge] = Field(default_factory=list)
     cabin_class: FlightCabinClass = FlightCabinClass.ECONOMY
     nonstop_only: bool = False
-    currency: str = Field(
-        default="USD",
-        min_length=3,
-        max_length=3,
-        pattern=r"^[A-Z]{3}$",
-    )
+    currency: CurrencyCode = "USD"
 
     max_results: int = Field(default=5, ge=1, le=10)
 
-    @field_validator("origin", "destination", "currency", mode="before")
+    @field_validator("origin", "destination", mode="before")
     @classmethod
     def normalize_search_codes(cls, value: object) -> object:
-        """Normalize airport and currency codes before validation."""
+        """Normalize airport codes before validation."""
 
         if isinstance(value, str):
             return value.strip().upper()
@@ -196,24 +192,11 @@ class FlightOffer(BaseModel):
     outbound: FlightItinerary
     return_itinerary: FlightItinerary | None = None
     total_price: Decimal = Field(ge=0)
-    currency: str = Field(
-        min_length=3,
-        max_length=3,
-        pattern=r"^[A-Z]{3}$",
-    )
+    currency: CurrencyCode
     traveler_count: int = Field(ge=1)
     seats_available: int | None = Field(default=None, ge=0)
     refundable: bool | None = None
     expires_at: datetime | None = None
-
-    @field_validator("currency", mode="before")
-    @classmethod
-    def normalize_currency(cls, value: object) -> object:
-        """Normalize the offer currency."""
-
-        if isinstance(value, str):
-            return value.strip().upper()
-        return value
 
     @field_validator("expires_at")
     @classmethod

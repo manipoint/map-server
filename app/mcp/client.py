@@ -2,12 +2,17 @@
 
 from typing import Any, Protocol
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
+from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.weather import CurrentWeatherInput
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
+from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.weather.schemas import CurrentWeather
+
+HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
+HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 
 
 class McpToolServer(Protocol):
@@ -69,4 +74,28 @@ class TravelMcpClient:
         except (AttributeError, TypeError, ValidationError) as error:
             raise ProviderUnavailableError(
                 "Flight-search tool returned an invalid response"
+            ) from error
+
+    async def search_hotels(self, *, request: HotelSearchInput) -> HotelSearchResponse:
+        """Search hotels through MCP and validate normalized results or guidance."""
+        arguments = request.model_dump(mode="json", exclude_none=True)
+        try:
+            result = await self.mcp_server.call_tool(
+                "search_hotels",
+                arguments=arguments,
+            )
+        except Exception as error:
+            raise ProviderUnavailableError(
+                "Hotel-search tool is unavailable"
+            ) from error
+
+        if result.is_error:
+            raise ProviderUnavailableError("Hotel-search tool failed")
+        try:
+            payload = result.structured_content["result"]
+            return HOTEL_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
+
+        except (AttributeError, KeyError, TypeError, ValidationError) as error:
+            raise ProviderUnavailableError(
+                "Hotel-search tool returned an invalid response"
             ) from error

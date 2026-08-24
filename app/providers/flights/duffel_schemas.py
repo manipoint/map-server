@@ -7,6 +7,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.flights import FlightCabinClass
+from app.domain.value_objects import CurrencyCode
 
 DuffelPassengerType = Literal[
     "adult",
@@ -230,27 +231,13 @@ class DuffelOfferResponse(DuffelResponseModel):
 
     id: str = Field(min_length=1, max_length=256)
     total_amount: Decimal = Field(ge=0)
-    total_currency: str = Field(
-        min_length=3,
-        max_length=3,
-        pattern=r"^[A-Z]{3}$",
-    )
+    total_currency: CurrencyCode
     expires_at: datetime
     slices: list[DuffelSliceResponse] = Field(
         min_length=1,
         max_length=2,
     )
     passengers: list[DuffelOfferPassenger] = Field(min_length=1)
-
-    @field_validator("total_currency", mode="before")
-    @classmethod
-    def normalize_currency(cls, value: object) -> object:
-        """Normalize Duffel's billing currency."""
-
-        if isinstance(value, str):
-            return value.strip().upper()
-
-        return value
 
     @field_validator("expires_at")
     @classmethod

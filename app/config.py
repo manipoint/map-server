@@ -63,9 +63,11 @@ class Settings(BaseSettings):
     # External APIs
     weather_api_key: SecretStr | None = None
     weather_api_url: str = "https://api.weatherapi.com/v1/current.json"
+    weather_search_api_url: str = "https://api.weatherapi.com/v1/search.json"
     tavily_api_key: SecretStr | None = None
 
     flight_provider: Literal["duffel"] | None = None
+    hotel_provider: Literal["duffel"] | None = None
     duffel_api_key: SecretStr | None = None
     duffel_base_url: str = "https://api.duffel.com"
     duffel_api_version: Literal["v2"] = "v2"
@@ -74,6 +76,12 @@ class Settings(BaseSettings):
         ge=2_000,
         le=60_000,
     )
+    duffel_stays_radius_km: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+    )
+
     # LLM models
     groq_model: str = "openai/gpt-oss-20b"
     google_model: str = "gemini-2.5-flash"
@@ -163,18 +171,27 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_flight_provider_configuration(self) -> Self:
-        """Validate configuration for the selected flight provider."""
-        if self.flight_provider != "duffel":
-            return self
-        if self.duffel_api_key is None:
-            raise ValueError("DUFFEL_API_KEY is required when FLIGHT_PROVIDER=duffel")
-        http_timeout_ms = self.provider_timeout_seconds * 1000
+    def validate_duffel_configuration(self) -> Self:
+        """Validate configuration for enabled Duffel products."""
 
-        if self.duffel_supplier_timeout_ms >= http_timeout_ms:
+        duffel_enabled = (
+            self.flight_provider == "duffel" or self.hotel_provider == "duffel"
+        )
+
+        if duffel_enabled and self.duffel_api_key is None:
             raise ValueError(
-                "DUFFEL_SUPPLIER_TIMEOUT_MS must be less than PROVIDER_TIMEOUT_SECONDS"
+                "DUFFEL_API_KEY is required when a Duffel provider is enabled"
             )
+
+        if self.flight_provider == "duffel":
+            http_timeout_ms = self.provider_timeout_seconds * 1000
+
+            if self.duffel_supplier_timeout_ms >= http_timeout_ms:
+                raise ValueError(
+                    "DUFFEL_SUPPLIER_TIMEOUT_MS must be less than "
+                    "PROVIDER_TIMEOUT_SECONDS"
+                )
+
         return self
 
 

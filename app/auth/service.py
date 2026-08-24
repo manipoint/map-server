@@ -1,7 +1,6 @@
 """Authentication application service."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from ipaddress import IPv4Address, IPv6Address
 from uuid import UUID
 
@@ -31,6 +30,7 @@ from app.auth.tokens import (
     decode_access_token,
     hash_refresh_token,
 )
+from app.common.time import utc_now
 from app.config import Settings
 from app.database.models import User
 from app.database.models.auth_session import AuthSession
@@ -91,7 +91,7 @@ class AuthService:
                 "An account with this email already exists"
             )
         password_hash = await hash_password(password=password)
-        issued_at = datetime.now(UTC)
+        issued_at = utc_now()
         try:
             try:
                 user = await self.users.create(
@@ -154,7 +154,7 @@ class AuthService:
             raise InvalidCredentialsError("Invalid email or password")
         if user.status != "active":
             raise AccountNotActiveError("User account is not active")
-        issued_at = datetime.now(UTC)
+        issued_at = utc_now()
         try:
             if updated_password_hash is not None:
                 await self.users.update_password_hash(user, updated_password_hash)
@@ -197,7 +197,7 @@ class AuthService:
     ) -> AuthenticationResult:
         """Rotate a valid refresh token and issue new credentials."""
 
-        issued_at = datetime.now(UTC)
+        issued_at = utc_now()
         refresh_token_hash = hash_refresh_token(refresh_token, self.settings)
 
         security_error: Exception | None = None
@@ -286,7 +286,7 @@ class AuthService:
     async def logout(self, *, user_id: UUID, session_id: UUID) -> bool:
         """Idempotently revoke one user-owned authentication session."""
 
-        revoked_at = datetime.now(UTC)
+        revoked_at = utc_now()
 
         try:
             auth_session = await self.auth_sessions.get_by_id_for_user(
@@ -314,7 +314,7 @@ class AuthService:
     ) -> int:
         """Revoke every active authentication session for a user."""
 
-        revoked_at = datetime.now(UTC)
+        revoked_at = utc_now()
 
         try:
             revoked_count = await self.auth_sessions.revoke_all_by_user(
@@ -335,7 +335,7 @@ class AuthService:
 
         return await self.auth_sessions.list_active_by_user(
             user_id,
-            current_time=datetime.now(UTC),
+            current_time=utc_now(),
         )
 
     async def authenticate_access_token(
@@ -349,7 +349,7 @@ class AuthService:
             access_token,
             self.settings,
         )
-        current_time = datetime.now(UTC)
+        current_time = utc_now()
 
         auth_session = await self.auth_sessions.get_by_id_for_user(
             session_id=claims.session_id,

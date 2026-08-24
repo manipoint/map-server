@@ -1,19 +1,13 @@
 """Versioned WebSocket event schemas."""
 
-from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.api.websocket.constants import PROTOCOL_VERSION
+from app.common.time import utc_now
 from app.domain.enums import TravelResponseErrorCode
-
-
-def utc_now() -> datetime:
-    """Return the current timezone-aware UTC time."""
-
-    return datetime.now(UTC)
 
 
 class WebSocketEvent(BaseModel):
