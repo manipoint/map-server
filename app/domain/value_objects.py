@@ -15,20 +15,20 @@ def normalize_upper_code(value: object) -> object:
 
 CurrencyCode = Annotated[
     str,
-    BeforeValidator(normalize_upper_code),
     StringConstraints(
         min_length=3,
         max_length=3,
         pattern=r"^[A-Z]{3}$",
     ),
+    BeforeValidator(normalize_upper_code),
 ]
 
 CountryCode = Annotated[
     str,
-    BeforeValidator(normalize_upper_code),
     StringConstraints(
         min_length=2,
         max_length=2,
         pattern=r"^[A-Z]{2}$",
     ),
+    BeforeValidator(normalize_upper_code),
 ]

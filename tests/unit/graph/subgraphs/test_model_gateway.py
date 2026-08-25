@@ -292,7 +292,7 @@ def test_build_model_gateway_uses_the_configured_cost_aware_order(
         google_model="google-test-model",
         openai_model="openai-test-model",
         model_timeout_seconds=45.0,
-        assistant_run_lease_seconds=60,
+        assistant_run_lease_seconds=120,
     )
 
     gateway = build_model_gateway(settings)

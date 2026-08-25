@@ -2,9 +2,21 @@
 
 ## Purpose
 
-PostgreSQL is the system of record for users, authentication sessions, conversations, trips, normalized provider results, itineraries, and usage records. LangGraph checkpoints use a separate schema so workflow persistence does not become coupled to product tables.
+PostgreSQL is the system of record for implemented users, authentication sessions, conversations, messages, and assistant-run leases. The target model also stores trips, normalized provider results, itineraries, usage records, and LangGraph checkpoints without coupling workflow state to product tables.
 
 The design targets third normal form for durable business data. Provider payloads may also be retained temporarily as JSONB for debugging and reconciliation, but they are not the primary query model.
+
+## Current migration status
+
+Alembic currently creates five product tables in the `app` schema:
+
+- `users`;
+- `auth_sessions`;
+- `conversations`;
+- `messages`;
+- `assistant_runs`.
+
+Trip, search-request, flight/hotel/place/weather snapshot, itinerary, provider-call, LLM-usage, audit, and LangGraph checkpoint tables shown later in this document are target design only.
 
 ## Schemas
 
@@ -81,6 +93,8 @@ erDiagram
 ```
 
 ## Travel result model
+
+This entire section is a target schema and has not been migrated yet.
 
 Search results are snapshots. A price must always include its currency, provider, capture time, and applicable conditions because external availability can change immediately.
 
@@ -273,6 +287,8 @@ Raw responses can help diagnose parsing problems, but they may contain personal 
 - Test restoration regularly; an untested backup is not a recovery plan.
 - Define retention separately for messages, provider payloads, usage records, and audit events.
 - Delete or anonymize user data according to the product privacy policy.
+
+The Cloud SQL configuration reported during the 25 August 2026 review was zonal with automated backups disabled. Treat that database as disposable development infrastructure until high availability, backups, point-in-time recovery, and a restore drill are enabled.
 
 ## Connection management
 

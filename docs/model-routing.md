@@ -16,9 +16,15 @@ Groq → Google Gemini → OpenAI
 
 Each provider client receives `MODEL_TIMEOUT_SECONDS`. Provider-local retries are disabled (`0`) because retry/fallback ownership belongs to the gateway; this prevents hidden repeated calls and keeps cost/latency bounded. The gateway returns the first non-empty `AIMessage` response or raises a safe `ModelGatewayError` after every configured provider fails.
 
-The current route is a single chat-response route. Economy/quality profiles, circuit breakers, token accounting, and LangSmith production telemetry remain planned work.
+Current configured model defaults are `openai/gpt-oss-20b` on Groq, `gemini-2.5-flash` on Google, and `gpt-4.1-mini` on OpenAI.
+
+The current fallback catches every ordinary provider exception and gives each provider a full per-call timeout. It does not yet classify safety, invalid-input, authentication, quota, or transient errors. `TravelResponseService` now wraps graph execution and atomic reply persistence in a shared 75-second default deadline, so the former theoretical 270-second model path is cancelled before the 120-second assistant lease expires. Configuration also reserves a minimum 15-second margin for timeout/failure handling; see [Reliability and SPOF Review](reliability.md).
+
+The current route is a single chat-response route. Economy/quality profiles, error-aware fallback, circuit breakers, token accounting, and LangSmith production telemetry remain planned work.
 
 ## Routing classes
+
+The classes and example model chains below are a target design, not implemented configuration.
 
 | Route | Appropriate work | Behavior |
 | --- | --- | --- |
@@ -58,6 +64,8 @@ flowchart TD
 
 ## Fallback eligibility
 
+This table defines the target policy. The current gateway falls back on every caught `Exception`, other than task cancellation/system-level exceptions that are not `Exception` subclasses.
+
 | Condition | Retry same provider | Try next model | Notes |
 | --- | ---: | ---: | --- |
 | Timeout or temporary network failure | Once | Yes | Respect the request deadline |
@@ -69,7 +77,7 @@ flowchart TD
 | MCP or travel-provider failure | Provider policy | No | Changing the LLM cannot repair a tool outage |
 | Authentication or configuration error | No | No | Alert operators; do not conceal it with fallback |
 
-All retries and fallbacks share a single end-to-end deadline. A request must never receive a fresh full timeout for every provider.
+All retries and fallbacks must share a single end-to-end deadline. The outer graph deadline now enforces that invariant even though each individual model client retains its configured per-call timeout. Future routing should additionally pass the remaining budget to each provider for clearer telemetry and earlier rejection.
 
 ## Stable model contract
 
@@ -107,6 +115,8 @@ If a provider fails after partial tokens have been shown, silently switching pro
 
 ## Circuit breaker
 
+Circuit breakers are not currently implemented. The following is the target state machine.
+
 Track failure state per provider and operation:
 
 ```mermaid
@@ -121,6 +131,8 @@ stateDiagram-v2
 An in-process breaker is acceptable for one MVP instance. Use shared state, such as Redis, only when multiple instances require coordinated provider health.
 
 ## LangSmith telemetry
+
+LangSmith settings exist, but application-specific trace metadata, sampling, usage, and cost instrumentation are not implemented yet.
 
 Attach non-secret metadata to every model run:
 

@@ -2,10 +2,12 @@
 
 from fastmcp import FastMCP
 
+from app.mcp.tools.currency import register_currency_tools
 from app.mcp.tools.flights import register_flight_tools
 from app.mcp.tools.hotels import register_hotel_tools
 from app.mcp.tools.places import register_place_tools
 from app.mcp.tools.weather import register_weather_tools
+from app.providers.currency.client import CurrencyProvider
 from app.providers.flights.client import FlightProvider
 from app.providers.weather.client import WeatherProvider
 from app.services.hotel_search_service import HotelSearchService
@@ -18,6 +20,7 @@ def create_mcp_server(
     flight_provider: FlightProvider | None = None,
     hotel_search_service: HotelSearchService | None = None,
     place_search_service: PlaceSearchService | None = None,
+    currency_provider: CurrencyProvider | None = None,
 ) -> FastMCP:
     """Build the internal Travel MCP server."""
 
@@ -38,4 +41,7 @@ def create_mcp_server(
             server,
             place_search_service=place_search_service,
         )
+
+    if currency_provider is not None:
+        register_currency_tools(server, currency_provider=currency_provider)
     return server

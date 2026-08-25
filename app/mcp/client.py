@@ -5,9 +5,14 @@ from typing import Any, Protocol
 from pydantic import TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
+from app.mcp.schemas.currency import CurrencyConversionGuidance
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
 from app.mcp.schemas.weather import CurrentWeatherInput
+from app.providers.currency.schemas import (
+    CurrencyConversionInput,
+    CurrencyConversionResult,
+)
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
@@ -15,9 +20,11 @@ from app.providers.weather.schemas import CurrentWeather
 
 HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
 PlaceSearchResponse = PlaceSearchResult | PlaceSearchGuidance
+CurrencyConversionResponse = CurrencyConversionResult | CurrencyConversionGuidance
 
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
+CURRENCY_CONVERSION_RESPONSE_ADAPTER = TypeAdapter(CurrencyConversionResponse)
 
 
 class McpToolServer(Protocol):
@@ -130,4 +137,38 @@ class TravelMcpClient:
         ) as error:
             raise ProviderUnavailableError(
                 "Place-search tool returned an invalid response"
+            ) from error
+
+    async def convert_currency(
+        self,
+        *,
+        request: CurrencyConversionInput,
+    ) -> CurrencyConversionResponse:
+        """Convert currency through MCP and validate the result or guidance."""
+
+        arguments = request.model_dump(mode="json")
+        try:
+            result = await self.mcp_server.call_tool(
+                "convert_currency",
+                arguments=arguments,
+            )
+        except Exception as error:
+            raise ProviderUnavailableError(
+                "Currency-conversion tool is unavailable"
+            ) from error
+
+        if result.is_error:
+            raise ProviderUnavailableError("Currency-conversion tool failed")
+
+        try:
+            payload = result.structured_content["result"]
+            return CURRENCY_CONVERSION_RESPONSE_ADAPTER.validate_python(payload)
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValidationError,
+        ) as error:
+            raise ProviderUnavailableError(
+                "Currency-conversion tool returned an invalid response"
             ) from error

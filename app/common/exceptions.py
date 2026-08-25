@@ -13,6 +13,10 @@ class ProviderUnavailableError(ProviderError):
     """Raised when a provider cannot return a usable response."""
 
 
+class CurrencyPairUnavailableError(ProviderError):
+    """Raised when no reference rate exists for a requested currency pair."""
+
+
 class LocationResolutionError(Exception):
     """Base error for unresolved user destinations."""
 

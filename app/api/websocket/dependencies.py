@@ -85,6 +85,7 @@ def create_travel_response_service(
         processing_service=processing_service,
         graph=websocket.app.state.travel_graph,
         assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
+        travel_response_timeout_seconds=settings.travel_response_timeout_seconds,
         max_model_attempts=settings.max_model_attempts,
     )
 

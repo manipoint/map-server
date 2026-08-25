@@ -189,26 +189,34 @@ def test_conversation_history_limit_rejects_values_outside_bounds(
 
 
 def test_assistant_run_lease_uses_a_safe_default() -> None:
-    """The default lease should allow one normal model attempt to finish."""
+    """The lease should outlive the graph deadline and completion margin."""
 
     settings = create_settings()
 
     assert settings.assistant_run_lease_seconds == 120
+    assert settings.travel_response_timeout_seconds == 75.0
+    assert settings.assistant_run_completion_margin_seconds == 15.0
+    assert settings.assistant_run_lease_seconds > (
+        settings.travel_response_timeout_seconds
+        + settings.assistant_run_completion_margin_seconds
+    )
 
 
 @pytest.mark.parametrize(
-    ("lease_seconds", "model_timeout_seconds"),
-    [(30, 29.9), (900, 30.0)],
+    ("lease_seconds", "graph_timeout_seconds", "completion_margin_seconds"),
+    [(30, 20.0, 5.0), (900, 600.0, 120.0)],
 )
 def test_assistant_run_lease_accepts_documented_boundaries(
     lease_seconds: int,
-    model_timeout_seconds: float,
+    graph_timeout_seconds: float,
+    completion_margin_seconds: float,
 ) -> None:
     """The configured lease range should include both documented endpoints."""
 
     settings = create_settings(
         assistant_run_lease_seconds=lease_seconds,
-        model_timeout_seconds=model_timeout_seconds,
+        travel_response_timeout_seconds=graph_timeout_seconds,
+        assistant_run_completion_margin_seconds=completion_margin_seconds,
     )
 
     assert settings.assistant_run_lease_seconds == lease_seconds
@@ -225,22 +233,49 @@ def test_assistant_run_lease_rejects_values_outside_its_bounds(
 
 
 @pytest.mark.parametrize(
-    ("lease_seconds", "model_timeout_seconds"),
-    [(30, 30.0), (30, 31.0)],
+    ("lease_seconds", "graph_timeout_seconds", "completion_margin_seconds"),
+    [(30, 25.0, 5.0), (30, 26.0, 5.0)],
 )
-def test_assistant_run_lease_must_outlast_the_model_timeout(
+def test_assistant_run_lease_must_outlast_graph_and_completion_margin(
     lease_seconds: int,
-    model_timeout_seconds: float,
+    graph_timeout_seconds: float,
+    completion_margin_seconds: float,
 ) -> None:
-    """A worker must retain its lease throughout one model attempt."""
+    """A worker must own its claim through graph execution and persistence."""
 
     with pytest.raises(
         ValidationError,
-        match="ASSISTANT_RUN_LEASE_SECONDS must be greater than MODEL_TIMEOUT_SECONDS",
+        match=(
+            "ASSISTANT_RUN_LEASE_SECONDS must be greater than "
+            "TRAVEL_RESPONSE_TIMEOUT_SECONDS"
+        ),
     ):
         create_settings(
             assistant_run_lease_seconds=lease_seconds,
-            model_timeout_seconds=model_timeout_seconds,
+            travel_response_timeout_seconds=graph_timeout_seconds,
+            assistant_run_completion_margin_seconds=completion_margin_seconds,
+        )
+
+
+@pytest.mark.parametrize("graph_timeout_seconds", [0, 601])
+def test_travel_response_timeout_rejects_values_outside_bounds(
+    graph_timeout_seconds: float,
+) -> None:
+    """Graph execution must have a positive bounded end-to-end deadline."""
+
+    with pytest.raises(ValidationError):
+        create_settings(travel_response_timeout_seconds=graph_timeout_seconds)
+
+
+@pytest.mark.parametrize("completion_margin_seconds", [4.9, 120.1])
+def test_assistant_completion_margin_rejects_values_outside_bounds(
+    completion_margin_seconds: float,
+) -> None:
+    """Persistence must retain a small bounded lease margin after the graph."""
+
+    with pytest.raises(ValidationError):
+        create_settings(
+            assistant_run_completion_margin_seconds=completion_margin_seconds
         )
 
 
@@ -391,6 +426,23 @@ def test_places_provider_is_disabled_without_credentials_by_default() -> None:
     assert settings.places_provider is None
     assert settings.tavily_api_key is None
     assert settings.tavily_search_api_url == "https://api.tavily.com/search"
+
+
+def test_currency_provider_is_disabled_by_default() -> None:
+    """Currency conversion should remain optional without requiring a key."""
+
+    settings = create_settings()
+
+    assert settings.currency_provider is None
+    assert settings.frankfurter_base_url == "https://api.frankfurter.dev/v2"
+
+
+def test_frankfurter_currency_provider_requires_no_api_key() -> None:
+    """The public Frankfurter adapter should enable without credentials."""
+
+    settings = create_settings(currency_provider="frankfurter")
+
+    assert settings.currency_provider == "frankfurter"
 
 
 def test_tavily_places_provider_requires_an_api_key() -> None:

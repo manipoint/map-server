@@ -9,7 +9,7 @@ from app.graph.prompts import (
 def test_travel_prompt_version_tracks_live_tool_policy() -> None:
     """A material prompt-policy change should have an explicit version."""
 
-    assert TRAVEL_PROMPT_VERSION == "travel-v7"
+    assert TRAVEL_PROMPT_VERSION == "travel-v8"
 
 
 def test_travel_prompt_requires_verified_current_weather() -> None:
@@ -88,11 +88,21 @@ def test_travel_prompt_matches_language_and_reports_only_verified_fields() -> No
     assert "Use only returned facts" in prompt
 
 
+def test_travel_prompt_requires_verified_reference_rate_conversion() -> None:
+    """Currency answers should use the tool and retain rate limitations."""
+
+    prompt = " ".join(TRAVEL_ASSISTANT_SYSTEM_PROMPT.split())
+
+    assert "Conversions require convert_currency" in prompt
+    assert "rate date" in prompt
+    assert "reference rates are not payment quotes" in prompt
+
+
 def test_travel_prompt_remains_compact_and_has_no_trailing_whitespace() -> None:
     """Static policy should stay token-conscious and cleanly formatted."""
 
     prompt = TRAVEL_ASSISTANT_SYSTEM_PROMPT
 
     assert "Prefer short bullets; avoid repetition" in prompt
-    assert len(prompt.split()) <= 230
+    assert len(prompt.split()) <= 250
     assert all(line == line.rstrip() for line in prompt.splitlines())

@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     google_places_text_search_url: str = (
         "https://places.googleapis.com/v1/places:searchText"
     )
+    currency_provider: Literal["frankfurter"] | None = None
+    frankfurter_base_url: str = "https://api.frankfurter.dev/v2"
     flight_provider: Literal["duffel"] | None = None
     hotel_provider: Literal["duffel"] | None = None
     duffel_api_key: SecretStr | None = None
@@ -124,6 +126,12 @@ class Settings(BaseSettings):
     )
     conversation_history_message_limit: int = Field(default=20, ge=1, le=100)
     assistant_run_lease_seconds: int = Field(default=120, ge=30, le=900)
+    travel_response_timeout_seconds: float = Field(default=75.0, gt=0, le=600)
+    assistant_run_completion_margin_seconds: float = Field(
+        default=15.0,
+        ge=5.0,
+        le=120.0,
+    )
     max_tool_rounds: int = Field(default=2, ge=1, le=5)
 
     @model_validator(mode="after")
@@ -167,11 +175,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_assistant_run_lease(self) -> Self:
-        """Ensure a processing lease outlives one model attempt."""
+        """Ensure the lease outlives the complete graph and persistence margin."""
 
-        if self.assistant_run_lease_seconds <= self.model_timeout_seconds:
+        minimum_lease_seconds = (
+            self.travel_response_timeout_seconds
+            + self.assistant_run_completion_margin_seconds
+        )
+        if self.assistant_run_lease_seconds <= minimum_lease_seconds:
             raise ValueError(
-                "ASSISTANT_RUN_LEASE_SECONDS must be greater than MODEL_TIMEOUT_SECONDS"
+                "ASSISTANT_RUN_LEASE_SECONDS must be greater than "
+                "TRAVEL_RESPONSE_TIMEOUT_SECONDS plus "
+                "ASSISTANT_RUN_COMPLETION_MARGIN_SECONDS"
             )
         return self
 

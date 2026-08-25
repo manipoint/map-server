@@ -193,6 +193,7 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
         assert application.state.hotel_search_service is None
         assert application.state.place_provider is None
         assert application.state.place_search_service is None
+        assert application.state.currency_provider is None
         assert application.state.mcp_server is fake_mcp_server
         assert application.state.mcp_client is fake_mcp_client
 
@@ -206,6 +207,7 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
         flight_provider=None,
         hotel_search_service=None,
         place_search_service=None,
+        currency_provider=None,
     )
     create_client.assert_called_once_with(mcp_server=fake_mcp_server)
     fake_http_client.aclose.assert_awaited_once_with()
@@ -293,6 +295,7 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
         flight_provider=fake_flight_provider,
         hotel_search_service=None,
         place_search_service=None,
+        currency_provider=None,
     )
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
@@ -416,6 +419,7 @@ def test_lifespan_wires_enabled_hotel_service_into_mcp(monkeypatch) -> None:
         flight_provider=None,
         hotel_search_service=fake_hotel_service,
         place_search_service=None,
+        currency_provider=None,
     )
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
@@ -541,6 +545,7 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         flight_provider=None,
         hotel_search_service=None,
         place_search_service=fake_place_service,
+        currency_provider=None,
     )
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
@@ -553,6 +558,95 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         settings=settings,
         tools=expected_tools,
     )
+    build_graph.assert_called_once_with(
+        model_gateway=fake_gateway,
+        tools=expected_tools,
+        max_tool_rounds=settings.max_tool_rounds,
+    )
+    fake_http_client.aclose.assert_awaited_once_with()
+
+
+def test_lifespan_wires_enabled_currency_provider_into_mcp(monkeypatch) -> None:
+    """Frankfurter configuration should add one shared provider and graph tool."""
+
+    fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    fake_weather_provider = object()
+    fake_currency_provider = object()
+    fake_mcp_server = object()
+    fake_weather_tool = object()
+    fake_currency_tool = object()
+    fake_gateway = object()
+    fake_graph = object()
+    create_currency_provider = MagicMock(return_value=fake_currency_provider)
+    create_server = MagicMock(return_value=fake_mcp_server)
+    create_weather_tool = MagicMock(return_value=fake_weather_tool)
+    create_currency_tool = MagicMock(return_value=fake_currency_tool)
+    build_gateway = MagicMock(return_value=fake_gateway)
+    build_graph = MagicMock(return_value=fake_graph)
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(
+        lifespan_module.httpx,
+        "AsyncClient",
+        MagicMock(return_value=fake_http_client),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "WeatherApiClient",
+        MagicMock(return_value=fake_weather_provider),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "FrankfurterCurrencyClient",
+        create_currency_provider,
+    )
+    monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_current_weather_tool",
+        create_weather_tool,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_currency_conversion_tool",
+        create_currency_tool,
+    )
+    monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
+    settings = create_url_settings(currency_provider="frankfurter")
+    application = main_module.create_app(settings)
+
+    with TestClient(application):
+        assert application.state.currency_provider is fake_currency_provider
+        assert application.state.travel_graph is fake_graph
+
+    create_currency_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_server.assert_called_once_with(
+        weather_provider=fake_weather_provider,
+        flight_provider=None,
+        hotel_search_service=None,
+        place_search_service=None,
+        currency_provider=fake_currency_provider,
+    )
+    create_currency_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    expected_tools = [fake_weather_tool, fake_currency_tool]
+    build_gateway.assert_called_once_with(settings=settings, tools=expected_tools)
     build_graph.assert_called_once_with(
         model_gateway=fake_gateway,
         tools=expected_tools,

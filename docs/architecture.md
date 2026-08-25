@@ -4,9 +4,11 @@
 
 The system gives a Flutter client a single authenticated interface for travel search and itinerary planning while keeping provider credentials, LLM orchestration, persistence, and policy enforcement on the server.
 
-The MVP is a modular monolith: FastAPI and FastMCP share one deployment boundary but retain separate code modules and contracts. This reduces infrastructure cost without coupling domain logic to transport code. The MCP module can later be deployed independently without changing its tool schemas.
+The implemented service is a modular monolith: FastAPI, LangGraph, and FastMCP share one process but retain separate modules and contracts. FastMCP is called through an in-process client; it is not currently mounted as an HTTP endpoint. This reduces infrastructure cost, while the typed MCP schemas leave a path to a separately deployed transport later.
 
 ## Runtime architecture
+
+The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, and assistant-run leases; travel searches and itineraries are not yet stored. LangSmith tracing is also not wired.
 
 ```mermaid
 flowchart LR
@@ -79,13 +81,13 @@ MCP exposes provider-independent, typed tools. It owns provider authentication, 
 
 ### PostgreSQL boundary
 
-PostgreSQL stores normalized business data and LangGraph checkpoints in separate schemas. Repositories and services are the only application layers allowed to issue business-data queries.
+PostgreSQL currently stores normalized identity, session, conversation, message, and assistant-run data in the `app` schema. LangGraph checkpointing and the `langgraph` schema are target work. Repositories and services are the application layers allowed to issue business-data queries.
 
-## Primary request flow
+## Current primary request flow
 
 ```mermaid
 sequenceDiagram
-    title Structured travel search
+    title Natural-language WebSocket request
     participant Flutter
     participant FastAPI
     participant LangGraph
@@ -93,20 +95,22 @@ sequenceDiagram
     participant Provider
     participant PostgreSQL
 
-    Flutter->>FastAPI: travel.search event
-    FastAPI->>FastAPI: Authenticate session
-    FastAPI->>LangGraph: Start request
-    LangGraph->>MCP: Call typed tool
+    Flutter->>FastAPI: travel.request event
+    FastAPI->>PostgreSQL: Authenticate and accept idempotent message
+    FastAPI->>PostgreSQL: Acquire assistant-run lease
+    FastAPI->>LangGraph: Invoke bounded history
+    LangGraph->>MCP: Model-selected typed tool call
     MCP->>Provider: Search request
     Provider-->>MCP: Provider payload
     MCP-->>LangGraph: Normalized results
-    LangGraph->>PostgreSQL: Save search snapshot
-    PostgreSQL-->>LangGraph: Search and offer IDs
-    LangGraph-->>FastAPI: Completed state
-    FastAPI-->>Flutter: search.completed event
+    LangGraph-->>FastAPI: Validated assistant text
+    FastAPI->>PostgreSQL: Save reply and complete lease atomically
+    FastAPI-->>Flutter: travel.response.completed event
 ```
 
 ## Deterministic versus agentic work
+
+The following table is the target routing policy. The current public travel flow is natural-language WebSocket chat and uses an LLM to choose among registered tools; direct structured search endpoints are not implemented.
 
 | Operation | Path |
 | --- | --- |
@@ -118,6 +122,8 @@ sequenceDiagram
 | Saved trip retrieval | PostgreSQL query. No LLM unless the user asks for an explanation or modification. |
 
 ## Availability and degradation
+
+The bullets below are requirements, not all current capabilities. The current code has provider timeouts, bounded tool rounds, persisted idempotency, and model-vendor fallback. It does not yet have provider retries, caches, circuit breakers, a single graph deadline, or partial itinerary fan-out.
 
 - Provider timeouts are classified separately from model-provider failures.
 - Partial travel results MAY be returned when one optional provider fails.
@@ -147,7 +153,7 @@ Add Redis only when multiple backend instances require shared cache, WebSocket r
 - Provider and model keys come from a secret manager or injected environment variables.
 - Logs and traces redact tokens, personal data, and provider payloads.
 - Model reasoning is not sent to Flutter or persisted as a user-visible message.
-- A logout or revoked session immediately invalidates active WebSocket connections.
+- A logout or revoked session invalidates new authentication immediately. The current in-memory connection manager closes active sockets only on the same application instance; cross-instance immediate closure requires distributed revocation fan-out.
 
 ## Out of scope for the MVP
 

@@ -56,7 +56,10 @@ def create_claim(*, acquired: bool) -> Mock:
 
 
 def create_service(
-    *, start: ProcessingStart, graph_result: object | None = None
+    *,
+    start: ProcessingStart,
+    graph_result: object | None = None,
+    travel_response_timeout_seconds: float = 75.0,
 ) -> tuple[TravelResponseService, Mock, Mock]:
     """Create an orchestration service with controllable async collaborators."""
 
@@ -70,6 +73,7 @@ def create_service(
         processing_service=processing,
         graph=graph,
         assistant_run_lease_seconds=120,
+        travel_response_timeout_seconds=travel_response_timeout_seconds,
         max_model_attempts=3,
     )
     return service, processing, graph
@@ -281,6 +285,84 @@ def test_generate_reply_marks_an_owned_claim_failed_for_an_unexpected_error() ->
         error_code=TravelResponseErrorCode.GENERATION_FAILED,
     )
     processing.save_reply.assert_not_awaited()
+
+
+def test_generate_reply_times_out_graph_before_its_lease_can_expire() -> None:
+    """One end-to-end deadline should stop a slow model/tool graph run."""
+
+    request = create_accepted_request()
+    claim = create_claim(acquired=True)
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(request.user_message,),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    service, processing, graph = create_service(
+        start=start,
+        travel_response_timeout_seconds=0.01,
+    )
+
+    async def wait_forever(*_args, **_kwargs) -> None:
+        await asyncio.Event().wait()
+
+    graph.ainvoke.side_effect = wait_forever
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            service.generate_reply(
+                user_id=request.conversation.user_id,
+                accepted_request=request,
+            )
+        )
+
+    processing.fail_processing.assert_awaited_once_with(
+        claim=claim,
+        error_code=TravelResponseErrorCode.GENERATION_FAILED,
+    )
+    processing.save_reply.assert_not_awaited()
+
+
+def test_generate_reply_deadline_also_bounds_reply_persistence() -> None:
+    """A slow completion transaction must not outlive the response deadline."""
+
+    request = create_accepted_request()
+    claim = create_claim(acquired=True)
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(request.user_message,),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    service, processing, graph = create_service(
+        start=start,
+        graph_result={"assistant_response": "Bounded reply"},
+        travel_response_timeout_seconds=0.01,
+    )
+
+    async def wait_forever(*_args, **_kwargs) -> None:
+        await asyncio.Event().wait()
+
+    processing.save_reply.side_effect = wait_forever
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            service.generate_reply(
+                user_id=request.conversation.user_id,
+                accepted_request=request,
+            )
+        )
+
+    graph.ainvoke.assert_awaited_once()
+    processing.save_reply.assert_awaited_once()
+    processing.fail_processing.assert_awaited_once_with(
+        claim=claim,
+        error_code=TravelResponseErrorCode.GENERATION_FAILED,
+    )
 
 
 def test_generate_reply_does_not_fail_a_claim_when_cancelled() -> None:

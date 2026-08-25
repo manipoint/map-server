@@ -1,6 +1,6 @@
 """Provider-independent currency-conversion schemas."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Self
 
@@ -38,6 +38,7 @@ class CurrencyConversionResult(BaseModel):
     quote_currency: CurrencyCode
     rate: CurrencyRate
     converted_amount: CurrencyAmount
+    rate_date: date
     observed_at: datetime
 
     @field_validator("observed_at")

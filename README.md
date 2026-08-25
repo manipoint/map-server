@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat transport, conversation persistence, assistant-run leases, a minimal LangGraph response flow, and ordered Groq → Google → OpenAI model fallback are implemented and tested. MCP travel tools, provider adapters, structured trip search, and itinerary persistence remain planned work documented under [`docs/`](docs/README.md).
+> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, a shared graph deadline, a bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are implemented and tested. In-process MCP tools currently support WeatherAPI weather, Duffel flights and hotels, Google Places, and Frankfurter currency conversion when configured. Saved trips, search snapshots, itinerary persistence, checkpoint/resume, REST conversation/trip APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
 
 ## Product scope
 
@@ -46,9 +46,11 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/services/conversation_service.py` | Idempotently persists conversations and user messages. |
 | `app/services/conversation_processing_service.py` | Coordinates assistant-run leases and atomic reply persistence. |
 | `app/services/travel_response_service.py` | Orchestrates cached replies, graph execution, retries, and safe failures. |
-| `app/graph/` | Minimal LangGraph state, model node, final-response node, and fallback gateway. |
+| `app/graph/` | Bounded model/tool loop, travel tools, prompts, response validation, and ordered model fallback. |
+| `app/mcp/` | In-process FastMCP server, typed tools and schemas, and graph-facing client. |
+| `app/providers/` | WeatherAPI, Duffel, Google Places, Tavily, and Frankfurter adapters; see provider status below. |
 | `app/api/websocket/` | Authenticated `/ws/travel` protocol, background response tasks, and event schemas. |
-| `alembic/` | PostgreSQL schema migrations for users and authentication sessions. |
+| `alembic/` | Migrations for users, authentication sessions, conversations, messages, and assistant runs. |
 | `app/observability/logging.py` | Structured JSON logging and sensitive-field redaction. |
 | `tests/` | Unit and integration tests for implemented behavior. |
 
@@ -72,6 +74,9 @@ APP_ENV=local
 APP_DEBUG=true
 DATABASE_URL=postgresql+asyncpg://travel_user:replace-me@localhost:5432/travel_db
 JWT_SIGNING_KEY=replace-with-a-long-random-value
+TRAVEL_RESPONSE_TIMEOUT_SECONDS=75
+ASSISTANT_RUN_COMPLETION_MARGIN_SECONDS=15
+ASSISTANT_RUN_LEASE_SECONDS=120
 ```
 
 Run the quality checks:
@@ -89,6 +94,20 @@ uv run uvicorn app.main:app --reload
 ```
 
 The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
+
+### Current provider wiring
+
+| Capability | Provider | Runtime status |
+| --- | --- | --- |
+| Current weather | WeatherAPI | Always initialized; `WEATHER_API_KEY` is therefore required by the current startup path. |
+| Location resolution | WeatherAPI search | Used by Duffel hotels and Google Places. |
+| Flights | Duffel | Enabled by `FLIGHT_PROVIDER=duffel`. |
+| Hotels | Duffel | Enabled by `HOTEL_PROVIDER=duffel`. |
+| Places | Google Places | Enabled by `PLACES_PROVIDER=google`. |
+| Places alternative | Tavily | Adapter and checks exist, but production lifespan wiring is not complete. |
+| Currency | Frankfurter | Enabled by `CURRENCY_PROVIDER=frankfurter`. |
+
+MCP is currently an internal Python boundary: `TravelMcpClient` calls the in-process FastMCP server object. No `/internal/mcp` HTTP route is mounted yet.
 
 ## Target backend modules
 
@@ -123,12 +142,13 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | [Model routing and cost](docs/model-routing.md) | Multi-provider failover and token/cost controls. |
 | [Deployment](docs/deployment.md) | Environments, process topology, secrets, health checks, and scaling. |
 | [Testing](docs/testing.md) | Unit, contract, integration, graph evaluation, and load tests. |
+| [Reliability and SPOF review](docs/reliability.md) | Current failure domains, mitigations, and production release gates. |
 | [Development commands](docs/development-workflow.md) | Package management, formatting, tests, and local run commands. |
 
 ## Core engineering rules
 
 1. Provider keys and model keys remain server-side and are loaded from environment variables or a secret manager.
-2. Structured searches bypass the LLM and call MCP tools deterministically.
+2. Deterministic structured-search entry points should bypass the LLM; the currently exposed natural-language WebSocket flow uses the model to select MCP tools.
 3. MCP tools normalize provider data but do not own business persistence.
 4. PostgreSQL stores normalized business records; raw provider JSON is optional, short-lived evidence.
 5. Saved prices are snapshots, not booking guarantees, and include `observed_at` and `expires_at`.
@@ -143,9 +163,9 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | 1 | Complete | FastAPI shell, settings, health endpoints, middleware, and structured logging. |
 | 2 | Complete | Async PostgreSQL, Cloud SQL connector, Alembic migrations, users, and revocable authentication sessions. |
 | 3 | Complete | Versioned REST authentication API, authenticated WebSocket transport, and durable conversation messages. |
-| 4 | In progress | Minimal LangGraph response flow, bounded history, model fallback, and assistant-run leases are complete; tools, interrupts, and checkpointing remain. |
-| 5 | Planned | Mounted FastMCP server and weather-tool migration. |
-| 6 | Planned | Flight, hotel, places, weather, and currency provider adapters. |
+| 4 | In progress | Bounded LangGraph model/tool loop, shared graph deadline, and aligned assistant-run leases are complete; structured routing, interrupts, and checkpointing remain. |
+| 5 | In progress | In-process FastMCP tools are complete; an authenticated mounted MCP transport is not implemented. |
+| 6 | In progress | WeatherAPI, Duffel, Google Places, Tavily, and Frankfurter adapters exist; provider failover, caching, and Tavily runtime wiring remain. |
 | 7 | In progress | Ordered model gateway fallback and timeout controls are complete; LangSmith traces, budgets, circuit breaking, and evaluations remain. |
 | 8 | Planned | Container deployment, monitoring, and load testing. |
 
@@ -155,7 +175,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 - Treat any exposed key as compromised and rotate it immediately.
 - Use HTTPS/WSS in every non-local environment.
 - Store refresh credentials only in platform-secure storage on Flutter and as hashes on the server.
-- Restrict `/internal/mcp` to the backend network or protect it with service authentication.
+- If an MCP HTTP transport is mounted later, restrict it to the backend network or protect it with service authentication.
 
 ## License
 

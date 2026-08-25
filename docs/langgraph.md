@@ -8,17 +8,22 @@ Authentication and WebSocket transport remain outside the graph. A request enter
 
 ## Current implemented baseline
 
-The current graph is deliberately small while provider tools are still being built:
+The current graph is a small bounded ReAct-style loop:
 
 ```text
-START → invoke_model → build_response → END
+START → invoke_model → route
+                         ├─ final text → build_response → END
+                         └─ tool calls → increment_tool_round → execute_tools → invoke_model
 ```
 
 - Persisted bounded conversation history is converted to `HumanMessage` and `AIMessage` values.
 - `FallbackModelGateway` tries configured providers in order: Groq, Google, then OpenAI.
-- A provider exception, non-AI response, or blank text moves to the next provider. Task cancellation propagates and never triggers fallback.
+- A model-provider exception, non-AI response, or response without text/tool calls moves to the next model provider. Task cancellation propagates and never triggers fallback.
 - The final node accepts only a non-empty plain-text `AIMessage` and exposes it as `assistant_response`.
-- The graph has no tool loop yet. Flight, hotel, places, weather, and currency flows remain planned subgraphs.
+- The model can call registered `get_current_weather`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized.
+- `MAX_TOOL_ROUNDS` bounds tool execution; the default is two rounds. Expected provider errors become safe model-visible tool text.
+- `TRAVEL_RESPONSE_TIMEOUT_SECONDS` applies one end-to-end deadline around graph execution and atomic reply persistence. Its default is 75 seconds, below the 120-second processing lease.
+- The graph does not yet implement deterministic intent routing, fan-out, interrupts, checkpoint/resume, search persistence, or structured Flutter result cards.
 
 The implemented state is intentionally narrower than the target state below:
 
@@ -28,11 +33,12 @@ class TravelGraphState(TypedDict):
     locale: str
     assistant_response: NotRequired[str]
     error_code: NotRequired[str]
+    tool_rounds: NotRequired[int]
 ```
 
 `ConversationProcessingService` remains outside the graph. It owns database leases and atomic message persistence; the graph never receives an `AsyncSession`, a WebSocket, API keys, or raw provider payloads.
 
-## State contract
+## Target state contract
 
 The initial state should be a typed mapping with compact, serializable values:
 
@@ -62,7 +68,7 @@ class TravelGraphState(TypedDict):
 
 Large provider payloads, secrets, HTTP clients, database sessions, and WebSocket objects must never be checkpointed. Persist large results first and keep identifiers plus compact top results in state.
 
-## Main graph
+## Target main graph
 
 ```mermaid
 flowchart TD
@@ -130,7 +136,7 @@ Every tool node receives a validated domain request. It never receives arbitrary
 - `build_final_response`: validates synthesized itinerary output before returning it.
 - `build_error`: maps typed internal errors to a public code and safe message.
 
-## Direct search subgraph
+## Target direct search subgraph
 
 ```mermaid
 flowchart LR
@@ -151,7 +157,7 @@ flowchart LR
 
 No LLM participates in this path.
 
-## Itinerary subgraph
+## Target itinerary subgraph
 
 After validation, flight, hotel, places, and weather searches fan out independently. Required branches are selected from the request; a local trip may not need flights, and a day trip may not need hotels.
 
@@ -179,7 +185,7 @@ flowchart TD
 
 The synthesis node receives only validated preferences and compact normalized evidence. It cannot invent booking availability; each option retains its source, observed time, currency, and offer identifier.
 
-## Model gateway subgraph
+## Target model gateway subgraph
 
 ```mermaid
 flowchart TD
@@ -205,6 +211,8 @@ Fallback must not run for malformed input, policy refusal, or an MCP/provider er
 
 ## Interrupt and resume
 
+This section is a target contract. The current compiled graph has no checkpointer or interrupt node.
+
 Missing required fields produce an interrupt payload:
 
 ```json
@@ -229,6 +237,8 @@ FastAPI sends it over WebSocket. Flutter replies with the same `request_id`, and
 
 ## Bounded execution
 
+Current bounds include conversation-history length, model attempts, per-provider timeout, one shared graph deadline, search-result count, WebSocket message size, and tool rounds. Token/provider budgets and repair-attempt controls are not implemented.
+
 Every graph run has hard limits:
 
 - maximum model attempts;
@@ -243,4 +253,6 @@ When a limit is reached, the graph returns a structured partial or failure resul
 
 ## Checkpointing
 
-Development may use an in-memory checkpointer. Production uses `AsyncPostgresSaver` with a separate `langgraph` schema. Checkpoints support interrupts and recovery, but normalized application tables remain the durable business source of truth.
+No LangGraph checkpointer is currently configured. The target production design uses `AsyncPostgresSaver` with a separate `langgraph` schema. Checkpoints support interrupts and recovery, but normalized application tables remain the durable business source of truth.
+
+Current WebSocket generation runs in an in-process child task. Disconnect or shutdown cancels that task; the persisted assistant-run lease allows a later retry but does not resume execution from a graph checkpoint.

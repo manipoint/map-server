@@ -18,6 +18,7 @@ from app.database.session import (
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
 from app.graph.tools import (
+    create_currency_conversion_tool,
     create_current_weather_tool,
     create_flight_search_tool,
     create_hotel_search_tool,
@@ -25,6 +26,7 @@ from app.graph.tools import (
 )
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
+from app.providers.currency.frankfurter_client import FrankfurterCurrencyClient
 from app.providers.flights.duffel_client import DuffelFlightClient
 from app.providers.hotels.duffel_client import DuffelHotelClient
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
@@ -47,6 +49,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     hotel_provider: DuffelHotelClient | None = None
     location_provider: WeatherApiLocationClient | None = None
     place_provider: GooglePlacesClient | None = None
+    currency_provider: FrankfurterCurrencyClient | None = None
     hotel_search_service: HotelSearchService | None = None
     place_search_service: PlaceSearchService | None = None
 
@@ -65,6 +68,11 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             http_client=http_client,
             settings=settings,
         )
+        if settings.currency_provider == "frankfurter":
+            currency_provider = FrankfurterCurrencyClient(
+                http_client=http_client,
+                settings=settings,
+            )
         if settings.flight_provider == "duffel":
             flight_provider = DuffelFlightClient(
                 http_client=http_client,
@@ -104,6 +112,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             flight_provider=flight_provider,
             hotel_search_service=hotel_search_service,
             place_search_service=place_search_service,
+            currency_provider=currency_provider,
         )
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
 
@@ -122,6 +131,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                     mcp_client=mcp_client,
                 )
             )
+        if currency_provider is not None:
+            tools.append(create_currency_conversion_tool(mcp_client=mcp_client))
         model_gateway = build_model_gateway(settings=settings, tools=tools)
         travel_graph = build_travel_graph(
             model_gateway=model_gateway,
@@ -141,6 +152,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         application.state.hotel_search_service = hotel_search_service
         application.state.place_provider = place_provider
         application.state.place_search_service = place_search_service
+        application.state.currency_provider = currency_provider
         application.state.mcp_server = mcp_server
         application.state.mcp_client = mcp_client
 

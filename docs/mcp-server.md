@@ -4,7 +4,7 @@
 
 The Travel MCP Server is the integration boundary between application workflows and external travel data providers. Tools expose stable, provider-independent schemas so the graph and Flutter contract do not change when a provider is replaced.
 
-In the MVP, FastMCP is mounted under the FastAPI application at `/internal/mcp`. The route is internal and authenticated; Flutter never calls it directly.
+FastMCP currently runs inside the FastAPI process. `TravelMcpClient` invokes the server object directly, so no MCP HTTP route is mounted and Flutter cannot call MCP. `INTERNAL_MCP_PATH` is reserved for a future authenticated network transport.
 
 ## Tool catalog
 
@@ -13,10 +13,21 @@ In the MVP, FastMCP is mounted under the FastAPI application at `/internal/mcp`.
 | `search_flights` | Search priced flight offers for validated travel dates and passengers. | No |
 | `search_hotels` | Search available hotel offers for dates, rooms, guests, and budget. | No |
 | `search_places` | Find attractions or activities by location and interests. | No |
-| `get_weather` | Return current conditions or supported forecast data. | No |
+| `get_current_weather` | Return current conditions for a city. | No |
 | `convert_currency` | Convert a monetary amount using an observed exchange rate. | No |
 
 Potential later tools include airport autocomplete, route estimates, offer refresh, and booking-related tools. Any tool that creates a booking, payment, or cancellation requires explicit user confirmation and a separate design review.
+
+## Current provider matrix
+
+| Capability | Implemented adapter | Runtime wiring |
+| --- | --- | --- |
+| Current weather | WeatherAPI | Always registered by the current lifespan. |
+| Flights | Duffel | Registered when `FLIGHT_PROVIDER=duffel`. |
+| Hotels | Duffel plus WeatherAPI location search | Registered when `HOTEL_PROVIDER=duffel`. |
+| Places | Google Places plus WeatherAPI location search | Registered when `PLACES_PROVIDER=google`. |
+| Places alternative | Tavily | Adapter exists, but lifespan registration is not implemented. |
+| Currency | Frankfurter | Registered when `CURRENCY_PROVIDER=frankfurter`. |
 
 ## Tool contract principles
 
@@ -38,11 +49,12 @@ Potential later tools include airport autocomplete, route estimates, offer refre
   "departure_date": "2026-09-10",
   "return_date": "2026-09-17",
   "adults": 2,
-  "children": 0,
-  "infants": 0,
+  "children_ages": [8],
+  "infants_with_seat_ages": [],
+  "infants_on_lap_ages": [],
   "cabin_class": "economy",
   "currency": "PKR",
-  "maximum_results": 10
+  "max_results": 5
 }
 ```
 
@@ -103,6 +115,8 @@ sequenceDiagram
 
 ## Error taxonomy
 
+Provider adapters currently normalize common configuration, authentication, rate-limit, timeout/unavailable, response-validation, and location errors through `app.common.exceptions`. The expanded taxonomy below is the target public contract; not every leaf type is implemented yet.
+
 ```text
 TravelToolError
 ├── InvalidTravelInput
@@ -119,6 +133,8 @@ TravelToolError
 `NoResults` is normally returned as a successful empty result with explanatory metadata. Authentication failure and invalid provider response trigger alerts. Raw provider error bodies must be redacted before logging or tracing.
 
 ## Retry behavior
+
+These bullets are the target retry policy. Current adapters use strict HTTP timeouts and generally do not perform application-level retry/backoff or circuit breaking.
 
 - Validate before any provider call.
 - Retry only transient connection, timeout, 429, or eligible 5xx failures.
@@ -146,7 +162,7 @@ Provider response caching may later live behind provider adapters, but it is inf
 - API keys are injected into provider adapters from typed settings.
 - Tool arguments are untrusted and size-limited.
 - Provider URLs are configured, never user supplied.
-- The MCP endpoint validates service authentication and allowed origin/network policy.
+- A future MCP network endpoint must validate service authentication and allowed origin/network policy.
 - Logs include request/provider correlation IDs, never keys or authorization headers.
 - Tool results are treated as untrusted external content before they enter an LLM prompt.
 

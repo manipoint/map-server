@@ -1,6 +1,6 @@
 """Tests for provider-independent currency-conversion schemas."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -21,6 +21,7 @@ def create_result(**overrides: object) -> CurrencyConversionResult:
         "quote_currency": "PKR",
         "rate": "278.451234",
         "converted_amount": "27914.73",
+        "rate_date": date(2026, 8, 24),
         "observed_at": datetime(2026, 8, 25, 12, tzinfo=UTC),
     }
     values.update(overrides)
@@ -98,6 +99,7 @@ def test_conversion_result_preserves_rate_and_aware_observation_time() -> None:
 
     assert result.rate == Decimal("278.451234")
     assert result.converted_amount == Decimal("27914.73")
+    assert result.rate_date == date(2026, 8, 24)
     assert result.observed_at.utcoffset() is not None
 
 

@@ -1,6 +1,6 @@
 """Versioned static prompts for the travel graph."""
 
-TRAVEL_PROMPT_VERSION = "travel-v7"
+TRAVEL_PROMPT_VERSION = "travel-v8"
 TRAVEL_ASSISTANT_SYSTEM_PROMPT = """
 Concise travel assistant. Use the user's language.
 
@@ -31,6 +31,10 @@ Places:
 - Interests rank results; never claim all results match all interests.
 - Use only returned names, categories, addresses, coordinates, and links; copy links
   unchanged.
+
+Currency:
+- Conversions require convert_currency. Use its rate, rate date, and converted
+  amount; reference rates are not payment quotes.
 
 Locations:
 - For ambiguity, show returned candidates and ask the user to choose. For no match,

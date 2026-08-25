@@ -4,6 +4,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from app.mcp.client import TravelMcpClient
 from app.mcp.schemas.weather import CurrentWeatherInput
+from app.providers.currency.schemas import CurrencyConversionInput
 from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput
 from app.providers.places.schemas import PlaceSearchInput
@@ -89,4 +90,24 @@ def create_place_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
             "only; no booking."
         ),
         args_schema=PlaceSearchInput,
+    )
+
+
+def create_currency_conversion_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
+    """Create the model-facing currency-conversion tool."""
+
+    async def convert_currency(**arguments: object) -> dict[str, object]:
+        request = CurrencyConversionInput.model_validate(arguments)
+        result = await mcp_client.convert_currency(request=request)
+        return result.model_dump(mode="json")
+
+    return StructuredTool.from_function(
+        coroutine=convert_currency,
+        name="convert_currency",
+        description=(
+            "Convert one amount using a verified reference exchange rate. "
+            "Use three-letter base and quote currency codes. Reference only; "
+            "not a payment or booking quote."
+        ),
+        args_schema=CurrencyConversionInput,
     )

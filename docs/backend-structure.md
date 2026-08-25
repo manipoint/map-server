@@ -93,6 +93,20 @@ tests/integration/ # PostgreSQL, FastAPI, MCP, and graph tests
 tests/evaluations/ # LangSmith datasets and quality checks
 ```
 
+## Current implementation status
+
+The directory shape intentionally includes placeholders for later phases. The following files/modules exist but do not yet implement their target use cases:
+
+- REST `conversations.py` and `trips.py` routes;
+- trip/search/usage services and trip domain model;
+- graph validation and persistence nodes;
+- flight, hotel, and itinerary subgraphs;
+- LangSmith and metrics adapters;
+- trip/search/itinerary repositories and models;
+- contract/evaluation suites shown in the target support tree.
+
+The working runtime is authentication plus `/ws/travel`, conversation/message/assistant-run persistence, the bounded model/tool graph, in-process MCP, and configured provider adapters. A file's presence must not be treated as proof that its target capability is complete.
+
 ## Dependency direction
 
 ```mermaid
@@ -156,13 +170,13 @@ Provides structured logging, LangSmith metadata, metrics, redaction, and correla
 
 ## Configuration
 
-`config.py` will load typed settings once at application startup. Categories include:
+`config.py` loads typed settings once through a cached settings factory. Current categories include:
 
 - environment and logging;
 - public API and allowed origins;
 - database pool and timeout settings;
 - access/session token configuration;
-- MCP URL and service authentication;
+- an MCP path reserved for a future network transport;
 - provider endpoints, keys, timeouts, and limits;
 - model profiles and fallback order;
 - LangSmith tracing and sampling;
@@ -172,19 +186,21 @@ Secrets must use secret types and must never appear in `repr`, logs, validation 
 
 ## Lifespan ownership
 
-`lifespan.py` creates and closes long-lived resources:
+`lifespan.py` currently creates and closes long-lived resources:
 
 1. typed settings;
 2. database engine and pool;
 3. provider HTTP clients;
-4. MCP ASGI application/client;
-5. LangGraph checkpointer and compiled graph;
+4. in-process FastMCP server/client;
+5. compiled LangGraph without a checkpointer;
 6. WebSocket connection manager;
-7. observability exporters.
+7. structured logging support; external observability exporters are not initialized.
 
 Request handlers must reuse these clients instead of creating a new HTTP or database client per request.
 
 ## Error boundaries
+
+The trees below describe the intended stable taxonomy. Current provider errors are centralized in `app.common.exceptions`, authentication errors in `app.auth.exceptions`, and graph errors in `app.graph.exceptions`; not every target subtype exists yet.
 
 Each lower layer raises typed errors:
 

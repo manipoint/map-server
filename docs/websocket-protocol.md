@@ -2,7 +2,7 @@
 
 ## Purpose
 
-WebSocket provides bidirectional, low-latency interaction for travel chat, progress updates, missing-input requests, cancellation, and incremental category results. REST remains the interface for login, token refresh, trip history, and ordinary resource CRUD.
+WebSocket currently provides authenticated travel chat, heartbeats, processing state, and final responses. Missing-input interrupts, explicit cancellation, incremental category results, trip history, and ordinary trip/conversation CRUD are target capabilities.
 
 Endpoint:
 
@@ -28,9 +28,11 @@ travel.response.failed
 
 Response generation runs in a background task per accepted request. Each connection serializes outbound events with a per-connection send lock, so a slow model invocation does not block heartbeats or another inbound request. On disconnect, pending response tasks are cancelled and awaited; their assistant-run lease can later expire and be reclaimed safely.
 
-The broader event names and request-ID contract documented below remain the target protocol for MCP search, interrupts, cancellation, and itineraries.
+The broader event names and request-ID contract documented below remain the target protocol for MCP search, interrupts, cancellation, and itineraries. Current idempotency uses `client_message_id`, not the target `request_id` envelope.
 
 ## Connection lifecycle
+
+The following sequence is the target structured-search lifecycle. The current lifecycle uses `travel.request` and the response events listed above.
 
 ```mermaid
 sequenceDiagram
@@ -59,6 +61,8 @@ The access credential should be sent in the WebSocket handshake header on native
 
 ## Envelope
 
+This is the target envelope. Current client events contain `version`, `type`, `sent_at`, and a typed payload; correlation lives in `client_message_id` and `conversation_id` inside the travel payload.
+
 Every client and server event uses a versioned JSON envelope:
 
 ```json
@@ -82,6 +86,8 @@ Every client and server event uses a versioned JSON envelope:
 | `payload` | Event-specific typed object with size and field limits. |
 
 ## Client events
+
+The list below is target scope; currently only `connection.ping` and `travel.request` are accepted.
 
 ```text
 chat.message
@@ -116,6 +122,8 @@ Example structured flight request:
 ```
 
 ## Server events
+
+The list below is target scope. Current server event names are documented in the baseline section.
 
 ```text
 connection.ready
@@ -152,6 +160,8 @@ Example progress event:
 ```
 
 ## Missing input
+
+Interrupt/resume is not implemented yet.
 
 The server sends:
 
@@ -192,6 +202,8 @@ Public error codes are stable. Stack traces, provider bodies, model errors, SQL 
 
 ## Idempotency
 
+These are target rules. Today, `client_message_id` uniquely identifies a persisted user message, duplicate completed requests reuse the canonical assistant reply, and assistant-run leases coordinate processing.
+
 - The client creates a unique `request_id` for every new action.
 - Replaying an accepted `request_id` returns current status or the stored terminal response.
 - A duplicate event must not create a second provider search or database row.
@@ -200,15 +212,21 @@ Public error codes are stable. Stack traces, provider bodies, model errors, SQL 
 
 ## Cancellation
 
+Explicit `request.cancel` is not implemented. Current work is cancelled when its WebSocket disconnects or the application shuts down.
+
 `request.cancel` identifies the active `request_id`. FastAPI marks the run cancelled, stops cancellable graph work, ignores late results, persists terminal status, and returns `request.cancelled`. Provider requests that cannot be cancelled may finish in the background, but their results must not overwrite a newer request.
 
 ## Reconnection
+
+Automatic status lookup and graph checkpoint resume are not implemented. Flutter can resend the same `client_message_id`: completed work is reused, processing work reports processing, and an expired/eligible failed lease may be reclaimed.
 
 Flutter reconnects with exponential backoff and re-authenticates. After reconnecting, it requests statuses for its active `request_id` values. Completed responses are read from PostgreSQL; active graph executions resume or report their current checkpoint status.
 
 MVP does not promise replay of every transient progress message. Terminal results and durable user actions are replayable.
 
 ## Backpressure and limits
+
+Current controls include maximum message bytes, prompt length, heartbeat/idle timeouts, history size, tool rounds, and per-connection serialized sending. Per-user concurrency/rate limits, progress coalescing, and structured result pagination below are target work.
 
 - Maximum envelope and prompt sizes are enforced before graph invocation.
 - One active request per conversation is the MVP default.

@@ -126,6 +126,8 @@ Authorization roles/scopes may be added later. Sensitive profile information doe
 5. Close every connection mapped to a session when it is revoked.
 6. Never accept a refresh token as WebSocket authorization.
 
+The database revocation checks are durable, but active-connection closure currently uses a process-local `ConnectionManager`. In a multi-instance deployment, the instance processing logout cannot close a socket owned by another instance. Until a distributed revocation channel exists, immediate active-socket logout is guaranteed only within one process; new REST/WebSocket authentication still fails against the revoked database session.
+
 ## Logout behavior
 
 Device logout:

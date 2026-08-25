@@ -1,6 +1,6 @@
 # Documentation Index
 
-This directory defines the target architecture for the Travel Assistant MCP Backend. Documents describe intended behavior unless a section explicitly says it covers the current prototype.
+This directory describes both the implemented backend and its target architecture. Every document must label proposed behavior explicitly; an unlabeled operational claim should match the code and tests.
 
 ## Recommended reading order
 
@@ -13,8 +13,9 @@ This directory defines the target architecture for the Travel Assistant MCP Back
 7. [PostgreSQL Data Model](database.md)
 8. [Model Routing and Cost Controls](model-routing.md)
 9. [Deployment](deployment.md)
-10. [Testing Strategy](testing.md)
-11. [Development Commands](development-workflow.md)
+10. [Reliability and SPOF Review](reliability.md)
+11. [Testing Strategy](testing.md)
+12. [Development Commands](development-workflow.md)
 
 ## Source-of-truth boundaries
 
@@ -29,6 +30,7 @@ This directory defines the target architecture for the Travel Assistant MCP Back
 | Tables, relations, retention, and indexes | `database.md` |
 | LLM selection, retry, fallback, and budgets | `model-routing.md` |
 | Environments, processes, and operations | `deployment.md` |
+| Failure domains, SPOFs, and release gates | `reliability.md` |
 | Verification and quality gates | `testing.md` |
 | Local commands and dependency workflow | `development-workflow.md` |
 
@@ -45,8 +47,8 @@ This directory defines the target architecture for the Travel Assistant MCP Back
 - The MVP is search and itinerary planning, not booking or payment.
 - Flutter uses REST for resource operations and WebSocket for interactive search/chat events.
 - FastAPI is the public backend boundary.
-- FastMCP is mounted as an internal interface in the MVP deployment.
-- LangGraph controls deterministic routing, missing-input interrupts, tool orchestration, and bounded model fallback.
-- PostgreSQL owns durable application data and LangGraph checkpoints in separate schemas.
-- LangSmith provides traces and evaluations, not application persistence.
+- FastMCP currently runs in process and is invoked through `TravelMcpClient`; a mounted HTTP transport is a target option.
+- The implemented LangGraph is a bounded model/tool loop. Deterministic routing, interrupts, and checkpoint/resume are targets.
+- PostgreSQL currently owns users, sessions, conversations, messages, and assistant-run leases. Trip/search/itinerary tables and LangGraph checkpoints are targets.
+- LangSmith tracing and evaluations are planned; structured JSON logging is the current observability baseline.
 - Redis is deferred until distributed WebSocket routing, shared caching, or multi-instance rate limiting is required.

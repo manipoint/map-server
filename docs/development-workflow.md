@@ -188,6 +188,23 @@ uv run pytest --last-failed
 
 The project configures pytest with `--import-mode=importlib`, so test files in different directories may safely use the same filename.
 
+## Live currency graph smoke test
+
+Enable the keyless Frankfurter adapter in `.env`:
+
+```env
+CURRENCY_PROVIDER=frankfurter
+```
+
+Run one complete LLM to LangGraph to MCP to provider conversion:
+
+```bash
+uv run python -m scripts.check_currency_graph 100 USD PKR
+```
+
+The command makes live model and provider requests. It logs the normalized input
+and final assistant response, never API keys or raw provider payloads.
+
 ## Local API server
 
 Start FastAPI with automatic reload:

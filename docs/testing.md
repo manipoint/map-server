@@ -19,6 +19,12 @@ flowchart TB
 
 The broadest layer contains the fewest tests. Most edge cases should be covered by fast deterministic tests.
 
+## Current coverage boundary
+
+The default suite has extensive unit and FastAPI/WebSocket integration coverage for authentication, persistence services, assistant-run leases, graph routing/tool execution, MCP schemas/tools, and provider mapping/HTTP behavior. External HTTP and model calls use fakes or `httpx.MockTransport`; live scripts under `scripts/` are manual checks and are not part of ordinary CI.
+
+Most tests named `integration` still use dependency overrides, mocked sessions, or fake providers. The repository does not yet provide a containerized PostgreSQL migration suite, real LangGraph checkpoint/resume tests, provider circuit-breaker tests, load tests, a versioned LLM evaluation dataset, or end-to-end Cloud Run tests. The remaining sections describe the target coverage unless identified as current.
+
 ## Unit tests
 
 Cover pure and isolated behavior:
@@ -43,12 +49,14 @@ Freeze time where expiry or travel dates affect behavior.
 
 ## Integration tests
 
-Use an isolated PostgreSQL database and run real migrations. Exercise:
+Target integration coverage should use an isolated PostgreSQL database and run real migrations. The current default suite does not require Cloud SQL.
+
+Exercise:
 
 - FastAPI request validation, authorization, and error envelopes.
 - Login, refresh-token rotation, replay detection, logout, and session revocation.
 - WebSocket authentication, commands, cancellation, reconnect, and idempotency.
-- Mounted MCP discovery and tool calls through the internal boundary.
+- MCP tool registration and calls through the in-process boundary; add mounted transport tests only if a network MCP endpoint is introduced.
 - LangGraph checkpoint save and resume behavior.
 - Transaction rollback and database constraints.
 
@@ -61,6 +69,8 @@ The implemented authentication API has deterministic unit and FastAPI integratio
 The default authentication API tests use dependency overrides and mocks, so they do not require Cloud SQL or consume external API/model quota. Real migration and PostgreSQL behavior belongs in a separate database-backed integration environment.
 
 ## LangGraph transition tests
+
+Current tests cover the implemented model/tool loop, tool-round bounds, responses, and model fallback. The fan-out, interrupt, cancellation/resume, and checkpoint paths below are targets.
 
 Test graphs as state machines, not only through final prose:
 
@@ -85,6 +95,8 @@ Required paths include:
 
 ## Model gateway tests
 
+Current tests cover provider ordering, success, invalid responses, exception fallback, cancellation, tool binding, the shared graph deadline, failure persistence after timeout, and lease/deadline configuration. Error-classification-, circuit-, token-, and cost-aware cases below remain targets.
+
 - Deterministic tasks never invoke a model.
 - Economy and quality tasks select the configured route.
 - Timeout, rate limit, and provider-unavailable errors fall back in order.
@@ -95,6 +107,8 @@ Required paths include:
 - Secrets and raw authorization data never appear in tracing metadata.
 
 ## Evaluation tests
+
+No versioned model-quality evaluation suite is currently wired into CI.
 
 Maintain a versioned dataset of representative travel prompts and expected structured facts. Include English, Roman Urdu, and mixed-language requests, plus adversarial and ambiguous cases.
 
@@ -141,11 +155,15 @@ Run a small deterministic evaluation set on every pull request and the full set 
 
 ## Performance tests
 
+No automated performance/load suite or service-level objective gate is currently present.
+
 Measure REST and WebSocket concurrency separately. Scenarios should include search fan-out, long-lived idle connections, reconnect storms, slow external providers, and database pool saturation. Use fake external providers with configurable latency and error rates so test traffic does not create API cost.
 
 Set service-level targets before interpreting results. Track p50, p95, and p99 latency, error rate, active connections, memory per connection, database wait time, and model/provider spend per completed request.
 
 ## Continuous integration gates
+
+The local pre-commit workflow currently runs Ruff formatting/linting and the Python test suite. Type checking, migration checks against a real database, secret/dependency/container scans, evaluations, and image builds should be added as the deployment pipeline matures.
 
 ```mermaid
 flowchart LR

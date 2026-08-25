@@ -2,7 +2,7 @@
 
 ## MVP topology
 
-Deploy the first production version as a modular monolith: one FastAPI application exposes REST and WebSocket endpoints and mounts the internal FastMCP application. PostgreSQL remains a separately managed service.
+Deploy the first production version as a modular monolith: one FastAPI application exposes REST and WebSocket endpoints and initializes FastMCP in process. PostgreSQL remains a separately managed service. The current application does not mount an MCP HTTP route; the graph calls the FastMCP server through an internal Python client.
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
     L --> A[FastAPI application]
     subgraph Container[Backend container]
         A --> G[LangGraph runtime]
-        A --> M[Mounted internal FastMCP]
+        A --> M[In-process FastMCP]
         G --> M
     end
     A --> P[(Managed PostgreSQL)]
@@ -36,22 +36,23 @@ Never copy production secrets or unrestricted personal data into local or stagin
 
 ## Runtime process
 
-At application startup:
+The implemented startup path:
 
 1. Validate configuration without logging secret values.
 2. Initialize the async database engine and bounded pool.
-3. Initialize LangGraph checkpointer and model/provider clients.
-4. Mount or initialize FastMCP tools.
-5. Start background maintenance loops only when leader ownership is defined.
-6. Report readiness after required dependencies are usable.
+3. Create one shared asynchronous HTTP client and configured provider clients.
+4. Initialize FastMCP tools, the model gateway, and the compiled LangGraph.
+5. Create the process-local WebSocket connection manager.
+
+No LangGraph checkpointer, background worker, dependency probe, or startup/readiness state is currently initialized. Those remain target requirements before production.
 
 At shutdown, stop accepting new connections, allow bounded request completion, close WebSockets with a retryable code, and release provider and database clients.
 
 ## Health endpoints
 
-- `GET /health/live`: confirms the process event loop is responsive; no external calls.
-- `GET /health/ready`: checks required initialization and a lightweight database query.
-- `GET /health/startup`: optional endpoint for platforms with distinct startup probes.
+- `GET /health/live`: implemented; confirms the process event loop is responsive and makes no external calls.
+- `GET /health/ready`: required but not implemented; it should check initialization and a bounded lightweight database query.
+- `GET /health/startup`: optional and not implemented.
 
 Do not make readiness depend on every optional travel provider. Provider health belongs in internal diagnostics and circuit-breaker metrics.
 
@@ -80,7 +81,11 @@ Use environment variables or a secret manager for deploy-time configuration. Exp
 - `DATABASE_URL`
 - `JWT_SIGNING_KEY`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`
 - `GROQ_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`
-- `WEATHER_API_KEY` and travel-provider credential names
+- `MODEL_TIMEOUT_SECONDS`, `TRAVEL_RESPONSE_TIMEOUT_SECONDS`, `MAX_TOOL_ROUNDS`
+- `ASSISTANT_RUN_LEASE_SECONDS`, `ASSISTANT_RUN_COMPLETION_MARGIN_SECONDS`
+- `WEATHER_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_PLACES_API_KEY`, and `DUFFEL_API_KEY`
+- `FLIGHT_PROVIDER`, `HOTEL_PROVIDER`, `PLACES_PROVIDER`, and `CURRENCY_PROVIDER`
+- `DUFFEL_API_VERSION`, `DUFFEL_SUPPLIER_TIMEOUT_MS`, and `DUFFEL_STAYS_RADIUS_KM`
 - `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_TRACING`
 - Route-specific model configuration and request budget settings
 
@@ -89,7 +94,7 @@ Do not commit real values. Rotate any credential that has appeared in source cod
 ## Network and transport security
 
 - Terminate TLS at a trusted load balancer or ingress and use HTTPS/WSS externally.
-- Restrict the internal MCP path so it is not a public unauthenticated tool endpoint.
+- If an MCP network transport is added, restrict it so it is not a public unauthenticated tool endpoint.
 - Apply explicit CORS rules to browser clients; native Flutter still relies on token authentication.
 - Authenticate the WebSocket during connection setup and authorize every user-scoped operation.
 - Apply body-size, message-size, rate, and connection limits.
@@ -99,6 +104,8 @@ Do not commit real values. Rotate any credential that has appeared in source cod
 ## PostgreSQL deployment
 
 Prefer a managed PostgreSQL service with automated backups, point-in-time recovery, monitoring, and TLS. Maintain separate `app` and `langgraph` schemas as described in [Database Design](database.md).
+
+> **Current infrastructure finding (reported during the 25 August 2026 review):** the selected Cloud SQL instance was zonal and automated backups were disabled. That is acceptable only for disposable development data. It is a production release blocker because one zone/storage incident can cause downtime or data loss. Recheck the live setting rather than assuming this document remains current.
 
 Run Alembic as a single release job. The API identity should have data access but not schema-owner privileges. Monitor connection use, slow queries, replication/storage health, and backup completion.
 
@@ -113,6 +120,8 @@ Start with one application instance if traffic permits. The next safe steps are:
 5. Split workers or MCP services into separate deployments only after profiling shows a clear isolation or scaling need.
 
 Do not keep authoritative trip or session state only in process memory.
+
+The current connection registry is process-local. Until revocation fan-out and durable work execution exist, run a single application instance/worker if immediate cross-device WebSocket logout and in-flight request continuity are required. See [Reliability and SPOF Review](reliability.md).
 
 ## Observability
 

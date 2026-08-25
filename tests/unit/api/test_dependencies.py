@@ -118,6 +118,7 @@ def test_travel_response_service_uses_shared_graph_and_request_session() -> None
     settings = MagicMock(spec=Settings)
     settings.conversation_history_message_limit = 20
     settings.assistant_run_lease_seconds = 120
+    settings.travel_response_timeout_seconds = 75.0
     settings.max_model_attempts = 3
     graph = object()
     application.state.settings = settings
@@ -141,6 +142,7 @@ def test_travel_response_service_uses_shared_graph_and_request_session() -> None
     assert service.processing.session is database_session
     assert service.processing.history_limit == 20
     assert service.assistant_run_lease_seconds == 120
+    assert service.travel_response_timeout_seconds == 75.0
     assert service.max_model_attempts == 3
 
 
