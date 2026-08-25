@@ -10,10 +10,13 @@ from pydantic import ValidationError
 from app.common.exceptions import ProviderUnavailableError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.domain.hotels import HotelSearchStatus
+from app.domain.places import PlaceSearchStatus
 from app.mcp.client import TravelMcpClient
 from app.mcp.schemas.hotels import HotelSearchGuidance
+from app.mcp.schemas.places import PlaceSearchGuidance
 from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
+from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
 
 
 class FakeMcpToolServer:
@@ -95,6 +98,30 @@ def hotel_result(*, is_error: bool = False, content: object | None = None) -> ob
     )
 
 
+def place_result(*, is_error: bool = False, content: object | None = None) -> object:
+    """Build the wrapped MCP place result consumed by the adapter."""
+
+    return SimpleNamespace(
+        is_error=is_error,
+        structured_content=content
+        if content is not None
+        else {
+            "result": {
+                "status": "no_places",
+                "searched_at": "2026-08-25T12:00:00Z",
+                "location": {
+                    "query": "London",
+                    "display_name": "London, United Kingdom",
+                    "latitude": 51.5071,
+                    "longitude": -0.1276,
+                },
+                "places": [],
+                "message": "No relevant places were found.",
+            }
+        },
+    )
+
+
 def create_hotel_request() -> HotelSearchInput:
     """Create one valid hotel request for MCP client tests."""
 
@@ -106,6 +133,17 @@ def create_hotel_request() -> HotelSearchInput:
         children_ages=[8],
         rooms=1,
         free_cancellation_only=True,
+        max_results=3,
+    )
+
+
+def create_place_request() -> PlaceSearchInput:
+    """Create one valid place-discovery request for MCP client tests."""
+
+    return PlaceSearchInput(
+        destination="London, United Kingdom",
+        interests=["museums", "parks"],
+        family_friendly=True,
         max_results=3,
     )
 
@@ -393,5 +431,105 @@ def test_search_hotels_rejects_invalid_wrapped_content() -> None:
 
         with pytest.raises(ProviderUnavailableError, match="invalid response"):
             await client.search_hotels(request=create_hotel_request())
+
+    asyncio.run(exercise())
+
+
+def test_search_places_serializes_request_and_validates_result() -> None:
+    """Place requests should cross MCP as JSON and return a domain result."""
+
+    async def exercise() -> None:
+        server = FakeMcpToolServer(result=place_result())
+        result = await TravelMcpClient(mcp_server=server).search_places(
+            request=create_place_request()
+        )
+
+        assert isinstance(result, PlaceSearchResult)
+        assert result.status is PlaceSearchStatus.NO_PLACES
+        assert server.calls == [
+            (
+                "search_places",
+                {
+                    "destination": "London, United Kingdom",
+                    "interests": ["museums", "parks"],
+                    "family_friendly": True,
+                    "max_results": 3,
+                },
+            )
+        ]
+
+    asyncio.run(exercise())
+
+
+def test_search_places_preserves_user_guidance() -> None:
+    """Location clarification should remain typed rather than become a failure."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(
+                result=place_result(
+                    content={
+                        "result": {
+                            "status": "location_ambiguous",
+                            "message": "Please select one location.",
+                            "candidates": [
+                                "London, United Kingdom",
+                                "London, Ontario, Canada",
+                            ],
+                        }
+                    }
+                )
+            )
+        )
+
+        result = await client.search_places(request=create_place_request())
+
+        assert isinstance(result, PlaceSearchGuidance)
+        assert result.status == "location_ambiguous"
+        assert len(result.candidates) == 2
+
+    asyncio.run(exercise())
+
+
+def test_search_places_hides_mcp_tool_errors() -> None:
+    """MCP place-tool failures should become safe provider failures."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(result=place_result(is_error=True))
+        )
+
+        with pytest.raises(ProviderUnavailableError, match="tool failed"):
+            await client.search_places(request=create_place_request())
+
+    asyncio.run(exercise())
+
+
+def test_search_places_hides_mcp_transport_errors() -> None:
+    """Internal place transport details should not escape the MCP client."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(error=RuntimeError("private transport detail"))
+        )
+
+        with pytest.raises(ProviderUnavailableError, match="tool is unavailable"):
+            await client.search_places(request=create_place_request())
+
+    asyncio.run(exercise())
+
+
+def test_search_places_rejects_invalid_wrapped_content() -> None:
+    """Missing or malformed place result wrappers should fail safely."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(
+                result=place_result(content={"unexpected": {}})
+            )
+        )
+
+        with pytest.raises(ProviderUnavailableError, match="invalid response"):
+            await client.search_places(request=create_place_request())
 
     asyncio.run(exercise())

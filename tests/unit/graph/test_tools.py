@@ -8,15 +8,19 @@ import pytest
 from app.common.exceptions import ProviderUnavailableError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.domain.hotels import HotelSearchStatus
+from app.domain.places import PlaceSearchStatus
 from app.graph.tools import (
     create_current_weather_tool,
     create_flight_search_tool,
     create_hotel_search_tool,
+    create_place_search_tool,
 )
 from app.mcp.schemas.hotels import HotelSearchGuidance
+from app.mcp.schemas.places import PlaceSearchGuidance
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.locations.schemas import ResolvedLocation
+from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
 from app.providers.weather.schemas import CurrentWeather
 
 
@@ -79,6 +83,29 @@ class FakeHotelMcpClient:
         return self.result
 
 
+class FakePlaceMcpClient:
+    """Record normalized place requests and return a configured response."""
+
+    def __init__(
+        self,
+        result: PlaceSearchResult | PlaceSearchGuidance | BaseException,
+    ) -> None:
+        self.result = result
+        self.requests: list[PlaceSearchInput] = []
+
+    async def search_places(
+        self,
+        *,
+        request: PlaceSearchInput,
+    ) -> PlaceSearchResult | PlaceSearchGuidance:
+        """Record the place request before returning or raising."""
+
+        self.requests.append(request)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
 def current_weather() -> CurrentWeather:
     """Build deterministic normalized weather for tool tests."""
 
@@ -117,6 +144,22 @@ def no_hotel_options() -> HotelSearchResult:
             longitude=-0.1276,
         ),
         message="No current hotels were found.",
+    )
+
+
+def no_place_options() -> PlaceSearchResult:
+    """Build a deterministic normalized empty place result."""
+
+    return PlaceSearchResult(
+        status=PlaceSearchStatus.NO_PLACES,
+        searched_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+        location=ResolvedLocation(
+            query="London, United Kingdom",
+            display_name="London, United Kingdom",
+            latitude=51.5071,
+            longitude=-0.1276,
+        ),
+        message="No relevant places were found.",
     )
 
 
@@ -400,5 +443,105 @@ def test_hotel_search_tool_propagates_safe_provider_errors() -> None:
                     "check_out_date": "2026-09-12",
                 }
             )
+
+    asyncio.run(exercise())
+
+
+def test_place_search_tool_exposes_cost_bounded_model_schema() -> None:
+    """The model should discover interests and the five-result limit."""
+
+    tool = create_place_search_tool(mcp_client=FakePlaceMcpClient(no_place_options()))
+
+    assert tool.name == "search_places"
+    assert "verified attractions" in tool.description
+    assert "at most five" in tool.description
+    assert tool.args_schema is PlaceSearchInput
+    schema = tool.args_schema.model_json_schema()
+    assert schema["required"] == ["destination"]
+    assert schema["properties"]["interests"]["maxItems"] == 10
+    assert schema["properties"]["max_results"]["minimum"] == 1
+    assert schema["properties"]["max_results"]["maximum"] == 5
+
+
+def test_place_search_tool_normalizes_preferences_and_returns_json() -> None:
+    """Model arguments should become one normalized place request."""
+
+    async def exercise() -> None:
+        mcp_client = FakePlaceMcpClient(no_place_options())
+        tool = create_place_search_tool(mcp_client=mcp_client)
+
+        result = await tool.ainvoke(
+            {
+                "destination": " London, United Kingdom ",
+                "interests": ["Museums", "parks", "museums"],
+                "family_friendly": True,
+                "max_results": 3,
+            }
+        )
+
+        request = mcp_client.requests[0]
+        assert request.destination == "London, United Kingdom"
+        assert request.interests == ["Museums", "parks"]
+        assert request.family_friendly is True
+        assert request.max_results == 3
+        assert result["status"] == "no_places"
+        assert result["searched_at"] == "2026-08-25T12:00:00Z"
+
+    asyncio.run(exercise())
+
+
+def test_place_search_tool_returns_location_guidance_as_json() -> None:
+    """The model should receive actionable ambiguous-location candidates."""
+
+    async def exercise() -> None:
+        guidance = PlaceSearchGuidance(
+            status="location_ambiguous",
+            message="Please select one location.",
+            candidates=[
+                "London, United Kingdom",
+                "London, Ontario, Canada",
+            ],
+        )
+        tool = create_place_search_tool(mcp_client=FakePlaceMcpClient(guidance))
+
+        result = await tool.ainvoke({"destination": "London"})
+
+        assert result == guidance.model_dump(mode="json")
+
+    asyncio.run(exercise())
+
+
+def test_place_search_tool_rejects_excess_results_before_mcp_call() -> None:
+    """An oversized request should consume no MCP or provider request."""
+
+    async def exercise() -> None:
+        mcp_client = FakePlaceMcpClient(no_place_options())
+        tool = create_place_search_tool(mcp_client=mcp_client)
+
+        with pytest.raises(ValueError):
+            await tool.ainvoke(
+                {
+                    "destination": "London, United Kingdom",
+                    "max_results": 6,
+                }
+            )
+
+        assert mcp_client.requests == []
+
+    asyncio.run(exercise())
+
+
+def test_place_search_tool_propagates_safe_provider_errors() -> None:
+    """The graph tool should preserve the MCP client's sanitized failure."""
+
+    async def exercise() -> None:
+        tool = create_place_search_tool(
+            mcp_client=FakePlaceMcpClient(
+                ProviderUnavailableError("Place-search tool failed")
+            )
+        )
+
+        with pytest.raises(ProviderUnavailableError, match="tool failed"):
+            await tool.ainvoke({"destination": "London, United Kingdom"})
 
     asyncio.run(exercise())

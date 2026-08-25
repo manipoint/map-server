@@ -6,6 +6,7 @@ from app.mcp.client import TravelMcpClient
 from app.mcp.schemas.weather import CurrentWeatherInput
 from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput
+from app.providers.places.schemas import PlaceSearchInput
 
 
 def create_current_weather_tool(
@@ -66,4 +67,26 @@ def create_hotel_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
             "Prices are provisional. Search only; no booking."
         ),
         args_schema=HotelSearchInput,
+    )
+
+
+def create_place_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
+    """Create the model-facing place-discovery tool."""
+
+    async def search_places(**arguments: object) -> dict[str, object]:
+        request = PlaceSearchInput.model_validate(arguments)
+        result = await mcp_client.search_places(request=request)
+        return result.model_dump(mode="json")
+
+    return StructuredTool.from_function(
+        coroutine=search_places,
+        name="search_places",
+        description=(
+            "Find verified attractions and activities for one destination. "
+            "Use interests such as museums, parks, history, food, or family "
+            "activities when the user provides them. Include country or "
+            "region when known. Returns at most five results. Discovery "
+            "only; no booking."
+        ),
+        args_schema=PlaceSearchInput,
     )

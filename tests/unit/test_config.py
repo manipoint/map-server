@@ -381,3 +381,71 @@ def test_duffel_configuration_loads_from_environment(monkeypatch) -> None:
     assert settings.hotel_provider == "duffel"
     assert settings.duffel_stays_radius_km == 8
     assert settings.duffel_api_key is not None
+
+
+def test_places_provider_is_disabled_without_credentials_by_default() -> None:
+    """Deployments without place discovery should not require a Tavily key."""
+
+    settings = create_settings()
+
+    assert settings.places_provider is None
+    assert settings.tavily_api_key is None
+    assert settings.tavily_search_api_url == "https://api.tavily.com/search"
+
+
+def test_tavily_places_provider_requires_an_api_key() -> None:
+    """Enabling Tavily place discovery should require credentials at startup."""
+
+    with pytest.raises(
+        ValidationError,
+        match="TAVILY_API_KEY is required",
+    ):
+        create_settings(
+            places_provider="tavily",
+            tavily_api_key=None,
+        )
+
+
+def test_tavily_places_provider_accepts_complete_configuration() -> None:
+    """A configured Tavily token and endpoint should enable place discovery."""
+
+    settings = create_settings(
+        places_provider="tavily",
+        tavily_api_key=SecretStr("test-tavily-token"),
+    )
+
+    assert settings.places_provider == "tavily"
+    assert settings.tavily_api_key is not None
+    assert settings.tavily_api_key.get_secret_value() == "test-tavily-token"
+    assert settings.tavily_search_api_url == "https://api.tavily.com/search"
+
+
+def test_google_places_provider_requires_an_api_key() -> None:
+    """Enabling Google place discovery should require credentials at startup."""
+
+    with pytest.raises(
+        ValidationError,
+        match="GOOGLE_PLACES_API_KEY is required",
+    ):
+        create_settings(
+            places_provider="google",
+            google_places_api_key=None,
+        )
+
+
+def test_google_places_provider_accepts_complete_configuration() -> None:
+    """A configured Google key and endpoint should enable place discovery."""
+
+    settings = create_settings(
+        places_provider="google",
+        google_places_api_key=SecretStr("test-google-places-key"),
+    )
+
+    assert settings.places_provider == "google"
+    assert settings.google_places_api_key is not None
+    assert settings.google_places_api_key.get_secret_value() == (
+        "test-google-places-key"
+    )
+    assert settings.google_places_text_search_url == (
+        "https://places.googleapis.com/v1/places:searchText"
+    )

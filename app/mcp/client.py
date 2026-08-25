@@ -6,13 +6,18 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
 from app.mcp.schemas.hotels import HotelSearchGuidance
+from app.mcp.schemas.places import PlaceSearchGuidance
 from app.mcp.schemas.weather import CurrentWeatherInput
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
+from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
 from app.providers.weather.schemas import CurrentWeather
 
 HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
+PlaceSearchResponse = PlaceSearchResult | PlaceSearchGuidance
+
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
+PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
 
 
 class McpToolServer(Protocol):
@@ -98,4 +103,31 @@ class TravelMcpClient:
         except (AttributeError, KeyError, TypeError, ValidationError) as error:
             raise ProviderUnavailableError(
                 "Hotel-search tool returned an invalid response"
+            ) from error
+
+    async def search_places(self, *, request: PlaceSearchInput) -> PlaceSearchResponse:
+        """Search places through MCP and validate results or guidance."""
+        arguments = request.model_dump(mode="json", exclude_none=True)
+        try:
+            result = await self.mcp_server.call_tool(
+                "search_places", arguments=arguments
+            )
+        except Exception as error:
+            raise ProviderUnavailableError(
+                "Place-search tool is unavailable"
+            ) from error
+        if result.is_error:
+            raise ProviderUnavailableError("Place-search tool failed")
+
+        try:
+            payload = result.structured_content["result"]
+            return PLACE_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValidationError,
+        ) as error:
+            raise ProviderUnavailableError(
+                "Place-search tool returned an invalid response"
             ) from error

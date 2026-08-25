@@ -21,14 +21,17 @@ from app.graph.tools import (
     create_current_weather_tool,
     create_flight_search_tool,
     create_hotel_search_tool,
+    create_place_search_tool,
 )
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.providers.flights.duffel_client import DuffelFlightClient
 from app.providers.hotels.duffel_client import DuffelHotelClient
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
+from app.providers.places.google_client import GooglePlacesClient
 from app.providers.weather.client import WeatherApiClient
 from app.services.hotel_search_service import HotelSearchService
+from app.services.place_search_service import PlaceSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     flight_provider: DuffelFlightClient | None = None
     hotel_provider: DuffelHotelClient | None = None
     location_provider: WeatherApiLocationClient | None = None
+    place_provider: GooglePlacesClient | None = None
     hotel_search_service: HotelSearchService | None = None
+    place_search_service: PlaceSearchService | None = None
 
     if settings.database_connection_mode == "cloud_sql":
         database_engine, cloud_sql_connector = await create_cloud_sql_resources(
@@ -65,11 +70,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 http_client=http_client,
                 settings=settings,
             )
-        if settings.hotel_provider == "duffel":
+        if settings.hotel_provider == "duffel" or settings.places_provider == "google":
             location_provider = WeatherApiLocationClient(
                 http_client=http_client,
                 settings=settings,
             )
+        if settings.hotel_provider == "duffel":
+            assert location_provider is not None
+
             hotel_provider = DuffelHotelClient(
                 http_client=http_client,
                 settings=settings,
@@ -79,10 +87,23 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 hotel_provider=hotel_provider,
                 radius_km=settings.duffel_stays_radius_km,
             )
+
+        if settings.places_provider == "google":
+            assert location_provider is not None
+            place_provider = GooglePlacesClient(
+                http_client=http_client,
+                settings=settings,
+            )
+            place_search_service = PlaceSearchService(
+                location_provider=location_provider,
+                place_provider=place_provider,
+            )
+
         mcp_server = create_mcp_server(
             weather_provider=weather_provider,
             flight_provider=flight_provider,
             hotel_search_service=hotel_search_service,
+            place_search_service=place_search_service,
         )
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
 
@@ -95,6 +116,12 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             tools.append(create_flight_search_tool(mcp_client=mcp_client))
         if hotel_search_service is not None:
             tools.append(create_hotel_search_tool(mcp_client=mcp_client))
+        if place_search_service is not None:
+            tools.append(
+                create_place_search_tool(
+                    mcp_client=mcp_client,
+                )
+            )
         model_gateway = build_model_gateway(settings=settings, tools=tools)
         travel_graph = build_travel_graph(
             model_gateway=model_gateway,
@@ -112,6 +139,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         application.state.location_provider = location_provider
         application.state.hotel_provider = hotel_provider
         application.state.hotel_search_service = hotel_search_service
+        application.state.place_provider = place_provider
+        application.state.place_search_service = place_search_service
         application.state.mcp_server = mcp_server
         application.state.mcp_client = mcp_client
 

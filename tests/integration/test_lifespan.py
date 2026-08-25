@@ -191,6 +191,8 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
         assert application.state.location_provider is None
         assert application.state.hotel_provider is None
         assert application.state.hotel_search_service is None
+        assert application.state.place_provider is None
+        assert application.state.place_search_service is None
         assert application.state.mcp_server is fake_mcp_server
         assert application.state.mcp_client is fake_mcp_client
 
@@ -203,6 +205,7 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
         weather_provider=fake_weather_provider,
         flight_provider=None,
         hotel_search_service=None,
+        place_search_service=None,
     )
     create_client.assert_called_once_with(mcp_server=fake_mcp_server)
     fake_http_client.aclose.assert_awaited_once_with()
@@ -289,6 +292,7 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
         weather_provider=fake_weather_provider,
         flight_provider=fake_flight_provider,
         hotel_search_service=None,
+        place_search_service=None,
     )
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
@@ -411,6 +415,7 @@ def test_lifespan_wires_enabled_hotel_service_into_mcp(monkeypatch) -> None:
         weather_provider=fake_weather_provider,
         flight_provider=None,
         hotel_search_service=fake_hotel_service,
+        place_search_service=None,
     )
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
@@ -419,6 +424,131 @@ def test_lifespan_wires_enabled_hotel_service_into_mcp(monkeypatch) -> None:
         mcp_client=application.state.mcp_client,
     )
     expected_tools = [fake_weather_tool, fake_hotel_tool]
+    build_gateway.assert_called_once_with(
+        settings=settings,
+        tools=expected_tools,
+    )
+    build_graph.assert_called_once_with(
+        model_gateway=fake_gateway,
+        tools=expected_tools,
+        max_tool_rounds=settings.max_tool_rounds,
+    )
+    fake_http_client.aclose.assert_awaited_once_with()
+
+
+def test_lifespan_wires_enabled_google_places_service_into_mcp(
+    monkeypatch,
+) -> None:
+    """Google configuration should assemble one places service and graph tool."""
+
+    fake_engine = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    fake_weather_provider = object()
+    fake_location_provider = object()
+    fake_place_provider = object()
+    fake_place_service = object()
+    fake_mcp_server = object()
+    fake_weather_tool = object()
+    fake_place_tool = object()
+    fake_gateway = object()
+    fake_graph = object()
+    create_location_provider = MagicMock(return_value=fake_location_provider)
+    create_place_provider = MagicMock(return_value=fake_place_provider)
+    create_place_service = MagicMock(return_value=fake_place_service)
+    create_server = MagicMock(return_value=fake_mcp_server)
+    create_weather_tool = MagicMock(return_value=fake_weather_tool)
+    create_place_tool = MagicMock(return_value=fake_place_tool)
+    build_gateway = MagicMock(return_value=fake_gateway)
+    build_graph = MagicMock(return_value=fake_graph)
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_database_engine",
+        lambda settings: fake_engine,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_session_factory",
+        lambda engine: object(),
+    )
+    monkeypatch.setattr(
+        lifespan_module.httpx,
+        "AsyncClient",
+        MagicMock(return_value=fake_http_client),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "WeatherApiClient",
+        MagicMock(return_value=fake_weather_provider),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "WeatherApiLocationClient",
+        create_location_provider,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "GooglePlacesClient",
+        create_place_provider,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "PlaceSearchService",
+        create_place_service,
+    )
+    monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_current_weather_tool",
+        create_weather_tool,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_place_search_tool",
+        create_place_tool,
+    )
+    monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
+    settings = create_url_settings(
+        places_provider="google",
+        google_places_api_key=SecretStr("test-google-places-key"),
+    )
+    application = main_module.create_app(settings)
+
+    with TestClient(application):
+        assert application.state.location_provider is fake_location_provider
+        assert application.state.place_provider is fake_place_provider
+        assert application.state.place_search_service is fake_place_service
+        assert application.state.hotel_provider is None
+        assert application.state.hotel_search_service is None
+        assert application.state.travel_graph is fake_graph
+
+    create_location_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_place_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_place_service.assert_called_once_with(
+        location_provider=fake_location_provider,
+        place_provider=fake_place_provider,
+    )
+    create_server.assert_called_once_with(
+        weather_provider=fake_weather_provider,
+        flight_provider=None,
+        hotel_search_service=None,
+        place_search_service=fake_place_service,
+    )
+    create_weather_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    create_place_tool.assert_called_once_with(
+        mcp_client=application.state.mcp_client,
+    )
+    expected_tools = [fake_weather_tool, fake_place_tool]
     build_gateway.assert_called_once_with(
         settings=settings,
         tools=expected_tools,

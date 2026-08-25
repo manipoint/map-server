@@ -3,9 +3,7 @@
 from datetime import timedelta
 
 from app.common.exceptions import (
-    AmbiguousLocationError,
     InvalidTravelDateError,
-    LocationNotFoundError,
 )
 from app.common.time import DateClock, utc_today
 from app.providers.hotels.client import HotelProvider
@@ -15,6 +13,7 @@ from app.providers.hotels.schemas import (
     ResolvedHotelSearch,
 )
 from app.providers.locations.client import LocationProvider
+from app.services.location_selection import select_resolved_location
 
 LOCATION_CANDIDATE_LIMIT = 5
 
@@ -52,19 +51,10 @@ class HotelSearchService:
             max_results=LOCATION_CANDIDATE_LIMIT,
         )
 
-        if not candidates:
-            raise LocationNotFoundError("No location matched the destination")
-
-        selected_location = candidates[0]
-
-        if (
-            len(candidates) > 1
-            and request.destination.casefold()
-            != selected_location.display_name.casefold()
-        ):
-            raise AmbiguousLocationError(
-                candidates=[candidate.display_name for candidate in candidates]
-            )
+        selected_location = select_resolved_location(
+            query=request.destination,
+            candidates=candidates,
+        )
 
         search = ResolvedHotelSearch(
             request=request,
