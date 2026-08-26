@@ -32,3 +32,12 @@ CountryCode = Annotated[
     ),
     BeforeValidator(normalize_upper_code),
 ]
+IataCode = Annotated[
+    str,
+    StringConstraints(
+        min_length=3,
+        max_length=3,
+        pattern=r"^[A-Z]{3}$",
+    ),
+    BeforeValidator(normalize_upper_code),
+]

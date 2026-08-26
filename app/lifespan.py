@@ -32,6 +32,7 @@ from app.providers.hotels.duffel_client import DuffelHotelClient
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
 from app.providers.places.google_client import GooglePlacesClient
 from app.providers.weather.client import WeatherApiClient
+from app.services.flight_search_service import FlightSearchService
 from app.services.hotel_search_service import HotelSearchService
 from app.services.place_search_service import PlaceSearchService
 
@@ -52,6 +53,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     currency_provider: FrankfurterCurrencyClient | None = None
     hotel_search_service: HotelSearchService | None = None
     place_search_service: PlaceSearchService | None = None
+    flight_search_service: FlightSearchService | None = None
 
     if settings.database_connection_mode == "cloud_sql":
         database_engine, cloud_sql_connector = await create_cloud_sql_resources(
@@ -77,6 +79,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             flight_provider = DuffelFlightClient(
                 http_client=http_client,
                 settings=settings,
+            )
+            flight_search_service = FlightSearchService(
+                flight_provider=flight_provider,
             )
         if settings.hotel_provider == "duffel" or settings.places_provider == "google":
             location_provider = WeatherApiLocationClient(
@@ -109,7 +114,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
         mcp_server = create_mcp_server(
             weather_provider=weather_provider,
-            flight_provider=flight_provider,
+            flight_provider=flight_search_service,
             hotel_search_service=hotel_search_service,
             place_search_service=place_search_service,
             currency_provider=currency_provider,
@@ -121,7 +126,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 mcp_client=mcp_client,
             ),
         ]
-        if flight_provider is not None:
+        if flight_search_service is not None:
             tools.append(create_flight_search_tool(mcp_client=mcp_client))
         if hotel_search_service is not None:
             tools.append(create_hotel_search_tool(mcp_client=mcp_client))
@@ -147,6 +152,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         application.state.http_client = http_client
         application.state.weather_provider = weather_provider
         application.state.flight_provider = flight_provider
+        application.state.flight_search_service = flight_search_service
         application.state.location_provider = location_provider
         application.state.hotel_provider = hotel_provider
         application.state.hotel_search_service = hotel_search_service

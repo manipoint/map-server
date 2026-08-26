@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
@@ -127,3 +127,11 @@ TravelResponseServiceDependency = Annotated[
     TravelResponseService,
     Depends(get_travel_response_service),
 ]
+
+
+def get_database_engine(request: Request) -> AsyncEngine:
+    """Return the database engine owned by application lifespan."""
+    return request.app.state.database_engine
+
+
+DatabaseEngineDependency = Annotated[AsyncEngine, Depends(get_database_engine)]

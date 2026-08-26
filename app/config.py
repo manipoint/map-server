@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=10, ge=0, le=100)
     database_pool_timeout_seconds: float = Field(default=30.0, gt=0)
     database_pool_recycle_seconds: int = Field(default=1800, ge=60)
+    database_readiness_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=10,
+    )
 
     # Authentication
     jwt_signing_key: SecretStr = Field(

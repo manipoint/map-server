@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.flights import FlightCabinClass
-from app.mcp.schemas.flights import FlightSearchInput
+from app.mcp.schemas.flights import FlightSearchGuidance, FlightSearchInput
 
 
 def create_search(**overrides: object) -> FlightSearchInput:
@@ -154,3 +154,39 @@ def test_flight_search_accepts_passenger_age_boundaries() -> None:
     )
 
     assert search.total_travelers == 5
+
+
+def test_flight_search_guidance_normalizes_safe_invalid_date_response() -> None:
+    """Date failures should serialize as one compact structured outcome."""
+
+    guidance = FlightSearchGuidance(
+        status="invalid_dates",
+        message="  Flight departure date cannot be in the past  ",
+    )
+
+    assert guidance.model_dump() == {
+        "status": "invalid_dates",
+        "message": "Flight departure date cannot be in the past",
+    }
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"status": "provider_error", "message": "Try again later"},
+        {"status": "invalid_dates", "message": "   "},
+        {"status": "invalid_dates", "message": "x" * 501},
+        {
+            "status": "invalid_dates",
+            "message": "Invalid date",
+            "details": "internal data",
+        },
+    ],
+)
+def test_flight_search_guidance_rejects_unsupported_or_unbounded_input(
+    values: dict[str, object],
+) -> None:
+    """Guidance should expose only its documented bounded public contract."""
+
+    with pytest.raises(ValidationError):
+        FlightSearchGuidance.model_validate(values)

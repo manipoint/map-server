@@ -214,13 +214,14 @@ def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
 
 
 def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
-    """Duffel configuration should create one provider using the shared client."""
+    """Duffel configuration should wrap the provider in the flight service."""
 
     fake_engine = AsyncMock()
     fake_http_client = MagicMock()
     fake_http_client.aclose = AsyncMock()
     fake_weather_provider = object()
     fake_flight_provider = object()
+    fake_flight_search_service = object()
     fake_mcp_server = object()
     fake_weather_tool = object()
     fake_flight_tool = object()
@@ -228,6 +229,7 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
     fake_graph = object()
     create_weather_provider = MagicMock(return_value=fake_weather_provider)
     create_flight_provider = MagicMock(return_value=fake_flight_provider)
+    create_flight_search_service = MagicMock(return_value=fake_flight_search_service)
     create_server = MagicMock(return_value=fake_mcp_server)
     create_weather_tool = MagicMock(return_value=fake_weather_tool)
     create_flight_tool = MagicMock(return_value=fake_flight_tool)
@@ -259,6 +261,11 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
         "DuffelFlightClient",
         create_flight_provider,
     )
+    monkeypatch.setattr(
+        lifespan_module,
+        "FlightSearchService",
+        create_flight_search_service,
+    )
     monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
     monkeypatch.setattr(
         lifespan_module,
@@ -280,6 +287,7 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
 
     with TestClient(application):
         assert application.state.flight_provider is fake_flight_provider
+        assert application.state.flight_search_service is fake_flight_search_service
         assert application.state.travel_graph is fake_graph
 
     create_weather_provider.assert_called_once_with(
@@ -290,9 +298,12 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
         http_client=fake_http_client,
         settings=settings,
     )
+    create_flight_search_service.assert_called_once_with(
+        flight_provider=fake_flight_provider,
+    )
     create_server.assert_called_once_with(
         weather_provider=fake_weather_provider,
-        flight_provider=fake_flight_provider,
+        flight_provider=fake_flight_search_service,
         hotel_search_service=None,
         place_search_service=None,
         currency_provider=None,

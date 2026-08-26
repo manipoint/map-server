@@ -6,6 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
 from app.mcp.schemas.currency import CurrencyConversionGuidance
+from app.mcp.schemas.flights import FlightSearchGuidance
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
 from app.mcp.schemas.weather import CurrentWeatherInput
@@ -21,10 +22,12 @@ from app.providers.weather.schemas import CurrentWeather
 HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
 PlaceSearchResponse = PlaceSearchResult | PlaceSearchGuidance
 CurrencyConversionResponse = CurrencyConversionResult | CurrencyConversionGuidance
+FlightSearchResponse = FlightSearchResult | FlightSearchGuidance
 
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
 CURRENCY_CONVERSION_RESPONSE_ADAPTER = TypeAdapter(CurrencyConversionResponse)
+FLIGHT_SEARCH_RESPONSE_ADAPTER = TypeAdapter(FlightSearchResponse)
 
 
 class McpToolServer(Protocol):
@@ -67,8 +70,10 @@ class TravelMcpClient:
                 "Current-weather tool returned an invalid response"
             ) from error
 
-    async def search_flights(self, *, request: FlightSearchInput) -> FlightSearchResult:
-        """Search flights through MCP and validate the normalized result."""
+    async def search_flights(
+        self, *, request: FlightSearchInput
+    ) -> FlightSearchResponse:
+        """Search flights through MCP and validate results or guidance."""
 
         arguments = request.model_dump(mode="json", exclude_none=True)
         try:
@@ -82,8 +87,9 @@ class TravelMcpClient:
         if result.is_error:
             raise ProviderUnavailableError("Flight-search tool failed")
         try:
-            return FlightSearchResult.model_validate(result.structured_content)
-        except (AttributeError, TypeError, ValidationError) as error:
+            payload = result.structured_content["result"]
+            return FLIGHT_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
+        except (AttributeError, KeyError, TypeError, ValidationError) as error:
             raise ProviderUnavailableError(
                 "Flight-search tool returned an invalid response"
             ) from error

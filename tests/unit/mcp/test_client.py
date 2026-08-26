@@ -12,6 +12,7 @@ from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.domain.hotels import HotelSearchStatus
 from app.domain.places import PlaceSearchStatus
 from app.mcp.client import TravelMcpClient
+from app.mcp.schemas.flights import FlightSearchGuidance
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
 from app.providers.flights.schemas import FlightSearchInput
@@ -59,17 +60,19 @@ def weather_result(*, is_error: bool = False, content: object | None = None) -> 
 
 
 def flight_result(*, is_error: bool = False, content: object | None = None) -> object:
-    """Build the minimum MCP flight result shape consumed by the adapter."""
+    """Build the wrapped MCP flight result consumed by the adapter."""
 
     return SimpleNamespace(
         is_error=is_error,
         structured_content=content
         if content is not None
         else {
-            "status": "no_offers",
-            "searched_at": "2026-08-23T12:00:00Z",
-            "offers": [],
-            "message": "No current flight offers were found.",
+            "result": {
+                "status": "no_offers",
+                "searched_at": "2026-08-23T12:00:00Z",
+                "offers": [],
+                "message": "No current flight offers were found.",
+            }
         },
     )
 
@@ -315,7 +318,7 @@ def test_search_flights_rejects_invalid_mcp_content() -> None:
     async def exercise() -> None:
         client = TravelMcpClient(
             mcp_server=FakeMcpToolServer(
-                result=flight_result(content={"status": "offers_available"})
+                result=flight_result(content={"result": {"status": "offers_available"}})
             )
         )
 
@@ -327,6 +330,37 @@ def test_search_flights_rejects_invalid_mcp_content() -> None:
                     departure_date=date(2026, 9, 10),
                 )
             )
+
+    asyncio.run(exercise())
+
+
+def test_search_flights_preserves_invalid_date_guidance() -> None:
+    """Date guidance should remain typed instead of becoming a provider failure."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(
+                result=flight_result(
+                    content={
+                        "result": {
+                            "status": "invalid_dates",
+                            "message": ("Flight departure date cannot be in the past"),
+                        }
+                    }
+                )
+            )
+        )
+
+        result = await client.search_flights(
+            request=FlightSearchInput(
+                origin="LHE",
+                destination="DXB",
+                departure_date=date(2026, 9, 10),
+            )
+        )
+
+        assert isinstance(result, FlightSearchGuidance)
+        assert result.status == "invalid_dates"
 
     asyncio.run(exercise())
 

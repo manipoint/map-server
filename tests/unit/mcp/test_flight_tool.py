@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from fastmcp import FastMCP
@@ -10,8 +11,10 @@ from pydantic import ValidationError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.mcp.server import create_mcp_server
 from app.mcp.tools.flights import register_flight_tools
+from app.providers.flights.client import FlightProvider
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.weather.schemas import CurrentWeather
+from app.services.flight_search_service import FlightSearchService
 
 
 class FakeFlightProvider:
@@ -46,7 +49,7 @@ class UnusedWeatherProvider:
         raise AssertionError(f"Unexpected weather request for {city}")
 
 
-def create_server(provider: FakeFlightProvider) -> FastMCP:
+def create_server(provider: FlightProvider) -> FastMCP:
     """Create an isolated MCP server containing only the flight tool."""
 
     server = FastMCP(name="Flight tool test")
@@ -181,13 +184,48 @@ def test_flight_tool_returns_group_booking_as_structured_outcome() -> None:
 
         assert result.is_error is False
         assert result.structured_content == {
-            "status": "group_booking_required",
-            "searched_at": "2026-08-22T12:00:00Z",
-            "offers": [],
-            "message": (
-                "Contact the airline group desk for one quote covering all travelers."
-            ),
+            "result": {
+                "status": "group_booking_required",
+                "searched_at": "2026-08-22T12:00:00Z",
+                "offers": [],
+                "message": (
+                    "Contact the airline group desk for one quote covering all "
+                    "travelers."
+                ),
+            }
         }
+
+    asyncio.run(exercise())
+
+
+def test_flight_tool_returns_invalid_date_guidance_without_provider_call() -> None:
+    """Past dates should become structured guidance without consuming quota."""
+
+    async def exercise() -> None:
+        downstream_provider = AsyncMock()
+        service = FlightSearchService(
+            flight_provider=downstream_provider,
+            clock=lambda: datetime(2026, 8, 26, 12, tzinfo=UTC),
+        )
+        server = create_server(service)
+
+        result = await server.call_tool(
+            "search_flights",
+            {
+                "origin": "LHE",
+                "destination": "KHI",
+                "departure_date": "2026-08-25",
+            },
+        )
+
+        assert result.is_error is False
+        assert result.structured_content == {
+            "result": {
+                "status": "invalid_dates",
+                "message": "Flight departure date cannot be in the past",
+            }
+        }
+        downstream_provider.search_flights.assert_not_awaited()
 
     asyncio.run(exercise())
 

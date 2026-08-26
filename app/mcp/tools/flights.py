@@ -6,7 +6,9 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
+from app.common.exceptions import InvalidTravelDateError
 from app.domain.flights import FlightCabinClass
+from app.mcp.schemas.flights import FlightSearchGuidance
 from app.providers.flights.client import FlightProvider
 from app.providers.flights.schemas import (
     ChildAge,
@@ -28,8 +30,9 @@ def register_flight_tools(
         description=(
             "Search available flight offers for a route and passenger group. "
             "Provide each child's age and each infant's age in the appropriate "
-            "seat or lap age list. "
-            "The returned total price covers all requested travelers. "
+            "seat or lap age list. The returned total price covers all "
+            "requested travelers. Groups above the supported online limit "
+            "receive group-booking guidance without a provider search. "
             "This tool searches flights only and does not make bookings."
         ),
     )
@@ -54,9 +57,13 @@ def register_flight_tools(
             str,
             Field(min_length=3, max_length=3),
         ] = "USD",
-        max_results: Annotated[int, Field(ge=1, le=10)] = 5,
-    ) -> FlightSearchResult:
-        """Validate and execute one flight search."""
+        max_results: Annotated[
+            int,
+            Field(ge=1, le=10),
+        ] = 5,
+    ) -> FlightSearchResult | FlightSearchGuidance:
+        """Validate and execute one safe flight search."""
+
         request = FlightSearchInput(
             origin=origin,
             destination=destination,
@@ -71,4 +78,11 @@ def register_flight_tools(
             currency=currency,
             max_results=max_results,
         )
-        return await flight_provider.search_flights(request=request)
+
+        try:
+            return await flight_provider.search_flights(request=request)
+        except InvalidTravelDateError as error:
+            return FlightSearchGuidance(
+                status="invalid_dates",
+                message=str(error),
+            )

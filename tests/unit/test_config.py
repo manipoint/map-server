@@ -77,6 +77,24 @@ def test_cloud_sql_mode_rejects_missing_settings() -> None:
         )
 
 
+def test_database_readiness_timeout_uses_a_safe_default() -> None:
+    """Readiness should fail quickly instead of waiting on the normal pool timeout."""
+
+    settings = create_settings()
+
+    assert settings.database_readiness_timeout_seconds == 2.0
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, 10.1])
+def test_database_readiness_timeout_rejects_unsafe_values(
+    timeout_seconds: float,
+) -> None:
+    """Readiness timeout must stay positive and operationally bounded."""
+
+    with pytest.raises(ValidationError):
+        create_settings(database_readiness_timeout_seconds=timeout_seconds)
+
+
 def test_websocket_limits_have_safe_defaults() -> None:
     """Local settings should use the documented message and heartbeat limits."""
 

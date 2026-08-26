@@ -6,12 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.dependencies import (
     get_auth_service,
     get_connection_manager,
     get_current_principal,
+    get_database_engine,
     get_database_session,
     get_travel_response_service,
 )
@@ -51,6 +52,22 @@ def test_database_session_is_provided_and_closed() -> None:
     session_factory.assert_called_once_with()
     session.rollback.assert_not_awaited()
     session.close.assert_awaited_once_with()
+
+
+def test_database_engine_uses_the_application_lifespan_resource() -> None:
+    """Readiness checks should reuse the engine created at startup."""
+
+    engine = MagicMock(spec=AsyncEngine)
+    application = FastAPI()
+    application.state.database_engine = engine
+    request = Request(
+        {
+            "type": "http",
+            "app": application,
+        }
+    )
+
+    assert get_database_engine(request) is engine
 
 
 def test_database_session_rolls_back_after_failure() -> None:
