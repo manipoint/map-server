@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated, Self
 
 from pydantic import (
@@ -144,5 +145,63 @@ class TripRequest(BaseModel):
 
         if self.rooms > self.travelers.adults:
             raise ValueError("each room requires at least one adult")
+
+        return self
+
+
+class TripStatus(StrEnum):
+    """Lifecycle status persisted for a trip."""
+
+    DRAFT = "draft"
+    PLANNED = "planned"
+    ARCHIVED = "archived"
+
+
+class TripUpdate(BaseModel):
+    """Validated partial changes for an existing trip."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+    )
+    origin: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=120,
+    )
+    destination: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=120,
+    )
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> Self:
+        """Reject empty updates, null required fields, and invalid date ranges."""
+
+        if not self.model_fields_set:
+            raise ValueError("at least one trip field must be provided")
+
+        for field_name in {"destination", "start_date", "end_date"}:
+            if (
+                field_name in self.model_fields_set
+                and getattr(self, field_name) is None
+            ):
+                raise ValueError(f"{field_name} cannot be null")
+
+        if (
+            self.start_date is not None
+            and self.end_date is not None
+            and self.end_date <= self.start_date
+        ):
+            raise ValueError("end_date must be after start_date")
 
         return self

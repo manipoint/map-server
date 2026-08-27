@@ -15,9 +15,10 @@ from app.graph.tools import (
     create_hotel_search_tool,
     create_place_search_tool,
 )
+from app.mcp.schemas.flights import FlightSearchPreparationInput
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
-from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
+from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.locations.schemas import ResolvedLocation
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
@@ -45,12 +46,12 @@ class FakeFlightMcpClient:
 
     def __init__(self, result: FlightSearchResult | BaseException) -> None:
         self.result = result
-        self.requests: list[FlightSearchInput] = []
+        self.requests: list[FlightSearchPreparationInput] = []
 
     async def search_flights(
         self,
         *,
-        request: FlightSearchInput,
+        request: FlightSearchPreparationInput,
     ) -> FlightSearchResult:
         """Record the flight request before returning or raising."""
 
@@ -231,7 +232,7 @@ def test_flight_search_tool_exposes_bounded_model_schema() -> None:
     assert tool.name == "search_flights"
     assert "exact child ages" in tool.description
     assert "no booking" in tool.description
-    assert tool.args_schema is FlightSearchInput
+    assert tool.args_schema is FlightSearchPreparationInput
     schema = tool.args_schema.model_json_schema()
     assert schema["required"] == ["origin", "destination", "departure_date"]
     assert schema["properties"]["max_results"]["minimum"] == 1

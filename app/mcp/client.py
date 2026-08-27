@@ -5,16 +5,22 @@ from typing import Any, Protocol
 from pydantic import TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
+from app.mcp.schemas.airports import AirportResolution
 from app.mcp.schemas.currency import CurrencyConversionGuidance
-from app.mcp.schemas.flights import FlightSearchGuidance
+from app.mcp.schemas.flights import (
+    FlightSearchGuidance,
+    FlightSearchPreparationGuidance,
+    FlightSearchPreparationInput,
+)
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
 from app.mcp.schemas.weather import CurrentWeatherInput
+from app.providers.airports.schemas import AirportSearchInput
 from app.providers.currency.schemas import (
     CurrencyConversionInput,
     CurrencyConversionResult,
 )
-from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
+from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
 from app.providers.weather.schemas import CurrentWeather
@@ -22,7 +28,9 @@ from app.providers.weather.schemas import CurrentWeather
 HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
 PlaceSearchResponse = PlaceSearchResult | PlaceSearchGuidance
 CurrencyConversionResponse = CurrencyConversionResult | CurrencyConversionGuidance
-FlightSearchResponse = FlightSearchResult | FlightSearchGuidance
+FlightSearchResponse = (
+    FlightSearchResult | FlightSearchGuidance | FlightSearchPreparationGuidance
+)
 
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
@@ -46,6 +54,34 @@ class TravelMcpClient:
 
     def __init__(self, mcp_server: McpToolServer) -> None:
         self.mcp_server = mcp_server
+
+    async def resolve_airport(
+        self,
+        *,
+        request: AirportSearchInput,
+    ) -> AirportResolution:
+        """Resolve an airport query through the internal MCP server."""
+
+        arguments = request.model_dump(mode="json")
+        try:
+            result = await self.mcp_server.call_tool(
+                "resolve_airport",
+                arguments=arguments,
+            )
+        except Exception as error:
+            raise ProviderUnavailableError(
+                "Airport-resolution tool is unavailable"
+            ) from error
+
+        if result.is_error:
+            raise ProviderUnavailableError("Airport-resolution tool failed")
+
+        try:
+            return AirportResolution.model_validate(result.structured_content)
+        except (AttributeError, TypeError, ValidationError) as error:
+            raise ProviderUnavailableError(
+                "Airport-resolution tool returned an invalid response"
+            ) from error
 
     async def get_current_weather(self, *, city: str) -> CurrentWeather:
         """Get validated normalized weather through the internal MCP server."""
@@ -71,7 +107,7 @@ class TravelMcpClient:
             ) from error
 
     async def search_flights(
-        self, *, request: FlightSearchInput
+        self, *, request: FlightSearchPreparationInput
     ) -> FlightSearchResponse:
         """Search flights through MCP and validate results or guidance."""
 

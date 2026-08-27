@@ -74,12 +74,14 @@ erDiagram
     TRIP {
         uuid id PK
         uuid user_id FK
+        string title
+        string origin
         string destination
         date start_date
         date end_date
-        string currency
         string status
         datetime created_at
+        datetime updated_at
     }
     SEARCH_REQUEST {
         uuid id PK
@@ -225,7 +227,8 @@ erDiagram
 
 ## Important constraints
 
-- `end_date` must be on or after `start_date`.
+- A trip `end_date` must be after its `start_date`.
+- A Phase 1 trip status must be `draft`, `planned`, or `archived`; upcoming, active, and history are date-derived views.
 - Monetary amounts must be non-negative and paired with an ISO 4217 currency code.
 - Flight arrival must be later than departure after timezone normalization.
 - One provider entity is unique by `(provider, provider_*_id)`.

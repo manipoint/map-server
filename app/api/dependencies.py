@@ -19,6 +19,7 @@ from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
 from app.services.travel_response_service import TravelResponseService
+from app.services.trip_service import TripService
 
 
 async def get_database_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -61,6 +62,20 @@ def get_auth_service(
 AuthServiceDependency = Annotated[
     AuthService,
     Depends(get_auth_service),
+]
+
+
+def get_trip_service(
+    database_session: DatabaseSession,
+) -> TripService:
+    """Create one database-bound trip service per HTTP request."""
+
+    return TripService(session=database_session)
+
+
+TripServiceDependency = Annotated[
+    TripService,
+    Depends(get_trip_service),
 ]
 
 

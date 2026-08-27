@@ -15,11 +15,13 @@ from app.api.dependencies import (
     get_database_engine,
     get_database_session,
     get_travel_response_service,
+    get_trip_service,
 )
 from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
+from app.services.trip_service import TripService
 
 
 def create_request(session_factory: MagicMock) -> Request:
@@ -110,6 +112,18 @@ def test_auth_service_uses_request_settings_and_database_session() -> None:
     assert isinstance(service, AuthService)
     assert service.session is database_session
     assert service.settings is settings
+
+
+def test_trip_service_uses_request_database_session() -> None:
+    """Trip routes should share the request-scoped database transaction."""
+
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = get_trip_service(database_session=database_session)
+
+    assert isinstance(service, TripService)
+    assert service.session is database_session
+    assert service.trips.session is database_session
 
 
 def test_connection_manager_uses_the_application_resource() -> None:

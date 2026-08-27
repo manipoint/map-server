@@ -118,6 +118,18 @@ def test_service_returns_group_guidance_without_provider_call() -> None:
     provider.search_flights.assert_not_awaited()
 
 
+def test_policy_can_reject_group_before_airport_preparation() -> None:
+    """Preparation orchestration should reuse group policy without a provider call."""
+
+    service, provider = create_service()
+
+    result = service.evaluate_request_policy(request=create_request(adults=10))
+
+    assert result is not None
+    assert result.status is FlightSearchStatus.GROUP_BOOKING_REQUIRED
+    provider.search_flights.assert_not_awaited()
+
+
 def test_service_counts_all_traveler_categories_for_group_policy() -> None:
     """Children and infants should count toward the provider party boundary."""
 

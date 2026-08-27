@@ -12,12 +12,17 @@ from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.domain.hotels import HotelSearchStatus
 from app.domain.places import PlaceSearchStatus
 from app.mcp.client import TravelMcpClient
-from app.mcp.schemas.flights import FlightSearchGuidance
+from app.mcp.schemas.flights import (
+    FlightSearchGuidance,
+    FlightSearchPreparationGuidance,
+)
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
-from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
+from app.services.flight_search_preparation_service import (
+    FlightSearchPreparationInput,
+)
 
 
 class FakeMcpToolServer:
@@ -231,7 +236,7 @@ def test_search_flights_serializes_request_and_validates_result() -> None:
     async def exercise() -> None:
         server = FakeMcpToolServer(result=flight_result())
         client = TravelMcpClient(mcp_server=server)
-        request = FlightSearchInput(
+        request = FlightSearchPreparationInput(
             origin="LHE",
             destination="DXB",
             departure_date=date(2026, 9, 10),
@@ -280,7 +285,7 @@ def test_search_flights_hides_mcp_tool_errors() -> None:
 
         with pytest.raises(ProviderUnavailableError, match="tool failed"):
             await client.search_flights(
-                request=FlightSearchInput(
+                request=FlightSearchPreparationInput(
                     origin="LHE",
                     destination="DXB",
                     departure_date=date(2026, 9, 10),
@@ -302,7 +307,7 @@ def test_search_flights_hides_mcp_transport_errors() -> None:
 
         with pytest.raises(ProviderUnavailableError, match="tool is unavailable"):
             await client.search_flights(
-                request=FlightSearchInput(
+                request=FlightSearchPreparationInput(
                     origin="LHE",
                     destination="DXB",
                     departure_date=date(2026, 9, 10),
@@ -324,7 +329,7 @@ def test_search_flights_rejects_invalid_mcp_content() -> None:
 
         with pytest.raises(ProviderUnavailableError, match="invalid response"):
             await client.search_flights(
-                request=FlightSearchInput(
+                request=FlightSearchPreparationInput(
                     origin="LHE",
                     destination="DXB",
                     departure_date=date(2026, 9, 10),
@@ -352,7 +357,7 @@ def test_search_flights_preserves_invalid_date_guidance() -> None:
         )
 
         result = await client.search_flights(
-            request=FlightSearchInput(
+            request=FlightSearchPreparationInput(
                 origin="LHE",
                 destination="DXB",
                 departure_date=date(2026, 9, 10),
@@ -361,6 +366,52 @@ def test_search_flights_preserves_invalid_date_guidance() -> None:
 
         assert isinstance(result, FlightSearchGuidance)
         assert result.status == "invalid_dates"
+
+    asyncio.run(exercise())
+
+
+def test_search_flights_preserves_airport_resolution_guidance() -> None:
+    """Airport choices should cross MCP as a typed user-action outcome."""
+
+    async def exercise() -> None:
+        client = TravelMcpClient(
+            mcp_server=FakeMcpToolServer(
+                result=flight_result(
+                    content={
+                        "result": {
+                            "status": "airport_resolution_required",
+                            "origin": {
+                                "status": "resolved",
+                                "query": "LHE",
+                                "iata_code": "LHE",
+                                "options": [],
+                            },
+                            "destination": {
+                                "status": "not_found",
+                                "query": "Unknown city",
+                                "iata_code": None,
+                                "options": [],
+                            },
+                            "message": (
+                                "Airport resolution is required for the destination."
+                            ),
+                        }
+                    }
+                )
+            )
+        )
+
+        result = await client.search_flights(
+            request=FlightSearchPreparationInput(
+                origin="LHE",
+                destination="Unknown city",
+                departure_date=date(2026, 9, 10),
+            )
+        )
+
+        assert isinstance(result, FlightSearchPreparationGuidance)
+        assert result.origin.iata_code == "LHE"
+        assert result.destination.status == "not_found"
 
     asyncio.run(exercise())
 

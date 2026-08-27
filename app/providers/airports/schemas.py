@@ -55,7 +55,8 @@ class AirportOption(BaseModel):
         max_length=120,
     )
 
-    country_name: str = Field(
+    country_name: str | None = Field(
+        default=None,
         min_length=1,
         max_length=120,
     )
@@ -72,7 +73,7 @@ class AirportOption(BaseModel):
         ):
             parts.append(self.city_name)
 
-        parts.append(self.country_name)
+        parts.append(self.country_name or self.country_code)
         parts.append(self.iata_code)
 
         return ", ".join(parts)
@@ -107,4 +108,51 @@ class AirportSearchResult(BaseModel):
             unique_options.append(option)
             seen_codes.add(option.iata_code)
         self.options = unique_options
+        return self
+
+
+class AirportResolution(BaseModel):
+    """Resolved IATA code or bounded user-selection options."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    status: Literal[
+        "resolved",
+        "selection_required",
+        "not_found",
+    ]
+    query: str = Field(
+        min_length=2,
+        max_length=120,
+    )
+    iata_code: IataCode | None = None
+    options: list[AirportOption] = Field(
+        default_factory=list,
+        max_length=5,
+    )
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> Self:
+        """Keep resolution fields consistent with their status."""
+
+        if self.status == "resolved":
+            if self.iata_code is None:
+                raise ValueError("resolved airport requires iata_code")
+
+            if self.options:
+                raise ValueError("resolved airport cannot contain options")
+
+        elif self.status == "selection_required":
+            if self.iata_code is not None:
+                raise ValueError("selection_required cannot contain iata_code")
+
+            if len(self.options) < 2:
+                raise ValueError("selection_required requires at least two options")
+
+        elif self.iata_code is not None or self.options:
+            raise ValueError("not_found cannot contain iata_code or options")
+
         return self

@@ -20,7 +20,7 @@ START → invoke_model → route
 - `FallbackModelGateway` tries configured providers in order: Groq, Google, then OpenAI.
 - A model-provider exception, non-AI response, or response without text/tool calls moves to the next model provider. Task cancellation propagates and never triggers fallback.
 - The final node accepts only a non-empty plain-text `AIMessage` and exposes it as `assistant_response`.
-- The model can call registered `get_current_weather`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized.
+- The model can call registered `get_current_weather`, `resolve_airport`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized. `search_flights` accepts codes, airport names, or cities and resolves both endpoints concurrently in deterministic application code. Ambiguous results require user selection and are never guessed.
 - `MAX_TOOL_ROUNDS` bounds tool execution; the default is two rounds. Expected provider errors become safe model-visible tool text.
 - `TRAVEL_RESPONSE_TIMEOUT_SECONDS` applies one end-to-end deadline around graph execution and atomic reply persistence. Its default is 75 seconds, below the 120-second processing lease.
 - The graph does not yet implement deterministic intent routing, fan-out, interrupts, checkpoint/resume, search persistence, or structured Flutter result cards.
@@ -107,6 +107,7 @@ flowchart TD
 
 ### Tool nodes
 
+- `resolve_airport`
 - `search_flights`
 - `search_hotels`
 - `search_places`

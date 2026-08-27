@@ -8,27 +8,34 @@ from pydantic import Field
 
 from app.common.exceptions import InvalidTravelDateError
 from app.domain.flights import FlightCabinClass
-from app.mcp.schemas.flights import FlightSearchGuidance
-from app.providers.flights.client import FlightProvider
+from app.mcp.schemas.flights import (
+    FlightSearchGuidance,
+    FlightSearchPreparationGuidance,
+)
 from app.providers.flights.schemas import (
     ChildAge,
-    FlightSearchInput,
     FlightSearchResult,
     InfantAge,
+)
+from app.services.flight_search_preparation_service import (
+    FlightSearchPreparationInput,
+    FlightSearchPreparationService,
 )
 
 
 def register_flight_tools(
     server: FastMCP,
     *,
-    flight_provider: FlightProvider,
+    flight_search_service: FlightSearchPreparationService,
 ) -> None:
     """Register normalized flight-search tools on an MCP server."""
 
     @server.tool(
         name="search_flights",
         description=(
-            "Search available flight offers for a route and passenger group. "
+            "Search available flight offers using airport codes, airport names, "
+            "or city names for a route and passenger group. Ambiguous locations "
+            "return choices instead of being guessed. "
             "Provide each child's age and each infant's age in the appropriate "
             "seat or lap age list. The returned total price covers all "
             "requested travelers. Groups above the supported online limit "
@@ -39,11 +46,11 @@ def register_flight_tools(
     async def search_flights(
         origin: Annotated[
             str,
-            Field(min_length=3, max_length=3),
+            Field(min_length=2, max_length=120),
         ],
         destination: Annotated[
             str,
-            Field(min_length=3, max_length=3),
+            Field(min_length=2, max_length=120),
         ],
         departure_date: date,
         return_date: date | None = None,
@@ -61,10 +68,10 @@ def register_flight_tools(
             int,
             Field(ge=1, le=10),
         ] = 5,
-    ) -> FlightSearchResult | FlightSearchGuidance:
-        """Validate and execute one safe flight search."""
+    ) -> FlightSearchResult | FlightSearchGuidance | FlightSearchPreparationGuidance:
+        """Resolve route locations and execute one safe flight search."""
 
-        request = FlightSearchInput(
+        request = FlightSearchPreparationInput(
             origin=origin,
             destination=destination,
             departure_date=departure_date,
@@ -80,7 +87,7 @@ def register_flight_tools(
         )
 
         try:
-            return await flight_provider.search_flights(request=request)
+            return await flight_search_service.prepare_and_search(request=request)
         except InvalidTravelDateError as error:
             return FlightSearchGuidance(
                 status="invalid_dates",

@@ -98,7 +98,7 @@ def test_resolved_place_search_rejects_extra_or_invalid_nested_data() -> None:
         ResolvedPlaceSearch(
             request=PlaceSearchInput(destination="London"),
             location=create_location(),
-            provider="tavily",
+            provider="unexpected",
         )
 
     with pytest.raises(ValidationError):

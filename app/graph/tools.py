@@ -3,9 +3,10 @@
 from langchain_core.tools import BaseTool, StructuredTool
 
 from app.mcp.client import TravelMcpClient
+from app.mcp.schemas.flights import FlightSearchPreparationInput
 from app.mcp.schemas.weather import CurrentWeatherInput
+from app.providers.airports.schemas import AirportSearchInput
 from app.providers.currency.schemas import CurrencyConversionInput
-from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput
 from app.providers.places.schemas import PlaceSearchInput
 
@@ -31,11 +32,34 @@ def create_current_weather_tool(
     )
 
 
+def create_airport_resolution_tool(
+    *,
+    mcp_client: TravelMcpClient,
+) -> BaseTool:
+    """Create the model-facing airport-resolution tool."""
+
+    async def resolve_airport(**arguments: object) -> dict[str, object]:
+        request = AirportSearchInput.model_validate(arguments)
+        result = await mcp_client.resolve_airport(request=request)
+        return result.model_dump(mode="json")
+
+    return StructuredTool.from_function(
+        coroutine=resolve_airport,
+        name="resolve_airport",
+        description=(
+            "Resolve a city or airport name to a normalized IATA code before "
+            "flight search. Direct IATA codes require no provider lookup. "
+            "If choices are returned, ask the user to select one; never guess."
+        ),
+        args_schema=AirportSearchInput,
+    )
+
+
 def create_flight_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
     """Create the model-facing flight-search tool."""
 
     async def search_flights(**arguments: object) -> dict[str, object]:
-        request = FlightSearchInput.model_validate(arguments)
+        request = FlightSearchPreparationInput.model_validate(arguments)
         result = await mcp_client.search_flights(request=request)
         return result.model_dump(mode="json")
 
@@ -47,7 +71,7 @@ def create_flight_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
             "Provide exact child ages and classify infants as seated or on-lap. "
             "Returned totals cover the whole party. Search only; no booking."
         ),
-        args_schema=FlightSearchInput,
+        args_schema=FlightSearchPreparationInput,
     )
 
 

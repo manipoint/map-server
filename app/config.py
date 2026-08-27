@@ -69,9 +69,7 @@ class Settings(BaseSettings):
     weather_api_key: SecretStr | None = None
     weather_api_url: str = "https://api.weatherapi.com/v1/current.json"
     weather_search_api_url: str = "https://api.weatherapi.com/v1/search.json"
-    tavily_api_key: SecretStr | None = None
-    places_provider: Literal["google", "tavily"] | None = None
-    tavily_search_api_url: str = "https://api.tavily.com/search"
+    places_provider: Literal["google"] | None = None
     google_places_api_key: SecretStr | None = None
     google_places_text_search_url: str = (
         "https://places.googleapis.com/v1/places:searchText"
@@ -221,11 +219,6 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_places_provider_configuration(self) -> Self:
         """Require credentials for the enabled places provider."""
-
-        if self.places_provider == "tavily" and self.tavily_api_key is None:
-            raise ValueError(
-                "TAVILY_API_KEY is required when Tavily places provider is enabled"
-            )
 
         if self.places_provider == "google" and self.google_places_api_key is None:
             raise ValueError(

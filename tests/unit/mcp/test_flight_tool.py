@@ -8,29 +8,39 @@ import pytest
 from fastmcp import FastMCP
 from pydantic import ValidationError
 
+from app.common.exceptions import InvalidTravelDateError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.mcp.server import create_mcp_server
 from app.mcp.tools.flights import register_flight_tools
-from app.providers.flights.client import FlightProvider
-from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
+from app.providers.airports.schemas import AirportOption, AirportResolution
+from app.providers.flights.schemas import FlightSearchResult
 from app.providers.weather.schemas import CurrentWeather
-from app.services.flight_search_service import FlightSearchService
+from app.services.flight_search_preparation_service import (
+    FlightSearchPreparationGuidance,
+    FlightSearchPreparationInput,
+)
 
 
-class FakeFlightProvider:
-    """Deterministic provider double for flight-tool contract tests."""
+class FakeFlightSearchService:
+    """Deterministic preparation-service double for flight-tool tests."""
 
-    def __init__(self) -> None:
-        self.requests: list[FlightSearchInput] = []
+    def __init__(
+        self,
+        result: FlightSearchResult | FlightSearchPreparationGuidance | None = None,
+    ) -> None:
+        self.requests: list[FlightSearchPreparationInput] = []
+        self.result = result
 
-    async def search_flights(
+    async def prepare_and_search(
         self,
         *,
-        request: FlightSearchInput,
-    ) -> FlightSearchResult:
+        request: FlightSearchPreparationInput,
+    ) -> FlightSearchResult | FlightSearchPreparationGuidance:
         """Record the normalized request and return a safe group outcome."""
 
         self.requests.append(request)
+        if self.result is not None:
+            return self.result
         return FlightSearchResult(
             status=FlightSearchStatus.GROUP_BOOKING_REQUIRED,
             searched_at=datetime(2026, 8, 22, 12, tzinfo=UTC),
@@ -49,11 +59,11 @@ class UnusedWeatherProvider:
         raise AssertionError(f"Unexpected weather request for {city}")
 
 
-def create_server(provider: FlightProvider) -> FastMCP:
+def create_server(service: object) -> FastMCP:
     """Create an isolated MCP server containing only the flight tool."""
 
     server = FastMCP(name="Flight tool test")
-    register_flight_tools(server, flight_provider=provider)
+    register_flight_tools(server, flight_search_service=service)
     return server
 
 
@@ -61,7 +71,7 @@ def test_flight_tool_exposes_bounded_public_schema() -> None:
     """LLM clients should discover required fields and bounded result controls."""
 
     async def exercise() -> None:
-        server = create_server(FakeFlightProvider())
+        server = create_server(FakeFlightSearchService())
         tools = await server.list_tools()
 
         assert [tool.name for tool in tools] == ["search_flights"]
@@ -71,8 +81,8 @@ def test_flight_tool_exposes_bounded_public_schema() -> None:
             "destination",
             "departure_date",
         ]
-        assert schema["properties"]["origin"]["minLength"] == 3
-        assert schema["properties"]["origin"]["maxLength"] == 3
+        assert schema["properties"]["origin"]["minLength"] == 2
+        assert schema["properties"]["origin"]["maxLength"] == 120
         assert schema["properties"]["max_results"]["minimum"] == 1
         assert schema["properties"]["max_results"]["maximum"] == 10
         assert "children_ages" in schema["properties"]
@@ -87,8 +97,8 @@ def test_flight_tool_preserves_child_and_twin_ages() -> None:
     """A single parent should be able to search for a child and seated/lap twins."""
 
     async def exercise() -> None:
-        provider = FakeFlightProvider()
-        server = create_server(provider)
+        service = FakeFlightSearchService()
+        server = create_server(service)
 
         result = await server.call_tool(
             "search_flights",
@@ -104,7 +114,7 @@ def test_flight_tool_preserves_child_and_twin_ages() -> None:
         )
 
         assert result.is_error is False
-        request = provider.requests[0]
+        request = service.requests[0]
         assert request.children_ages == [8]
         assert request.infants_with_seat_ages == [1]
         assert request.infants_on_lap_ages == [1]
@@ -120,7 +130,7 @@ def test_mcp_server_registers_flight_tool_only_when_provider_is_available() -> N
         weather_only = create_mcp_server(weather_provider=UnusedWeatherProvider())
         complete = create_mcp_server(
             weather_provider=UnusedWeatherProvider(),
-            flight_provider=FakeFlightProvider(),
+            flight_search_service=FakeFlightSearchService(),
         )
 
         assert [tool.name for tool in await weather_only.list_tools()] == [
@@ -138,8 +148,8 @@ def test_flight_tool_normalizes_and_delegates_real_world_group_search() -> None:
     """The tool should accept large groups and pass one normalized request."""
 
     async def exercise() -> None:
-        provider = FakeFlightProvider()
-        server = create_server(provider)
+        service = FakeFlightSearchService()
+        server = create_server(service)
 
         result = await server.call_tool(
             "search_flights",
@@ -154,8 +164,8 @@ def test_flight_tool_normalizes_and_delegates_real_world_group_search() -> None:
         )
 
         assert result.is_error is False
-        assert len(provider.requests) == 1
-        request = provider.requests[0]
+        assert len(service.requests) == 1
+        request = service.requests[0]
         assert request.origin == "LHE"
         assert request.destination == "KHI"
         assert request.departure_date == date(2026, 9, 10)
@@ -170,7 +180,7 @@ def test_flight_tool_returns_group_booking_as_structured_outcome() -> None:
     """Provider booking limits should not become generic MCP failures."""
 
     async def exercise() -> None:
-        server = create_server(FakeFlightProvider())
+        server = create_server(FakeFlightSearchService())
 
         result = await server.call_tool(
             "search_flights",
@@ -202,10 +212,9 @@ def test_flight_tool_returns_invalid_date_guidance_without_provider_call() -> No
     """Past dates should become structured guidance without consuming quota."""
 
     async def exercise() -> None:
-        downstream_provider = AsyncMock()
-        service = FlightSearchService(
-            flight_provider=downstream_provider,
-            clock=lambda: datetime(2026, 8, 26, 12, tzinfo=UTC),
+        service = AsyncMock()
+        service.prepare_and_search.side_effect = InvalidTravelDateError(
+            "Flight departure date cannot be in the past"
         )
         server = create_server(service)
 
@@ -225,7 +234,66 @@ def test_flight_tool_returns_invalid_date_guidance_without_provider_call() -> No
                 "message": "Flight departure date cannot be in the past",
             }
         }
-        downstream_provider.search_flights.assert_not_awaited()
+        service.prepare_and_search.assert_awaited_once()
+
+    asyncio.run(exercise())
+
+
+def test_flight_tool_returns_ambiguous_airport_choices_as_guidance() -> None:
+    """City ambiguity should remain structured and must not become an MCP error."""
+
+    async def exercise() -> None:
+        service = FakeFlightSearchService(
+            FlightSearchPreparationGuidance(
+                origin=AirportResolution(
+                    status="resolved",
+                    query="LHE",
+                    iata_code="LHE",
+                ),
+                destination=AirportResolution(
+                    status="selection_required",
+                    query="London",
+                    options=[
+                        AirportOption(
+                            provider_location_id="apt_lhr",
+                            iata_code="LHR",
+                            location_type="airport",
+                            name="Heathrow Airport",
+                            city_name="London",
+                            country_name="United Kingdom",
+                            country_code="GB",
+                        ),
+                        AirportOption(
+                            provider_location_id="apt_lgw",
+                            iata_code="LGW",
+                            location_type="airport",
+                            name="Gatwick Airport",
+                            city_name="London",
+                            country_name="United Kingdom",
+                            country_code="GB",
+                        ),
+                    ],
+                ),
+                message="Airport resolution is required for the destination.",
+            )
+        )
+        result = await create_server(service).call_tool(
+            "search_flights",
+            {
+                "origin": "LHE",
+                "destination": "London",
+                "departure_date": "2026-09-10",
+            },
+        )
+
+        assert result.is_error is False
+        guidance = result.structured_content["result"]
+        assert guidance["status"] == "airport_resolution_required"
+        assert guidance["origin"]["iata_code"] == "LHE"
+        assert [item["iata_code"] for item in guidance["destination"]["options"]] == [
+            "LHR",
+            "LGW",
+        ]
 
     asyncio.run(exercise())
 
@@ -234,8 +302,8 @@ def test_flight_tool_rejects_excess_lap_infants_before_provider_call() -> None:
     """Invalid infant supervision should fail without calling the provider."""
 
     async def exercise() -> None:
-        provider = FakeFlightProvider()
-        server = create_server(provider)
+        service = FakeFlightSearchService()
+        server = create_server(service)
 
         with pytest.raises(
             ValidationError,
@@ -252,6 +320,6 @@ def test_flight_tool_rejects_excess_lap_infants_before_provider_call() -> None:
                 },
             )
 
-        assert provider.requests == []
+        assert service.requests == []
 
     asyncio.run(exercise())

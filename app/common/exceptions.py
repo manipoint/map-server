@@ -35,3 +35,7 @@ class AmbiguousLocationError(LocationResolutionError):
 
 class InvalidTravelDateError(Exception):
     """Raised when travel dates cannot be searched."""
+
+
+class InvalidCursorError(ValueError):
+    """Raised when a pagination cursor cannot be safely decoded."""

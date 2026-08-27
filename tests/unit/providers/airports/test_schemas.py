@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.providers.airports.schemas import (
     AirportOption,
+    AirportResolution,
     AirportSearchInput,
     AirportSearchResult,
 )
@@ -70,6 +71,18 @@ def test_airport_option_normalizes_codes_and_builds_readable_label() -> None:
     assert option.country_code == "GB"
     assert option.display_name == ("Heathrow Airport, London, United Kingdom, LHR")
     assert "display_name" not in option.model_dump()
+
+
+def test_airport_option_falls_back_to_country_code() -> None:
+    """Duffel options without a country name should remain valid and readable."""
+
+    option = create_airport(
+        name="Heathrow",
+        country_name=None,
+    )
+
+    assert option.country_name is None
+    assert option.display_name == "Heathrow, London, GB, LHR"
 
 
 @pytest.mark.parametrize("city_name", [None, "London", "london"])
@@ -156,3 +169,64 @@ def test_airport_search_result_rejects_more_than_five_options() -> None:
 
     with pytest.raises(ValidationError):
         AirportSearchResult(query="London", options=options)
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    [
+        AirportResolution(status="resolved", query="LHR", iata_code="LHR"),
+        AirportResolution(
+            status="selection_required",
+            query="London",
+            options=[
+                create_airport(iata_code="LHR"),
+                create_airport(
+                    provider_location_id="apt_lgw",
+                    iata_code="LGW",
+                    name="Gatwick Airport",
+                ),
+            ],
+        ),
+        AirportResolution(status="not_found", query="Unknown place"),
+    ],
+)
+def test_airport_resolution_accepts_consistent_outcomes(
+    resolution: AirportResolution,
+) -> None:
+    """Each public status should have one unambiguous payload shape."""
+
+    assert resolution.query
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"status": "resolved", "query": "London"},
+        {
+            "status": "resolved",
+            "query": "London",
+            "iata_code": "LHR",
+            "options": [create_airport()],
+        },
+        {
+            "status": "selection_required",
+            "query": "London",
+            "options": [create_airport()],
+        },
+        {
+            "status": "selection_required",
+            "query": "London",
+            "iata_code": "LHR",
+            "options": [create_airport(), create_airport(iata_code="LGW")],
+        },
+        {"status": "not_found", "query": "London", "iata_code": "LHR"},
+        {"status": "not_found", "query": "London", "options": [create_airport()]},
+    ],
+)
+def test_airport_resolution_rejects_inconsistent_outcomes(
+    values: dict[str, object],
+) -> None:
+    """Contradictory status fields should fail before reaching the model."""
+
+    with pytest.raises(ValidationError):
+        AirportResolution.model_validate(values)

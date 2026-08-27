@@ -188,6 +188,36 @@ uv run pytest --last-failed
 
 The project configures pytest with `--import-mode=importlib`, so test files in different directories may safely use the same filename.
 
+## Live airport-resolution smoke test
+
+With `FLIGHT_PROVIDER=duffel` and `DUFFEL_API_KEY` configured, resolve a city or
+airport name through the bounded Duffel Places adapter:
+
+```bash
+uv run python -m scripts.check_airport_provider "London"
+```
+
+A direct code such as `LHR` is normalized locally and consumes no Duffel request:
+
+```bash
+uv run python -m scripts.check_airport_provider LHR
+```
+
+The structured log reports `resolved`, `selection_required`, or `not_found` and
+never logs the Duffel token or raw response.
+
+The complete flight graph smoke test also accepts city or airport names and resolves
+them inside the single `search_flights` tool call:
+
+```bash
+uv run python -m scripts.check_flight_graph \
+  "Lahore" \
+  "London, United Kingdom" \
+  2026-09-10
+```
+
+This command consumes live model, airport lookup, and flight-provider requests.
+
 ## Live currency graph smoke test
 
 Enable the keyless Frankfurter adapter in `.env`:

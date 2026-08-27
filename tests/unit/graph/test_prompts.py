@@ -9,7 +9,7 @@ from app.graph.prompts import (
 def test_travel_prompt_version_tracks_live_tool_policy() -> None:
     """A material prompt-policy change should have an explicit version."""
 
-    assert TRAVEL_PROMPT_VERSION == "travel-v8"
+    assert TRAVEL_PROMPT_VERSION == "travel-v9"
 
 
 def test_travel_prompt_requires_verified_current_weather() -> None:
@@ -52,6 +52,16 @@ def test_travel_prompt_requires_verified_flights_and_local_time_zones() -> None:
     assert "IANA zones only" in prompt
     assert "the total covers every traveler" in prompt
     assert "searches never reserve/book" in prompt
+
+
+def test_travel_prompt_delegates_airport_resolution_without_guessing() -> None:
+    """Flight search should deterministically resolve city and airport names."""
+
+    prompt = " ".join(TRAVEL_ASSISTANT_SYSTEM_PROMPT.split())
+
+    assert "search_flights" in prompt
+    assert "resolves them without guessing" in prompt
+    assert "returns airport choices, show them and ask" in prompt
 
 
 def test_travel_prompt_requires_verified_hotels_and_clarification() -> None:

@@ -8,7 +8,7 @@ The implemented service is a modular monolith: FastAPI, LangGraph, and FastMCP s
 
 ## Runtime architecture
 
-The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, and assistant-run leases; travel searches and itineraries are not yet stored. LangSmith tracing is also not wired.
+The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, assistant-run leases, and trips. Travel search snapshots and itineraries are not yet stored. LangSmith tracing is also not wired.
 
 ```mermaid
 flowchart LR
@@ -21,10 +21,11 @@ flowchart LR
     end
 
     subgraph service ["Application Services"]
-        auth["Auth and Session Service"]
+        auth["Auth and Session"]
+        product["Trip, Itinerary, and Discovery Services"]
+        conversations["Conversation and Run Services"]
         orchestrator["LangGraph Orchestrator"]
         mcp["Travel MCP Server"]
-        persistence["Persistence Service"]
     end
 
     subgraph datastore ["Data Stores"]
@@ -41,12 +42,15 @@ flowchart LR
     end
 
     flutter <-->|"HTTPS and WSS"| fastapi
-    fastapi -->|"Authenticates"| auth
-    fastapi -->|"Runs requests"| orchestrator
-    orchestrator -->|"Calls tools"| mcp
-    orchestrator -->|"Saves outcomes"| persistence
-    auth -->|"Reads sessions"| postgres
-    persistence -->|"Reads and writes"| postgres
+    fastapi -->|"Auth REST and bearer checks"| auth
+    fastapi -->|"Product REST"| product
+    fastapi -->|"WebSocket messages and leases"| conversations
+    conversations -->|"Invokes AI workflow"| orchestrator
+    orchestrator -->|"Returns validated response"| conversations
+    orchestrator -->|"Calls typed tools"| mcp
+    auth -->|"Users and sessions"| postgres
+    product -->|"User-owned and curated data"| postgres
+    conversations -->|"Messages, replies, and run state"| postgres
     orchestrator -.->|"Model inference"| llms
     orchestrator -.->|"Traces runs"| langsmith
     mcp -.->|"Searches offers"| travel
@@ -81,7 +85,7 @@ MCP exposes provider-independent, typed tools. It owns provider authentication, 
 
 ### PostgreSQL boundary
 
-PostgreSQL currently stores normalized identity, session, conversation, message, and assistant-run data in the `app` schema. LangGraph checkpointing and the `langgraph` schema are target work. Repositories and services are the application layers allowed to issue business-data queries.
+PostgreSQL currently stores normalized identity, session, conversation, message, assistant-run, and trip data in the `app` schema. LangGraph checkpointing and the `langgraph` schema are target work. Repositories and services are the application layers allowed to issue business-data queries.
 
 ## Current primary request flow
 
@@ -123,7 +127,7 @@ The following table is the target routing policy. The current public travel flow
 
 ## Availability and degradation
 
-The bullets below are requirements, not all current capabilities. The current code has provider timeouts, bounded tool rounds, persisted idempotency, and model-vendor fallback. It does not yet have provider retries, caches, circuit breakers, a single graph deadline, or partial itinerary fan-out.
+The bullets below are requirements, not all current capabilities. The current code has provider timeouts, bounded tool rounds, persisted idempotency, a shared graph deadline, and model-vendor fallback. It does not yet have provider retries, shared caches, circuit breakers, or partial itinerary fan-out.
 
 - Provider timeouts are classified separately from model-provider failures.
 - Partial travel results MAY be returned when one optional provider fails.

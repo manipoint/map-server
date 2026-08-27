@@ -35,7 +35,6 @@ FastAPI, LangGraph, MCP, and the WebSocket connection registry share one process
 | P1 | WebSocket registry and logout fan-out are process-local | In a multi-instance deployment, logout closes sockets only on the instance handling the request; another instance can retain an already-connected socket until it reauthenticates or disconnects. | Future REST/WS authentication checks consult the revoked database session. | Keep one instance until documented otherwise, or add Redis/pub/sub (or equivalent) for revocation broadcast and distributed connection ownership. |
 | P1 | WeatherAPI is initialized unconditionally and also resolves locations | Missing credentials or an outage can block startup/current weather and can disable Duffel hotel or Google Places searches. | Typed provider errors and HTTP timeouts. | Make weather optional, separate geocoding from weather, add a location fallback/cache, and expose feature readiness independently. |
 | P1 | Duffel is the only runtime provider for flights and hotels | One token, quota, provider outage, or contract change removes both high-value search features. | Provider-independent protocols and normalized schemas make replacement possible. | Add per-feature circuit breakers and flags; evaluate a second provider before availability commitments. Do not retry blindly. |
-| P1 | Places configuration accepts Tavily but lifespan wires only Google | `PLACES_PROVIDER=tavily` validates successfully yet no places tool is registered. | Tavily adapter and live-check script exist. | Wire Tavily through `PlaceSearchService`, or reject it as a runtime option until supported. Add a startup/tool-registration test for every accepted provider value. |
 | P1 | Model fallback catches every ordinary exception | Invalid/configuration errors can trigger unnecessary fallback calls and cost. | Provider SDK retries are disabled, tool rounds are bounded, and the complete graph has one shared 75-second deadline. | Classify fallback-eligible errors, pass remaining time to each attempt, cap paid calls explicitly, and add per-provider circuit breakers and usage accounting. |
 | P1 | No server-side rate limiting or cost quota | Login brute force, WebSocket floods, or prompt loops can exhaust DB, provider, and LLM capacity/cost. | Message-size, history, result, model-attempt, and tool-round bounds. | Add limits by IP, user, session, and operation; enforce daily model/provider budgets and return stable retry metadata. |
 | P1 | Observability exporters are placeholders | Provider degradation, fallback storms, pool saturation, and cost growth may remain undetected. | Structured JSON access/application logs and request IDs. | Add metrics and alerts for DB pool, WebSockets, leases, provider errors/latency, model fallback/tokens/cost, and terminal graph outcomes. Add sampled LangSmith tracing with redaction. |
@@ -101,11 +100,10 @@ These controls reduce damage, but they do not remove the SPOFs in the risk regis
 
 ### Feature-hardening follow-ups
 
-1. Fix or disable Tavily runtime configuration until tool registration is guaranteed.
-2. Decouple location resolution from WeatherAPI and add bounded caches.
-3. Add deterministic structured search endpoints so known fields do not require an LLM call.
-4. Add saved trips, search snapshots, and itinerary persistence.
-5. Decide availability targets per feature before paying for second travel providers.
+1. Decouple location resolution from WeatherAPI and add bounded caches.
+2. Add deterministic structured search endpoints so known fields do not require an LLM call.
+3. Add saved trips, search snapshots, and itinerary persistence.
+4. Decide availability targets per feature before paying for second travel providers.
 
 ## Verification checklist
 

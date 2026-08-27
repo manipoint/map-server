@@ -13,7 +13,7 @@ def test_place_provider_contract_exposes_async_search() -> None:
 
 
 def test_place_provider_uses_only_provider_independent_schemas() -> None:
-    """The provider contract should not expose Tavily or MCP transport models."""
+    """The provider contract should not expose concrete transport models."""
 
     annotations = inspect.get_annotations(PlaceProvider.search_places)
 

@@ -7,7 +7,23 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.flights import FlightCabinClass
-from app.domain.trips import MAX_TRAVELERS_PER_REQUEST, TravelerParty, TripRequest
+from app.domain.trips import (
+    MAX_TRAVELERS_PER_REQUEST,
+    TravelerParty,
+    TripRequest,
+    TripStatus,
+    TripUpdate,
+)
+
+
+def test_trip_status_has_only_persisted_lifecycle_values() -> None:
+    """Date-derived trip views should not become persisted statuses."""
+
+    assert {status.value for status in TripStatus} == {
+        "draft",
+        "planned",
+        "archived",
+    }
 
 
 def test_traveler_party_defaults_to_one_adult() -> None:
@@ -246,3 +262,95 @@ def test_trip_request_rejects_invalid_bounded_input(
             end_date=date(2026, 9, 12),
             **overrides,
         )
+
+
+def test_trip_update_preserves_omitted_fields() -> None:
+    """A partial update should retain exactly which fields were supplied."""
+
+    update = TripUpdate(destination=" Paris ")
+
+    assert update.destination == "Paris"
+    assert update.model_fields_set == {"destination"}
+    assert update.model_dump(exclude_unset=True) == {"destination": "Paris"}
+
+
+def test_trip_update_allows_explicitly_clearing_nullable_fields() -> None:
+    """Explicit null should clear title or origin instead of preserving it."""
+
+    update = TripUpdate(title=None, origin=None)
+
+    assert update.model_fields_set == {"title", "origin"}
+    assert update.model_dump(exclude_unset=True) == {
+        "title": None,
+        "origin": None,
+    }
+
+
+def test_trip_update_rejects_empty_payload() -> None:
+    """An empty PATCH body should not perform a meaningless database write."""
+
+    with pytest.raises(
+        ValidationError,
+        match="at least one trip field must be provided",
+    ):
+        TripUpdate()
+
+
+@pytest.mark.parametrize("field_name", ["destination", "start_date", "end_date"])
+def test_trip_update_rejects_null_required_field(field_name: str) -> None:
+    """Required trip details may be omitted but cannot be explicitly cleared."""
+
+    with pytest.raises(ValidationError, match=rf"{field_name} cannot be null"):
+        TripUpdate(**{field_name: None})
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date"),
+    [
+        (date(2026, 9, 10), date(2026, 9, 10)),
+        (date(2026, 9, 11), date(2026, 9, 10)),
+    ],
+)
+def test_trip_update_rejects_invalid_complete_date_range(
+    start_date: date,
+    end_date: date,
+) -> None:
+    """A complete date range should be validated before service execution."""
+
+    with pytest.raises(ValidationError, match="end_date must be after start_date"):
+        TripUpdate(start_date=start_date, end_date=end_date)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"start_date": date(2026, 9, 10)},
+        {"end_date": date(2026, 9, 12)},
+    ],
+)
+def test_trip_update_accepts_one_date_for_service_level_merge(
+    values: dict[str, date],
+) -> None:
+    """A single changed date requires validation against the stored trip."""
+
+    update = TripUpdate(**values)
+
+    assert update.model_dump(exclude_unset=True) == values
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"title": " "},
+        {"origin": "x"},
+        {"destination": "x"},
+        {"unexpected": True},
+    ],
+)
+def test_trip_update_rejects_invalid_bounded_or_unknown_input(
+    values: dict[str, object],
+) -> None:
+    """Partial updates should retain the trip field and extra-input bounds."""
+
+    with pytest.raises(ValidationError):
+        TripUpdate(**values)

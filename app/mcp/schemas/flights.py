@@ -5,6 +5,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.providers.flights.schemas import FlightSearchInput
+from app.services.flight_search_preparation_service import (
+    FlightSearchPreparationGuidance,
+    FlightSearchPreparationInput,
+)
 
 
 class FlightSearchGuidance(BaseModel):
@@ -23,6 +27,8 @@ class FlightSearchGuidance(BaseModel):
 
 
 __all__ = [
+    "FlightSearchPreparationGuidance",
+    "FlightSearchPreparationInput",
     "FlightSearchGuidance",
     "FlightSearchInput",
 ]

@@ -10,23 +10,24 @@ FastMCP currently runs inside the FastAPI process. `TravelMcpClient` invokes the
 
 | Tool | Purpose | LLM required? |
 | --- | --- | ---: |
-| `search_flights` | Search priced flight offers for validated travel dates and passengers. | No |
+| `resolve_airport` | Resolve an airport/city name or accept a direct IATA code; return choices for ambiguity. | No |
+| `search_flights` | Resolve route locations and search priced offers for validated dates and passengers. | No |
 | `search_hotels` | Search available hotel offers for dates, rooms, guests, and budget. | No |
 | `search_places` | Find attractions or activities by location and interests. | No |
 | `get_current_weather` | Return current conditions for a city. | No |
 | `convert_currency` | Convert a monetary amount using an observed exchange rate. | No |
 
-Potential later tools include airport autocomplete, route estimates, offer refresh, and booking-related tools. Any tool that creates a booking, payment, or cancellation requires explicit user confirmation and a separate design review.
+Potential later tools include route estimates, offer refresh, and booking-related tools. Any tool that creates a booking, payment, or cancellation requires explicit user confirmation and a separate design review.
 
 ## Current provider matrix
 
 | Capability | Implemented adapter | Runtime wiring |
 | --- | --- | --- |
 | Current weather | WeatherAPI | Always registered by the current lifespan. |
+| Airport/city IATA resolution | Duffel Places | Registered with `FLIGHT_PROVIDER=duffel`. |
 | Flights | Duffel | Registered when `FLIGHT_PROVIDER=duffel`. |
 | Hotels | Duffel plus WeatherAPI location search | Registered when `HOTEL_PROVIDER=duffel`. |
 | Places | Google Places plus WeatherAPI location search | Registered when `PLACES_PROVIDER=google`. |
-| Places alternative | Tavily | Adapter exists, but lifespan registration is not implemented. |
 | Currency | Frankfurter | Registered when `CURRENCY_PROVIDER=frankfurter`. |
 
 ## Tool contract principles
@@ -39,6 +40,19 @@ Potential later tools include airport autocomplete, route estimates, offer refre
 6. Results include `observed_at` and, where applicable, `expires_at`.
 7. Tool descriptions are concise and state required fields and failure behavior.
 8. User prompts cannot set arbitrary URLs, headers, API keys, result limits, or provider names.
+
+Airport resolution avoids guessing and unnecessary provider cost. A valid direct
+three-letter IATA code is normalized locally. A name with one provider match is
+resolved automatically, multiple matches return at most five choices for the user,
+and an empty match returns `not_found`; it does not trigger a flight search.
+
+`search_flights` accepts IATA codes, airport names, or city names. It resolves the
+origin and destination concurrently inside application code. Only two resolved,
+different IATA codes can reach the priced flight provider. Ambiguous or missing
+locations return structured airport guidance, so the model does not need a separate
+resolution round and no fare-search quota is consumed.
+Past dates and groups above the self-service limit are rejected before airport
+resolution as well, avoiding both airport and fare-provider calls.
 
 ## Example flight input
 
@@ -100,11 +114,17 @@ sequenceDiagram
     title MCP flight search
     participant LangGraph
     participant MCPServer
+    participant AirportAdapter
+    participant AirportAPI
     participant FlightAdapter
     participant FlightAPI
 
-    LangGraph->>MCPServer: search_flights input
+    LangGraph->>MCPServer: search_flights input with codes or names
     MCPServer->>MCPServer: Validate schema
+    MCPServer->>AirportAdapter: Resolve origin and destination concurrently
+    AirportAdapter->>AirportAPI: Search non-IATA locations
+    AirportAPI-->>AirportAdapter: Ranked suggestions
+    AirportAdapter-->>MCPServer: Resolved codes or bounded choices
     MCPServer->>FlightAdapter: Domain request
     FlightAdapter->>FlightAPI: Search offers
     FlightAPI-->>FlightAdapter: Provider response

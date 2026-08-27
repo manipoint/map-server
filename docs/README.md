@@ -5,22 +5,24 @@ This directory describes both the implemented backend and its target architectur
 ## Recommended reading order
 
 1. [System Architecture](architecture.md)
-2. [Backend Structure](backend-structure.md)
-3. [Authentication and Sessions](authentication.md)
-4. [WebSocket Protocol](websocket-protocol.md)
-5. [LangGraph Design](langgraph.md)
-6. [MCP Server Design](mcp-server.md)
-7. [PostgreSQL Data Model](database.md)
-8. [Model Routing and Cost Controls](model-routing.md)
-9. [Deployment](deployment.md)
-10. [Reliability and SPOF Review](reliability.md)
-11. [Testing Strategy](testing.md)
-12. [Development Commands](development-workflow.md)
+2. [Phase 1 Product Scope](phase-1-scope.md)
+3. [Backend Structure](backend-structure.md)
+4. [Authentication and Sessions](authentication.md)
+5. [WebSocket Protocol](websocket-protocol.md)
+6. [LangGraph Design](langgraph.md)
+7. [MCP Server Design](mcp-server.md)
+8. [PostgreSQL Data Model](database.md)
+9. [Model Routing and Cost Controls](model-routing.md)
+10. [Deployment](deployment.md)
+11. [Reliability and SPOF Review](reliability.md)
+12. [Testing Strategy](testing.md)
+13. [Development Commands](development-workflow.md)
 
 ## Source-of-truth boundaries
 
 | Concern | Source of truth |
 | --- | --- |
+| Phase 1 product boundary and delivery order | `phase-1-scope.md` |
 | Runtime boundaries and trust zones | `architecture.md` |
 | Python packages and dependency direction | `backend-structure.md` |
 | Graph state, nodes, and edges | `langgraph.md` |
@@ -45,6 +47,8 @@ This directory describes both the implemented backend and its target architectur
 ## Decision summary
 
 - The MVP is search and itinerary planning, not booking or payment.
+- Phase 1 includes trips, saved itineraries, and database-backed discovery; social login, email verification, profile statistics, and preference management are deferred.
+- Popular destinations are curated; Trending uses first-party events only and falls back to correctly labelled Featured content until its activity threshold is met.
 - Flutter uses REST for resource operations and WebSocket for interactive search/chat events.
 - FastAPI is the public backend boundary.
 - FastMCP currently runs in process and is invoked through `TravelMcpClient`; a mounted HTTP transport is a target option.

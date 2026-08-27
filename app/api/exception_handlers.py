@@ -15,6 +15,13 @@ from app.auth.exceptions import (
     RefreshTokenReuseError,
     SessionRevokedError,
 )
+from app.common.exceptions import InvalidCursorError
+from app.domain.errors import (
+    InvalidTripDetailsError,
+    InvalidTripStatusTransitionError,
+    TripError,
+    TripNotFoundError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +101,81 @@ async def authentication_exception_handler(
             "error": {
                 "code": definition.code,
                 "message": definition.message,
+                "request_id": getattr(
+                    request.state,
+                    "request_id",
+                    None,
+                ),
+            }
+        },
+    )
+
+
+TRIP_ERROR_DEFINITIONS: dict[
+    type[TripError],
+    ErrorDefinition,
+] = {
+    TripNotFoundError: ErrorDefinition(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="trip_not_found",
+        message="Trip was not found",
+    ),
+    InvalidTripDetailsError: ErrorDefinition(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        code="invalid_trip_details",
+        message="Trip details are invalid",
+    ),
+    InvalidTripStatusTransitionError: ErrorDefinition(
+        status_code=status.HTTP_409_CONFLICT,
+        code="invalid_trip_status_transition",
+        message="Trip status transition is not allowed",
+    ),
+}
+
+
+async def trip_exception_handler(
+    request: Request,
+    error: TripError,
+) -> JSONResponse:
+    """Convert a trip-domain error into a safe HTTP response."""
+
+    definition = TRIP_ERROR_DEFINITIONS.get(
+        type(error),
+        ErrorDefinition(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="trip_operation_failed",
+            message="Trip operation failed",
+        ),
+    )
+
+    return JSONResponse(
+        status_code=definition.status_code,
+        content={
+            "error": {
+                "code": definition.code,
+                "message": definition.message,
+                "request_id": getattr(
+                    request.state,
+                    "request_id",
+                    None,
+                ),
+            }
+        },
+    )
+
+
+async def invalid_cursor_exception_handler(
+    request: Request,
+    error: InvalidCursorError,
+) -> JSONResponse:
+    """Return a safe response for an invalid pagination cursor."""
+
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={
+            "error": {
+                "code": "invalid_cursor",
+                "message": "Pagination cursor is invalid",
                 "request_id": getattr(
                     request.state,
                     "request_id",

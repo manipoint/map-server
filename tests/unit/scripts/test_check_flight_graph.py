@@ -36,7 +36,11 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
     fake_http_client = object()
     http_context = FakeAsyncClientContext(fake_http_client)
     weather_provider = object()
+    airport_provider = object()
+    airport_resolution_service = object()
     flight_provider = object()
+    flight_search_service = object()
+    flight_search_preparation_service = object()
     mcp_server = object()
     mcp_client = object()
     weather_tool = object()
@@ -47,7 +51,15 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
         return_value={"assistant_response": "Three verified offers are available."}
     )
     create_weather_provider = MagicMock(return_value=weather_provider)
+    create_airport_provider = MagicMock(return_value=airport_provider)
+    create_airport_resolution_service = MagicMock(
+        return_value=airport_resolution_service
+    )
     create_flight_provider = MagicMock(return_value=flight_provider)
+    create_flight_search_service = MagicMock(return_value=flight_search_service)
+    create_flight_search_preparation_service = MagicMock(
+        return_value=flight_search_preparation_service
+    )
     create_server = MagicMock(return_value=mcp_server)
     create_client = MagicMock(return_value=mcp_client)
     create_weather_tool = MagicMock(return_value=weather_tool)
@@ -63,7 +75,23 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
         MagicMock(return_value=http_context),
     )
     monkeypatch.setattr(script, "WeatherApiClient", create_weather_provider)
+    monkeypatch.setattr(script, "DuffelAirportClient", create_airport_provider)
+    monkeypatch.setattr(
+        script,
+        "AirportResolutionService",
+        create_airport_resolution_service,
+    )
     monkeypatch.setattr(script, "DuffelFlightClient", create_flight_provider)
+    monkeypatch.setattr(
+        script,
+        "FlightSearchService",
+        create_flight_search_service,
+    )
+    monkeypatch.setattr(
+        script,
+        "FlightSearchPreparationService",
+        create_flight_search_preparation_service,
+    )
     monkeypatch.setattr(script, "create_mcp_server", create_server)
     monkeypatch.setattr(script, "TravelMcpClient", create_client)
     monkeypatch.setattr(script, "create_current_weather_tool", create_weather_tool)
@@ -89,9 +117,23 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
         http_client=fake_http_client,
         settings=settings,
     )
+    create_airport_provider.assert_called_once_with(
+        http_client=fake_http_client,
+        settings=settings,
+    )
+    create_airport_resolution_service.assert_called_once_with(
+        airport_provider=airport_provider,
+    )
+    create_flight_search_service.assert_called_once_with(
+        flight_provider=flight_provider,
+    )
+    create_flight_search_preparation_service.assert_called_once_with(
+        airport_resolution_service=airport_resolution_service,
+        flight_search_service=flight_search_service,
+    )
     create_server.assert_called_once_with(
         weather_provider=weather_provider,
-        flight_provider=flight_provider,
+        flight_search_service=flight_search_preparation_service,
     )
     create_client.assert_called_once_with(mcp_server=mcp_server)
     create_weather_tool.assert_called_once_with(mcp_client=mcp_client)

@@ -15,9 +15,15 @@ from app.graph.tools import create_current_weather_tool, create_flight_search_to
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.observability.logging import configure_logging
+from app.providers.airports.duffel_client import DuffelAirportClient
 from app.providers.flights.duffel_client import DuffelFlightClient
-from app.providers.flights.schemas import FlightSearchInput
 from app.providers.weather.client import WeatherApiClient
+from app.services.airport_resolution_service import AirportResolutionService
+from app.services.flight_search_preparation_service import (
+    FlightSearchPreparationInput,
+    FlightSearchPreparationService,
+)
+from app.services.flight_search_service import FlightSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,7 @@ async def check_flight_graph(
 ) -> None:
     """Run one flight request through the complete travel graph."""
 
-    request = FlightSearchInput(
+    request = FlightSearchPreparationInput(
         origin=origin,
         destination=destination,
         departure_date=departure_date,
@@ -43,8 +49,23 @@ async def check_flight_graph(
             http_client=http_client,
             settings=settings,
         )
+        airport_provider = DuffelAirportClient(
+            http_client=http_client,
+            settings=settings,
+        )
+        airport_resolution_service = AirportResolutionService(
+            airport_provider=airport_provider,
+        )
+        flight_search_service = FlightSearchService(
+            flight_provider=flight_provider,
+        )
+        flight_search_preparation_service = FlightSearchPreparationService(
+            airport_resolution_service=airport_resolution_service,
+            flight_search_service=flight_search_service,
+        )
         mcp_server = create_mcp_server(
-            weather_provider=weather_provider, flight_provider=flight_provider
+            weather_provider=weather_provider,
+            flight_search_service=flight_search_preparation_service,
         )
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
         tools = [
@@ -99,11 +120,11 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "origin",
-        help="Origin three-letter IATA code",
+        help="Origin IATA code, airport name, or city",
     )
     parser.add_argument(
         "destination",
-        help="Destination three-letter IATA code",
+        help="Destination IATA code, airport name, or city",
     )
 
     parser.add_argument(
