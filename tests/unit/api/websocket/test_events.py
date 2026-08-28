@@ -17,6 +17,8 @@ from app.api.websocket.events import (
     TravelRequestEvent,
     TravelRequestRejectedEvent,
     TravelRequestRejectedPayload,
+    TravelResponseCompletedEvent,
+    TravelResponseCompletedPayload,
     TravelResponseFailedEvent,
     TravelResponseFailedPayload,
     validate_client_event,
@@ -45,6 +47,7 @@ def create_travel_request_event_data() -> dict[str, object]:
         "payload": {
             "client_message_id": str(uuid4()),
             "conversation_id": str(uuid4()),
+            "trip_id": str(uuid4()),
             "message": "Plan a three-day trip to Lahore",
             "locale": "en-PK",
         },
@@ -381,9 +384,44 @@ def test_travel_request_accepted_event_rejects_an_incorrect_type() -> None:
         )
 
 
+def test_travel_response_completed_serializes_optional_itinerary_id() -> None:
+    """Completed responses should expose a typed Flutter navigation target."""
+
+    itinerary_id = uuid4()
+    event = TravelResponseCompletedEvent(
+        payload=TravelResponseCompletedPayload(
+            client_message_id=uuid4(),
+            conversation_id=uuid4(),
+            assistant_message_id=uuid4(),
+            content="Your itinerary is ready.",
+            is_duplicate=False,
+            itinerary_id=itinerary_id,
+        )
+    )
+
+    serialized = event.model_dump(mode="json")
+
+    assert serialized["type"] == "travel.response.completed"
+    assert serialized["payload"]["itinerary_id"] == str(itinerary_id)
+
+
+def test_travel_response_completed_defaults_itinerary_id_to_none() -> None:
+    """Normal assistant responses should remain protocol-compatible."""
+
+    payload = TravelResponseCompletedPayload(
+        client_message_id=uuid4(),
+        conversation_id=uuid4(),
+        assistant_message_id=uuid4(),
+        content="Lahore is sunny.",
+        is_duplicate=False,
+    )
+
+    assert payload.itinerary_id is None
+
+
 @pytest.mark.parametrize(
     "code",
-    ["conversation_not_found", "client_message_conflict"],
+    ["conversation_not_found", "client_message_conflict", "trip_not_found"],
 )
 def test_travel_request_rejected_event_generates_a_safe_envelope(code: str) -> None:
     """Each public rejection code should serialize without internal details."""
@@ -477,6 +515,7 @@ def test_travel_request_event_validates_a_complete_request() -> None:
     assert event.payload.locale == "en-PK"
     assert event.payload.client_message_id == UUID(str(payload["client_message_id"]))
     assert event.payload.conversation_id == UUID(str(payload["conversation_id"]))
+    assert event.payload.trip_id == UUID(str(payload["trip_id"]))
 
 
 def test_travel_request_event_allows_a_new_conversation() -> None:
@@ -519,7 +558,10 @@ def test_travel_request_event_rejects_a_message_over_the_limit() -> None:
         TravelRequestEvent.model_validate(event_data)
 
 
-@pytest.mark.parametrize("field_name", ["client_message_id", "conversation_id"])
+@pytest.mark.parametrize(
+    "field_name",
+    ["client_message_id", "conversation_id", "trip_id"],
+)
 def test_travel_request_event_rejects_an_invalid_identifier(
     field_name: str,
 ) -> None:

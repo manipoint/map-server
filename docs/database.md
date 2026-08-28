@@ -2,21 +2,24 @@
 
 ## Purpose
 
-PostgreSQL is the system of record for implemented users, authentication sessions, conversations, messages, and assistant-run leases. The target model also stores trips, normalized provider results, itineraries, usage records, and LangGraph checkpoints without coupling workflow state to product tables.
+PostgreSQL is the system of record for implemented users, authentication sessions, conversations, messages, assistant-run leases, trips, itineraries, and ordered itinerary items. The target model also stores normalized provider results, usage records, and LangGraph checkpoints without coupling workflow state to product tables.
 
 The design targets third normal form for durable business data. Provider payloads may also be retained temporarily as JSONB for debugging and reconciliation, but they are not the primary query model.
 
 ## Current migration status
 
-Alembic currently creates five product tables in the `app` schema:
+Alembic currently creates eight product tables in the `app` schema:
 
 - `users`;
 - `auth_sessions`;
 - `conversations`;
 - `messages`;
-- `assistant_runs`.
+- `assistant_runs`;
+- `trips`;
+- `itineraries`;
+- `itinerary_items`.
 
-Trip, search-request, flight/hotel/place/weather snapshot, itinerary, provider-call, LLM-usage, audit, and LangGraph checkpoint tables shown later in this document are target design only.
+Search-request, flight/hotel/place/weather snapshot, provider-call, LLM-usage, audit, and LangGraph checkpoint tables shown later in this document are target design only.
 
 ## Schemas
 
@@ -36,7 +39,7 @@ erDiagram
     USER ||--o{ CONVERSATION : starts
     USER ||--o{ TRIP : plans
     CONVERSATION ||--o{ MESSAGE : contains
-    CONVERSATION o|--o| TRIP : develops
+    TRIP o|--o{ MESSAGE : contextualizes
     TRIP ||--o{ SEARCH_REQUEST : triggers
 
     USER {
@@ -66,9 +69,11 @@ erDiagram
     MESSAGE {
         uuid id PK
         uuid conversation_id FK
+        uuid trip_id FK
+        uuid client_message_id UK
+        uuid reply_to_message_id FK
         string role
         text content
-        jsonb metadata
         datetime created_at
     }
     TRIP {
@@ -77,6 +82,18 @@ erDiagram
         string title
         string origin
         string destination
+        string origin_location_provider
+        string origin_provider_location_id
+        string origin_canonical_name
+        string origin_country_code
+        float origin_latitude
+        float origin_longitude
+        string destination_location_provider
+        string destination_provider_location_id
+        string destination_canonical_name
+        string destination_country_code
+        float destination_latitude
+        float destination_longitude
         date start_date
         date end_date
         string status
@@ -96,7 +113,8 @@ erDiagram
 
 ## Travel result model
 
-This entire section is a target schema and has not been migrated yet.
+The itinerary and itinerary-item subset in this section is implemented. Provider
+result snapshots and the other search/usage entities remain target schema.
 
 Search results are snapshots. A price must always include its currency, provider, capture time, and applicable conditions because external availability can change immediately.
 
@@ -227,6 +245,14 @@ erDiagram
 
 ## Important constraints
 
+Canonical trip locations are optional for backward compatibility, but atomic when
+present: provider namespace, provider location ID, canonical name, ISO country
+code, latitude, and longitude must all be stored together. Coordinates have
+database range checks. The original `origin` and `destination` strings remain as
+the user's display/search input; LangGraph prefers the canonical names when they
+exist. Changing a route endpoint without replacement metadata clears its stale
+canonical location.
+
 - A trip `end_date` must be after its `start_date`.
 - A Phase 1 trip status must be `draft`, `planned`, or `archived`; upcoming, active, and history are date-derived views.
 - Monetary amounts must be non-negative and paired with an ISO 4217 currency code.
@@ -265,6 +291,9 @@ Avoid indexing arbitrary JSONB until an observed query needs it.
 The implemented conversation baseline includes `app.conversations`, `app.messages`, and `app.assistant_runs`.
 
 - A user message has a client-generated `client_message_id` for idempotent acceptance.
+- A user message may reference an owned trip through nullable `trip_id`; assistant messages cannot carry independent trip context.
+- Deleting a trip sets message `trip_id` to null so conversation history remains available.
+- Reusing `client_message_id` with different content, conversation, or trip context is rejected.
 - An assistant message references exactly one user message through `reply_to_message_id`.
 - A unique assistant reply per user message prevents duplicate visible responses.
 - `assistant_runs` holds one processing lease per user message. A claim token and expiry let only one worker invoke the model.

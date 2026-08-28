@@ -45,6 +45,7 @@ def create_accepted_request(*, is_duplicate: bool = False) -> AcceptedTravelRequ
     return AcceptedTravelRequest(
         conversation=conversation,
         user_message=user_message,
+        trip=None,
         is_duplicate=is_duplicate,
     )
 

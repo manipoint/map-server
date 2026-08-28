@@ -3,6 +3,8 @@
 from app.database.models.assistant_run import AssistantRun
 from app.database.models.auth_session import AuthSession
 from app.database.models.conversation import Conversation
+from app.database.models.itineraries import Itinerary
+from app.database.models.itinerary_item import ItineraryItem
 from app.database.models.message import Message
 from app.database.models.trip import Trip
 from app.database.models.user import User
@@ -11,6 +13,8 @@ __all__ = [
     "AssistantRun",
     "AuthSession",
     "Conversation",
+    "Itinerary",
+    "ItineraryItem",
     "Message",
     "Trip",
     "User",

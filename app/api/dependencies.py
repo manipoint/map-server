@@ -13,11 +13,14 @@ from app.auth.service import (
     AuthenticatedPrincipal,
     AuthService,
 )
+from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
 from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
+from app.services.itinerary_service import ItineraryService
+from app.services.location_resolution_service import LocationResolutionService
 from app.services.travel_response_service import TravelResponseService
 from app.services.trip_service import TripService
 
@@ -79,6 +82,39 @@ TripServiceDependency = Annotated[
 ]
 
 
+def get_itinerary_service(
+    database_session: DatabaseSession,
+) -> ItineraryService:
+    """Create one database-bound itinerary service per HTTP request."""
+
+    return ItineraryService(session=database_session)
+
+
+ItineraryServiceDependency = Annotated[
+    ItineraryService,
+    Depends(get_itinerary_service),
+]
+
+
+def get_location_resolution_service(request: Request) -> LocationResolutionService:
+    """Return the startup-owned canonical location service."""
+
+    service: LocationResolutionService | None = getattr(
+        request.app.state,
+        "location_resolution_service",
+        None,
+    )
+    if service is None:
+        raise ProviderConfigurationError("Location resolution is not configured")
+    return service
+
+
+LocationResolutionServiceDependency = Annotated[
+    LocationResolutionService,
+    Depends(get_location_resolution_service),
+]
+
+
 BearerCredentials = Annotated[
     HTTPAuthorizationCredentials | None,
     Depends(bearer_scheme),
@@ -131,6 +167,7 @@ async def get_travel_response_service(
     )
     return TravelResponseService(
         processing_service=processing_service,
+        itinerary_service=ItineraryService(session=database_session),
         graph=graph,
         assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
         travel_response_timeout_seconds=settings.travel_response_timeout_seconds,

@@ -18,7 +18,7 @@ from app.domain.errors import (
     InvalidTripStatusTransitionError,
     TripNotFoundError,
 )
-from app.domain.trips import TripStatus, TripUpdate
+from app.domain.trips import CanonicalLocation, TripStatus, TripUpdate
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +88,26 @@ class TripService:
         end_date: date,
         title: str | None = None,
         origin: str | None = None,
+        origin_location: CanonicalLocation | None = None,
+        destination_location: CanonicalLocation | None = None,
     ) -> Trip:
         """Create and commit a new user-owned draft trip."""
+
+        if origin is None and origin_location is not None:
+            raise InvalidTripDetailsError("origin_location requires origin")
+        resolved_origin = (
+            origin_location.canonical_name if origin_location is not None else origin
+        )
+        resolved_destination = (
+            destination_location.canonical_name
+            if destination_location is not None
+            else destination
+        )
+        if (
+            resolved_origin is not None
+            and resolved_origin.casefold() == resolved_destination.casefold()
+        ):
+            raise InvalidTripDetailsError("origin and destination must be different")
 
         try:
             trip = await self.trips.create(
@@ -97,6 +115,8 @@ class TripService:
                 title=title,
                 origin=origin,
                 destination=destination,
+                origin_location=origin_location,
+                destination_location=destination_location,
                 start_date=start_date,
                 end_date=end_date,
             )
@@ -146,6 +166,20 @@ class TripService:
                 if "destination" in changed_fields
                 else trip.destination
             )
+            origin_location = self._merge_location(
+                update=update,
+                field_name="origin_location",
+                text_field_name="origin",
+                stored=trip.origin_location,
+                stored_text=trip.origin,
+            )
+            destination_location = self._merge_location(
+                update=update,
+                field_name="destination_location",
+                text_field_name="destination",
+                stored=trip.destination_location,
+                stored_text=trip.destination,
+            )
             start_date = (
                 update.start_date if "start_date" in changed_fields else trip.start_date
             )
@@ -161,6 +195,26 @@ class TripService:
                 raise InvalidTripDetailsError(
                     "origin and destination must be different"
                 )
+            if origin is None and origin_location is not None:
+                raise InvalidTripDetailsError("origin_location requires origin")
+
+            resolved_origin = (
+                origin_location.canonical_name
+                if origin_location is not None
+                else origin
+            )
+            resolved_destination = (
+                destination_location.canonical_name
+                if destination_location is not None
+                else destination
+            )
+            if (
+                resolved_origin is not None
+                and resolved_origin.casefold() == resolved_destination.casefold()
+            ):
+                raise InvalidTripDetailsError(
+                    "origin and destination must be different"
+                )
             updated_trip = await self.trips.update_details(
                 trip=trip,
                 title=title,
@@ -168,6 +222,8 @@ class TripService:
                 destination=destination,
                 start_date=start_date,
                 end_date=end_date,
+                origin_location=origin_location,
+                destination_location=destination_location,
             )
             await self.session.commit()
 
@@ -176,6 +232,29 @@ class TripService:
             raise
 
         return updated_trip
+
+    @staticmethod
+    def _merge_location(
+        *,
+        update: TripUpdate,
+        field_name: str,
+        text_field_name: str,
+        stored: CanonicalLocation | None,
+        stored_text: str | None,
+    ) -> CanonicalLocation | None:
+        """Merge metadata and clear it when its free-text endpoint changes."""
+
+        if field_name in update.model_fields_set:
+            return getattr(update, field_name)
+        if text_field_name in update.model_fields_set:
+            updated_text = getattr(update, text_field_name)
+            if (
+                updated_text is None
+                or stored_text is None
+                or updated_text.casefold() != stored_text.casefold()
+            ):
+                return None
+        return stored
 
     async def mark_trip_planned(
         self,
@@ -245,3 +324,25 @@ class TripService:
             raise
 
         return updated_trip
+
+    async def delete_trip(
+        self,
+        *,
+        trip_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        """Permanently delete one user-owned trip."""
+
+        try:
+            deleted = await self.trips.delete_by_id_for_user(
+                trip_id=trip_id, user_id=user_id
+            )
+            if not deleted:
+                raise TripNotFoundError("Trip was not found")
+
+            await self.session.commit()
+
+        except BaseException:
+            await self.session.rollback()
+
+            raise

@@ -45,12 +45,14 @@ def test_persist_travel_request_uses_a_short_lived_service_session(
     user_id = uuid4()
     client_message_id = uuid4()
     requested_conversation_id = uuid4()
+    trip_id = uuid4()
     durable_conversation = MagicMock(spec=Conversation)
     durable_conversation.id = requested_conversation_id
     user_message = MagicMock(spec=Message)
     accepted_request = AcceptedTravelRequest(
         conversation=durable_conversation,
         user_message=user_message,
+        trip=None,
         is_duplicate=False,
     )
     event = TravelRequestEvent.model_validate(
@@ -61,6 +63,7 @@ def test_persist_travel_request_uses_a_short_lived_service_session(
             "payload": {
                 "client_message_id": str(client_message_id),
                 "conversation_id": str(requested_conversation_id),
+                "trip_id": str(trip_id),
                 "message": "Plan a trip to Lahore",
                 "locale": "ur-PK",
             },
@@ -90,6 +93,7 @@ def test_persist_travel_request_uses_a_short_lived_service_session(
         user_id=user_id,
         client_message_id=client_message_id,
         conversation_id=requested_conversation_id,
+        trip_id=trip_id,
         message="Plan a trip to Lahore",
         locale="ur-PK",
     )

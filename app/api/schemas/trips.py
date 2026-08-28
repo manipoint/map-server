@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.trips import TripStatus, TripUpdate
+from app.domain.trips import CanonicalLocation, TripStatus, TripUpdate
 
 
 class TripCreateRequest(BaseModel):
@@ -33,6 +33,8 @@ class TripCreateRequest(BaseModel):
     )
     start_date: date
     end_date: date
+    origin_location: CanonicalLocation | None = None
+    destination_location: CanonicalLocation | None = None
 
     @model_validator(mode="after")
     def validate_trip_details(self) -> Self:
@@ -41,9 +43,21 @@ class TripCreateRequest(BaseModel):
             raise ValueError("end_date must be after start_date")
         if (
             self.origin is not None
-            and self.origin.casefold() == self.destination.casefold()
+            and (
+                self.origin_location.canonical_name
+                if self.origin_location is not None
+                else self.origin
+            ).casefold()
+            == (
+                self.destination_location.canonical_name
+                if self.destination_location is not None
+                else self.destination
+            ).casefold()
         ):
             raise ValueError("origin and destination must be different")
+
+        if self.origin_location is not None and self.origin is None:
+            raise ValueError("origin_location requires origin")
 
         return self
 
@@ -56,6 +70,8 @@ class TripResponse(BaseModel):
     title: str | None
     origin: str | None
     destination: str
+    origin_location: CanonicalLocation | None
+    destination_location: CanonicalLocation | None
     start_date: date
     end_date: date
     status: TripStatus

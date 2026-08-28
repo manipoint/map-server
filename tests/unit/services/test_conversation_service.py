@@ -11,11 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
+from app.database.models.trip import Trip
 from app.database.repositories.conversations import ConversationRepository
 from app.database.repositories.messages import MessageRepository
+from app.database.repositories.trips import TripRepository
 from app.domain.errors import (
     ClientMessageConflictError,
     ConversationNotFoundError,
+    TripNotFoundError,
 )
 from app.services.conversation_service import (
     ConversationService,
@@ -62,6 +65,7 @@ def create_user_message(
     conversation_id,
     client_message_id,
     content: str = "Plan a trip to Lahore",
+    trip_id=None,
 ) -> Message:
     """Create an in-memory persisted user-message representation."""
 
@@ -69,9 +73,24 @@ def create_user_message(
         id=uuid4(),
         conversation_id=conversation_id,
         client_message_id=client_message_id,
+        trip_id=trip_id,
         reply_to_message_id=None,
         role="user",
         content=content,
+    )
+
+
+def create_trip(*, trip_id=None, user_id=None) -> Trip:
+    """Create one active trip context for conversation tests."""
+
+    return Trip(
+        id=trip_id or uuid4(),
+        user_id=user_id or uuid4(),
+        origin="Karachi",
+        destination="Lahore",
+        start_date=datetime(2026, 9, 10, tzinfo=UTC).date(),
+        end_date=datetime(2026, 9, 12, tzinfo=UTC).date(),
+        status="draft",
     )
 
 
@@ -117,6 +136,7 @@ def test_accept_request_creates_and_commits_a_new_conversation() -> None:
     messages.create_user_message.assert_awaited_once_with(
         conversation_id=conversation.id,
         client_message_id=client_message_id,
+        trip_id=None,
         content="Plan a trip to Lahore",
     )
     session.commit.assert_awaited_once_with()
@@ -124,6 +144,82 @@ def test_accept_request_creates_and_commits_a_new_conversation() -> None:
     assert result.conversation is conversation
     assert result.user_message is user_message
     assert result.is_duplicate is False
+    assert result.trip_id is None
+
+
+def test_accept_request_persists_an_owned_trip_context() -> None:
+    """A trip-scoped request should verify ownership and persist its trip ID."""
+
+    service, session, conversations, messages = create_service()
+    trips = Mock(spec=TripRepository)
+    user_id = uuid4()
+    trip_id = uuid4()
+    trip = create_trip(trip_id=trip_id, user_id=user_id)
+    trips.get_by_id_for_user = AsyncMock(return_value=trip)
+    service.trips = trips
+    client_message_id = uuid4()
+    conversation = create_conversation(user_id=user_id)
+    user_message = create_user_message(
+        conversation_id=conversation.id,
+        client_message_id=client_message_id,
+        trip_id=trip_id,
+    )
+    messages.get_user_message_by_client_id.return_value = None
+    conversations.create.return_value = conversation
+    messages.create_user_message.return_value = user_message
+
+    result = asyncio.run(
+        service.accept_request(
+            user_id=user_id,
+            client_message_id=client_message_id,
+            conversation_id=None,
+            trip_id=trip_id,
+            message=user_message.content,
+            locale="en-PK",
+        )
+    )
+
+    trips.get_by_id_for_user.assert_awaited_once_with(
+        trip_id=trip_id,
+        user_id=user_id,
+        for_update=True,
+    )
+    messages.create_user_message.assert_awaited_once_with(
+        conversation_id=conversation.id,
+        client_message_id=client_message_id,
+        trip_id=trip_id,
+        content=user_message.content,
+    )
+    assert result.trip_id == trip_id
+    assert result.trip is trip
+    session.commit.assert_awaited_once_with()
+
+
+def test_accept_request_rejects_a_missing_or_foreign_trip() -> None:
+    """Unknown and differently owned trips should share a safe failure."""
+
+    service, session, conversations, messages = create_service()
+    trips = Mock(spec=TripRepository)
+    trips.get_by_id_for_user = AsyncMock(return_value=None)
+    service.trips = trips
+    messages.get_user_message_by_client_id.return_value = None
+
+    with pytest.raises(TripNotFoundError):
+        asyncio.run(
+            service.accept_request(
+                user_id=uuid4(),
+                client_message_id=uuid4(),
+                conversation_id=None,
+                trip_id=uuid4(),
+                message="Plan this trip",
+                locale="en",
+            )
+        )
+
+    conversations.create.assert_not_awaited()
+    messages.create_user_message.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
 
 
 def test_accept_request_locks_and_updates_an_existing_conversation() -> None:
@@ -221,10 +317,49 @@ def test_accept_request_returns_a_matching_duplicate_without_writing() -> None:
     session.rollback.assert_not_awaited()
     assert result.conversation is conversation
     assert result.user_message is existing_message
+    assert result.trip is None
     assert result.is_duplicate is True
 
 
-@pytest.mark.parametrize("conflict", ["content", "conversation"])
+def test_accept_request_reloads_trip_context_for_a_matching_duplicate() -> None:
+    """An idempotent retry should restore the same trusted active trip details."""
+
+    service, session, conversations, messages = create_service()
+    user_id = uuid4()
+    trip = create_trip(user_id=user_id)
+    conversation = create_conversation(user_id=user_id)
+    existing_message = create_user_message(
+        conversation_id=conversation.id,
+        client_message_id=uuid4(),
+        trip_id=trip.id,
+    )
+    messages.get_user_message_by_client_id.return_value = existing_message
+    conversations.get_by_id_for_user.return_value = conversation
+    trips = Mock(spec=TripRepository)
+    trips.get_by_id_for_user = AsyncMock(return_value=trip)
+    service.trips = trips
+
+    result = asyncio.run(
+        service.accept_request(
+            user_id=user_id,
+            client_message_id=existing_message.client_message_id,
+            conversation_id=conversation.id,
+            trip_id=trip.id,
+            message=existing_message.content,
+            locale="en",
+        )
+    )
+
+    assert result.trip is trip
+    assert result.trip_id == trip.id
+    trips.get_by_id_for_user.assert_awaited_once_with(
+        trip_id=trip.id,
+        user_id=user_id,
+    )
+    session.commit.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("conflict", ["content", "conversation", "trip"])
 def test_accept_request_rejects_conflicting_client_message_reuse(
     conflict: str,
 ) -> None:
@@ -242,10 +377,13 @@ def test_accept_request_rejects_conflicting_client_message_reuse(
 
     requested_conversation_id = conversation.id
     requested_content = existing_message.content
+    requested_trip_id = existing_message.trip_id
     if conflict == "content":
         requested_content = "A different request"
-    else:
+    elif conflict == "conversation":
         requested_conversation_id = uuid4()
+    else:
+        requested_trip_id = uuid4()
 
     with pytest.raises(ClientMessageConflictError):
         asyncio.run(
@@ -253,6 +391,7 @@ def test_accept_request_rejects_conflicting_client_message_reuse(
                 user_id=user_id,
                 client_message_id=client_message_id,
                 conversation_id=requested_conversation_id,
+                trip_id=requested_trip_id,
                 message=requested_content,
                 locale="en",
             )

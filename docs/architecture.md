@@ -8,7 +8,7 @@ The implemented service is a modular monolith: FastAPI, LangGraph, and FastMCP s
 
 ## Runtime architecture
 
-The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, assistant-run leases, and trips. Travel search snapshots and itineraries are not yet stored. LangSmith tracing is also not wired.
+The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, assistant-run leases, trips, and versioned itineraries with ordered items. Travel search snapshots are not yet stored, and LangSmith tracing is not wired.
 
 ```mermaid
 flowchart LR
@@ -85,7 +85,7 @@ MCP exposes provider-independent, typed tools. It owns provider authentication, 
 
 ### PostgreSQL boundary
 
-PostgreSQL currently stores normalized identity, session, conversation, message, assistant-run, and trip data in the `app` schema. LangGraph checkpointing and the `langgraph` schema are target work. Repositories and services are the application layers allowed to issue business-data queries.
+PostgreSQL currently stores normalized identity, session, conversation, message, assistant-run, trip, itinerary, and itinerary-item data in the `app` schema. LangGraph checkpointing and the `langgraph` schema are target work. Repositories and services are the application layers allowed to issue business-data queries.
 
 ## Current primary request flow
 
@@ -101,15 +101,17 @@ sequenceDiagram
 
     Flutter->>FastAPI: travel.request event
     FastAPI->>PostgreSQL: Authenticate and accept idempotent message
+    FastAPI->>PostgreSQL: Verify and persist optional trip context
     FastAPI->>PostgreSQL: Acquire assistant-run lease
     FastAPI->>LangGraph: Invoke bounded history
     LangGraph->>MCP: Model-selected typed tool call
     MCP->>Provider: Search request
     Provider-->>MCP: Provider payload
     MCP-->>LangGraph: Normalized results
-    LangGraph-->>FastAPI: Validated assistant text
+    LangGraph-->>FastAPI: Validated text and optional itinerary
+    FastAPI->>PostgreSQL: Idempotently persist generated itinerary draft
     FastAPI->>PostgreSQL: Save reply and complete lease atomically
-    FastAPI-->>Flutter: travel.response.completed event
+    FastAPI-->>Flutter: Completed event with nullable itinerary ID
 ```
 
 ## Deterministic versus agentic work

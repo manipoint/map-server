@@ -19,6 +19,7 @@ def test_message_contains_required_columns() -> None:
     assert set(Message.__table__.columns.keys()) == {
         "id",
         "conversation_id",
+        "trip_id",
         "client_message_id",
         "reply_to_message_id",
         "role",
@@ -27,6 +28,7 @@ def test_message_contains_required_columns() -> None:
     }
     assert Message.__table__.c.id.primary_key is True
     assert Message.__table__.c.conversation_id.nullable is False
+    assert Message.__table__.c.trip_id.nullable is True
     assert Message.__table__.c.client_message_id.nullable is True
     assert Message.__table__.c.reply_to_message_id.nullable is True
     assert Message.__table__.c.role.nullable is False
@@ -40,11 +42,14 @@ def test_message_foreign_keys_define_delete_behavior() -> None:
         iter(Message.__table__.c.conversation_id.foreign_keys)
     )
     reply_foreign_key = next(iter(Message.__table__.c.reply_to_message_id.foreign_keys))
+    trip_foreign_key = next(iter(Message.__table__.c.trip_id.foreign_keys))
 
     assert conversation_foreign_key.target_fullname == "app.conversations.id"
     assert conversation_foreign_key.ondelete == "CASCADE"
     assert reply_foreign_key.target_fullname == "app.messages.id"
     assert reply_foreign_key.ondelete == "CASCADE"
+    assert trip_foreign_key.target_fullname == "app.trips.id"
+    assert trip_foreign_key.ondelete == "SET NULL"
     assert Message.__table__.c.client_message_id.foreign_keys == set()
 
 
@@ -73,6 +78,7 @@ def test_message_has_role_and_content_constraints() -> None:
         "ck_messages_content_not_blank",
         "ck_messages_role",
         "ck_messages_role_identifiers",
+        "ck_messages_trip_context_user_only",
     }
 
 
@@ -88,7 +94,11 @@ def test_message_has_conversation_history_index() -> None:
         "ix_messages_conversation_created_at": (
             "conversation_id",
             "created_at",
-        )
+        ),
+        "ix_messages_trip_created_at": (
+            "trip_id",
+            "created_at",
+        ),
     }
 
 

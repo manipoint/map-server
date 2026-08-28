@@ -4,15 +4,19 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
 from app.domain.hotels import HotelSearchStatus
 from app.domain.places import PlaceSearchStatus
+from app.graph.schemas.itineraries import GeneratedItinerary
 from app.graph.tools import (
+    ITINERARY_SUBMISSION_TOOL_NAME,
     create_current_weather_tool,
     create_flight_search_tool,
     create_hotel_search_tool,
+    create_itinerary_submission_tool,
     create_place_search_tool,
 )
 from app.mcp.schemas.flights import FlightSearchPreparationInput
@@ -162,6 +166,101 @@ def no_place_options() -> PlaceSearchResult:
         ),
         message="No relevant places were found.",
     )
+
+
+def valid_generated_itinerary_data() -> dict[str, object]:
+    """Build one valid side-effect-free itinerary submission."""
+
+    return {
+        "summary": "Two-day London museum plan",
+        "items": [
+            {
+                "day_number": 1,
+                "item_type": "place",
+                "title": "British Museum",
+                "location_name": "London",
+                "starts_at": "2026-09-10T09:00:00Z",
+                "ends_at": "2026-09-10T11:00:00Z",
+            },
+            {
+                "day_number": 2,
+                "item_type": "meal",
+                "title": "Local lunch",
+            },
+        ],
+    }
+
+
+def test_itinerary_submission_tool_exposes_the_bounded_schema() -> None:
+    """The model should see one strict final-itinerary handoff contract."""
+
+    tool = create_itinerary_submission_tool()
+
+    assert tool.name == ITINERARY_SUBMISSION_TOOL_NAME
+    assert "active trip" in tool.description
+    assert "general questions" in tool.description
+    assert tool.args_schema is GeneratedItinerary
+    schema = tool.args_schema.model_json_schema()
+    assert schema["properties"]["summary"]["maxLength"] == 500
+    assert schema["properties"]["items"]["minItems"] == 1
+    assert schema["properties"]["items"]["maxItems"] == 200
+
+
+def test_itinerary_submission_tool_returns_normalized_json_without_dependencies() -> (
+    None
+):
+    """Submission should validate locally without an MCP, provider, or DB client."""
+
+    tool = create_itinerary_submission_tool()
+
+    result = asyncio.run(tool.ainvoke(valid_generated_itinerary_data()))
+
+    assert result["summary"] == "Two-day London museum plan"
+    assert result["items"][0] == {
+        "day_number": 1,
+        "item_type": "place",
+        "title": "British Museum",
+        "description": None,
+        "location_name": "London",
+        "starts_at": "2026-09-10T09:00:00Z",
+        "ends_at": "2026-09-10T11:00:00Z",
+    }
+    assert result["items"][1]["item_type"] == "meal"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"summary": "Empty plan", "items": []},
+        {
+            **valid_generated_itinerary_data(),
+            "unexpected": "must not be accepted",
+        },
+    ],
+)
+def test_itinerary_submission_tool_rejects_invalid_output_before_handoff(
+    arguments: dict[str, object],
+) -> None:
+    """Empty plans and unknown model fields should fail strict validation."""
+
+    tool = create_itinerary_submission_tool()
+
+    with pytest.raises(ValidationError):
+        asyncio.run(tool.ainvoke(arguments))
+
+
+def test_itinerary_submission_tool_rejects_invalid_item_time_order() -> None:
+    """Invalid itinerary timing should fail without executing another system."""
+
+    arguments = valid_generated_itinerary_data()
+    items = arguments["items"]
+    assert isinstance(items, list)
+    first_item = items[0]
+    assert isinstance(first_item, dict)
+    first_item["ends_at"] = "2026-09-10T08:00:00Z"
+
+    with pytest.raises(ValidationError, match="ends_at must be after starts_at"):
+        asyncio.run(create_itinerary_submission_tool().ainvoke(arguments))
 
 
 def test_current_weather_tool_exposes_the_bounded_model_schema() -> None:

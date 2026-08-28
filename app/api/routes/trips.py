@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.dependencies import CurrentPrincipal, TripServiceDependency
 from app.api.schemas.trips import (
@@ -91,6 +91,8 @@ async def create_user_trip(
         title=payload.title,
         origin=payload.origin,
         destination=payload.destination,
+        origin_location=payload.origin_location,
+        destination_location=payload.destination_location,
         start_date=payload.start_date,
         end_date=payload.end_date,
     )
@@ -155,3 +157,24 @@ async def update_user_trip(
     )
 
     return TripResponse.model_validate(trip)
+
+
+@router.delete(
+    "/{trip_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Permanently delete one trip",
+)
+async def delete_user_trip(
+    trip_id: UUID,
+    principal: CurrentPrincipal,
+    trip_service: TripServiceDependency,
+) -> Response:
+    """Permanently delete one trip owned by the authenticated user."""
+
+    await trip_service.delete_trip(
+        trip_id=trip_id,
+        user_id=principal.user.id,
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

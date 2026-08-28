@@ -43,6 +43,15 @@ class Message(Base):
             "conversation_id",
             "created_at",
         ),
+        Index(
+            "ix_messages_trip_created_at",
+            "trip_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "role = 'user' OR trip_id IS NULL",
+            name="trip_context_user_only",
+        ),
         {"schema": "app"},
     )
 
@@ -55,6 +64,11 @@ class Message(Base):
         Uuid(as_uuid=True),
         ForeignKey("app.conversations.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    trip_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("app.trips.id", ondelete="SET NULL"),
+        nullable=True,
     )
     client_message_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),

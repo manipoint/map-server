@@ -115,6 +115,45 @@ def test_update_trip_rejects_empty_payload_before_service_call() -> None:
     trip_service.update_trip.assert_not_awaited()
 
 
+def test_update_trip_accepts_canonical_destination_replacement() -> None:
+    """PATCH should preserve nested location metadata as one explicit change."""
+
+    principal = create_principal()
+    trip = create_updated_trip(user_id=principal.user.id)
+    trip.destination = "Paris"
+    trip.destination_location_provider = "google"
+    trip.destination_provider_location_id = "paris-id"
+    trip.destination_canonical_name = "Paris, France"
+    trip.destination_country_code = "FR"
+    trip.destination_latitude = 48.8566
+    trip.destination_longitude = 2.3522
+    trip_service = MagicMock(spec=TripService)
+    trip_service.update_trip = AsyncMock(return_value=trip)
+    application = create_update_app(trip_service, principal)
+
+    with TestClient(application) as client:
+        response = client.patch(
+            f"/api/v1/trips/{trip.id}",
+            json={
+                "destination": "Paris",
+                "destination_location": {
+                    "provider": "google",
+                    "provider_location_id": "paris-id",
+                    "canonical_name": "Paris, France",
+                    "country_code": "fr",
+                    "latitude": 48.8566,
+                    "longitude": 2.3522,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["destination_location"]["country_code"] == "FR"
+    update = trip_service.update_trip.await_args.kwargs["update"]
+    assert update.model_fields_set == {"destination", "destination_location"}
+    assert update.destination_location.provider_location_id == "paris-id"
+
+
 def test_update_trip_rejects_null_required_field() -> None:
     """Required persisted trip fields must not be cleared through PATCH."""
 

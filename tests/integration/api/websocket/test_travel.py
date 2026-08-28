@@ -44,6 +44,7 @@ from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import (
     ClientMessageConflictError,
     ConversationNotFoundError,
+    TripNotFoundError,
 )
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_service import AcceptedTravelRequest
@@ -77,15 +78,18 @@ def create_accepted_request(
     *,
     conversation_id: UUID | None = None,
     is_duplicate: bool = False,
+    trip_id: UUID | None = None,
 ) -> AcceptedTravelRequest:
     """Return a persisted-request result for endpoint isolation."""
 
     conversation = MagicMock(spec=Conversation)
     conversation.id = conversation_id or uuid4()
     user_message = MagicMock(spec=Message)
+    user_message.trip_id = trip_id
     return AcceptedTravelRequest(
         conversation=conversation,
         user_message=user_message,
+        trip=None,
         is_duplicate=is_duplicate,
     )
 
@@ -123,6 +127,7 @@ def create_travel_request_event(
     *,
     client_message_id: UUID | None = None,
     conversation_id: UUID | None = None,
+    trip_id: UUID | None = None,
 ) -> dict[str, object]:
     """Return one valid travel request envelope."""
 
@@ -133,6 +138,8 @@ def create_travel_request_event(
     }
     if conversation_id is not None:
         payload["conversation_id"] = str(conversation_id)
+    if trip_id is not None:
+        payload["trip_id"] = str(trip_id)
     return {
         "version": 1,
         "type": "travel.request",
@@ -313,6 +320,7 @@ def test_travel_websocket_reports_a_completed_response(
     assistant_message = MagicMock(spec=Message)
     assistant_message.id = uuid4()
     assistant_message.content = "Three-day Lahore itinerary"
+    itinerary_id = uuid4()
     monkeypatch.setattr(
         travel,
         "persist_travel_request",
@@ -329,6 +337,7 @@ def test_travel_websocket_reports_a_completed_response(
                 is_cached=False,
                 is_processing=False,
                 error_code=None,
+                itinerary_id=itinerary_id,
             )
         ),
     )
@@ -347,6 +356,7 @@ def test_travel_websocket_reports_a_completed_response(
     assert event.payload.conversation_id == conversation_id
     assert event.payload.assistant_message_id == assistant_message.id
     assert event.payload.content == "Three-day Lahore itinerary"
+    assert event.payload.itinerary_id == itinerary_id
     assert event.payload.is_duplicate is False
 
 
@@ -580,6 +590,7 @@ def test_travel_websocket_acknowledges_an_idempotent_duplicate(
     [
         (ConversationNotFoundError("not found"), "conversation_not_found"),
         (ClientMessageConflictError("conflict"), "client_message_conflict"),
+        (TripNotFoundError("not found"), "trip_not_found"),
     ],
 )
 def test_travel_websocket_rejects_a_domain_failure_without_closing(

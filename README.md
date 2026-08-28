@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, trip persistence and its ownership-safe create/list/retrieve/update/plan/archive REST operations, a shared graph deadline, a bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are implemented and tested. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. Permanent trip deletion, search snapshots, itinerary persistence, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
+> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. Search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
 
 ## Product scope
 
@@ -43,17 +43,19 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/main.py` | FastAPI application factory and entry point. |
 | `app/api/routes/health.py` | Process liveness endpoint. |
 | `app/api/routes/auth.py` | Registration, login, token rotation, logout, and device-session endpoints. |
-| `app/api/routes/trips.py` | Ownership-safe trip creation, listing, retrieval, updates, and lifecycle actions. |
+| `app/api/routes/trips.py` | Ownership-safe trip creation, listing, retrieval, updates, lifecycle actions, and permanent deletion. |
+| `app/api/routes/itineraries.py` | Draft creation, owned-version retrieval, current saved-plan retrieval, and save promotion. |
+| `app/api/routes/locations.py` | Authenticated, cost-bounded canonical location resolution for explicit user selection. |
 | `app/auth/` | Password hashing, tokens, authentication services, schemas, and domain errors. |
-| `app/database/` | Async SQLAlchemy sessions plus user, session, conversation, assistant-run, and trip persistence. |
-| `app/services/conversation_service.py` | Idempotently persists conversations and user messages. |
+| `app/database/` | Async SQLAlchemy sessions plus user, session, conversation, assistant-run, trip, and versioned itinerary persistence. |
+| `app/services/conversation_service.py` | Idempotently persists conversations and user messages with optional ownership-checked trip context. |
 | `app/services/conversation_processing_service.py` | Coordinates assistant-run leases and atomic reply persistence. |
 | `app/services/travel_response_service.py` | Orchestrates cached replies, graph execution, retries, and safe failures. |
 | `app/graph/` | Bounded model/tool loop, travel tools, prompts, response validation, and ordered model fallback. |
 | `app/mcp/` | In-process FastMCP server, typed tools and schemas, and graph-facing client. |
 | `app/providers/` | WeatherAPI, Duffel, Google Places, and Frankfurter adapters; see provider status below. |
 | `app/api/websocket/` | Authenticated `/ws/travel` protocol, background response tasks, and event schemas. |
-| `alembic/` | Migrations for users, authentication sessions, conversations, messages, assistant runs, and trips. |
+| `alembic/` | Migrations for users, authentication sessions, conversations, messages, assistant runs, trips, itineraries, and ordered itinerary items. |
 | `app/observability/logging.py` | Structured JSON logging and sensitive-field redaction. |
 | `tests/` | Unit and integration tests for implemented behavior. |
 
@@ -104,6 +106,7 @@ The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
 | --- | --- | --- |
 | Current weather | WeatherAPI | Always initialized; `WEATHER_API_KEY` is therefore required by the current startup path. |
 | Location resolution | WeatherAPI search | Used by Duffel hotels and Google Places. |
+| Canonical trip location | Google Places Text Search | Authenticated `GET /api/v1/locations/resolve`; one provider call and no LLM/MCP call. |
 | Airport resolution | Duffel Places | Enabled with flights; direct IATA codes skip the provider lookup. |
 | Flights | Duffel | Enabled by `FLIGHT_PROVIDER=duffel`; city/airport names are resolved inside one flight-tool call. |
 | Hotels | Duffel | Enabled by `HOTEL_PROVIDER=duffel`. |
@@ -111,6 +114,11 @@ The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
 | Currency | Frankfurter | Enabled by `CURRENCY_PROVIDER=frankfurter`. |
 
 MCP is currently an internal Python boundary: `TravelMcpClient` calls the in-process FastMCP server object. No `/internal/mcp` HTTP route is mounted yet.
+
+Flutter should call canonical location resolution after an explicit search submit or
+debounced selection action, not on every keystroke. The selected object can be sent
+unchanged as `origin_location` or `destination_location` when creating or updating a
+trip.
 
 ## Target backend modules
 

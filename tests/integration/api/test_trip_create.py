@@ -100,6 +100,8 @@ def test_create_trip_returns_authenticated_users_draft() -> None:
         "title": "London museums",
         "origin": "Lahore",
         "destination": "London",
+        "origin_location": None,
+        "destination_location": None,
         "start_date": "2026-09-10",
         "end_date": "2026-09-15",
         "status": "draft",
@@ -111,6 +113,8 @@ def test_create_trip_returns_authenticated_users_draft() -> None:
         title="London museums",
         origin="Lahore",
         destination="London",
+        origin_location=None,
+        destination_location=None,
         start_date=date(2026, 9, 10),
         end_date=date(2026, 9, 15),
     )
@@ -136,6 +140,60 @@ def test_create_trip_rejects_invalid_date_range_before_service_call() -> None:
 
     assert response.status_code == 422
     trip_service.create_trip.assert_not_awaited()
+
+
+def test_create_trip_round_trips_canonical_destination() -> None:
+    """A Flutter location selection should reach service and public response."""
+
+    principal = create_principal()
+    now = datetime(2026, 8, 29, 8, 0, tzinfo=UTC)
+    trip = Trip(
+        id=uuid4(),
+        user_id=principal.user.id,
+        destination="London",
+        destination_location_provider="google",
+        destination_provider_location_id="london-id",
+        destination_canonical_name="London, United Kingdom",
+        destination_country_code="GB",
+        destination_latitude=51.5074,
+        destination_longitude=-0.1278,
+        start_date=date(2026, 9, 10),
+        end_date=date(2026, 9, 12),
+        status="draft",
+        created_at=now,
+        updated_at=now,
+    )
+    trip_service = MagicMock(spec=TripService)
+    trip_service.create_trip = AsyncMock(return_value=trip)
+    application = create_trip_app(trip_service, principal=principal)
+    location = {
+        "provider": "google",
+        "provider_location_id": "london-id",
+        "canonical_name": "London, United Kingdom",
+        "country_code": "gb",
+        "latitude": 51.5074,
+        "longitude": -0.1278,
+    }
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/v1/trips",
+            json={
+                "destination": "London",
+                "destination_location": location,
+                "start_date": "2026-09-10",
+                "end_date": "2026-09-12",
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["destination_location"] == {
+        **location,
+        "country_code": "GB",
+    }
+    submitted = trip_service.create_trip.await_args.kwargs["destination_location"]
+    assert submitted.provider_location_id == "london-id"
+    assert submitted.country_code == "GB"
 
 
 def test_create_trip_rejects_client_supplied_user_id() -> None:

@@ -72,6 +72,7 @@ class TravelRequestPayload(BaseModel):
 
     client_message_id: UUID
     conversation_id: UUID | None = None
+    trip_id: UUID | None = None
     message: str = Field(min_length=1, max_length=2000)
     locale: str = Field(default="en", min_length=2, max_length=35)
 
@@ -107,6 +108,7 @@ class TravelRequestRejectedPayload(BaseModel):
     code: Literal[
         "conversation_not_found",
         "client_message_conflict",
+        "trip_not_found",
     ]
 
 
@@ -155,6 +157,7 @@ class TravelResponseCompletedPayload(BaseModel):
     assistant_message_id: UUID
     content: str = Field(min_length=1)
     is_duplicate: bool
+    itinerary_id: UUID | None = None
 
 
 class TravelResponseCompletedEvent(WebSocketEvent):

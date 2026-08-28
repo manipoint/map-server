@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     database_readiness_timeout_seconds: float = Field(
         default=2.0,
         gt=0,
-        le=10,
+        le=30,
     )
 
     # Authentication

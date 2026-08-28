@@ -23,6 +23,18 @@ def test_trip_contains_required_columns() -> None:
         "title",
         "origin",
         "destination",
+        "origin_location_provider",
+        "origin_provider_location_id",
+        "origin_canonical_name",
+        "origin_country_code",
+        "origin_latitude",
+        "origin_longitude",
+        "destination_location_provider",
+        "destination_provider_location_id",
+        "destination_canonical_name",
+        "destination_country_code",
+        "destination_latitude",
+        "destination_longitude",
         "start_date",
         "end_date",
         "status",
@@ -60,12 +72,36 @@ def test_trip_has_validation_constraints() -> None:
     assert set(constraints) == {
         "ck_trips_date_order",
         "ck_trips_destination_length",
+        "ck_trips_destination_latitude_range",
+        "ck_trips_destination_location_complete",
+        "ck_trips_destination_longitude_range",
         "ck_trips_origin_length",
+        "ck_trips_origin_latitude_range",
+        "ck_trips_origin_location_complete",
+        "ck_trips_origin_longitude_range",
         "ck_trips_status",
         "ck_trips_title_length",
     }
     assert constraints["ck_trips_date_order"] == "end_date > start_date"
     assert all(status.value in constraints["ck_trips_status"] for status in TripStatus)
+
+
+def test_trip_reconstructs_atomic_canonical_locations() -> None:
+    """Flat persistence columns should expose one validated domain object."""
+
+    trip = Trip(
+        origin_location_provider="google",
+        origin_provider_location_id="lahore-id",
+        origin_canonical_name="Lahore, Pakistan",
+        origin_country_code="PK",
+        origin_latitude=31.5204,
+        origin_longitude=74.3587,
+    )
+
+    assert trip.origin_location is not None
+    assert trip.origin_location.provider == "google"
+    assert trip.origin_location.country_code == "PK"
+    assert trip.destination_location is None
 
 
 def test_trip_has_owner_listing_indexes() -> None:

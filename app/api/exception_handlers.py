@@ -15,10 +15,14 @@ from app.auth.exceptions import (
     RefreshTokenReuseError,
     SessionRevokedError,
 )
-from app.common.exceptions import InvalidCursorError
+from app.common.exceptions import InvalidCursorError, ProviderError
 from app.domain.errors import (
+    InvalidItineraryDetailsError,
+    InvalidItineraryStatusTransitionError,
     InvalidTripDetailsError,
     InvalidTripStatusTransitionError,
+    ItineraryError,
+    ItineraryNotFoundError,
     TripError,
     TripNotFoundError,
 )
@@ -164,6 +168,59 @@ async def trip_exception_handler(
     )
 
 
+ITINERARY_ERROR_DEFINITIONS: dict[
+    type[ItineraryError],
+    ErrorDefinition,
+] = {
+    ItineraryNotFoundError: ErrorDefinition(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="itinerary_not_found",
+        message="Itinerary was not found",
+    ),
+    InvalidItineraryDetailsError: ErrorDefinition(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        code="invalid_itinerary_details",
+        message="Itinerary details are invalid",
+    ),
+    InvalidItineraryStatusTransitionError: ErrorDefinition(
+        status_code=status.HTTP_409_CONFLICT,
+        code="invalid_itinerary_status_transition",
+        message="Itinerary status transition is not allowed",
+    ),
+}
+
+
+async def itinerary_exception_handler(
+    request: Request,
+    error: ItineraryError,
+) -> JSONResponse:
+    """Convert an itinerary-domain error into a safe HTTP response."""
+
+    definition = ITINERARY_ERROR_DEFINITIONS.get(
+        type(error),
+        ErrorDefinition(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="itinerary_operation_failed",
+            message="Itinerary operation failed",
+        ),
+    )
+
+    return JSONResponse(
+        status_code=definition.status_code,
+        content={
+            "error": {
+                "code": definition.code,
+                "message": definition.message,
+                "request_id": getattr(
+                    request.state,
+                    "request_id",
+                    None,
+                ),
+            }
+        },
+    )
+
+
 async def invalid_cursor_exception_handler(
     request: Request,
     error: InvalidCursorError,
@@ -181,6 +238,25 @@ async def invalid_cursor_exception_handler(
                     "request_id",
                     None,
                 ),
+            }
+        },
+    )
+
+
+async def provider_exception_handler(
+    request: Request,
+    error: ProviderError,
+) -> JSONResponse:
+    """Return a safe temporary-unavailability response for provider failures."""
+
+    del error
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "error": {
+                "code": "provider_unavailable",
+                "message": "External provider is temporarily unavailable",
+                "request_id": getattr(request.state, "request_id", None),
             }
         },
     )

@@ -48,6 +48,47 @@ def test_trip_create_request_normalizes_text() -> None:
     assert request.destination == "London"
 
 
+def test_trip_create_request_accepts_atomic_canonical_locations() -> None:
+    """Resolved endpoints should validate as nested, provider-qualified objects."""
+
+    request = TripCreateRequest(
+        origin="Lahore",
+        destination="London",
+        destination_location={
+            "provider": "google",
+            "provider_location_id": "london-id",
+            "canonical_name": "London, United Kingdom",
+            "country_code": "gb",
+            "latitude": 51.5074,
+            "longitude": -0.1278,
+        },
+        start_date=date(2026, 9, 10),
+        end_date=date(2026, 9, 12),
+    )
+
+    assert request.destination_location is not None
+    assert request.destination_location.country_code == "GB"
+
+
+def test_trip_create_request_rejects_origin_metadata_without_origin() -> None:
+    """An optional origin must exist when its canonical metadata is supplied."""
+
+    with pytest.raises(ValidationError, match="origin_location requires origin"):
+        TripCreateRequest(
+            destination="London",
+            origin_location={
+                "provider": "google",
+                "provider_location_id": "lahore-id",
+                "canonical_name": "Lahore, Pakistan",
+                "country_code": "PK",
+                "latitude": 31.5204,
+                "longitude": 74.3587,
+            },
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 12),
+        )
+
+
 @pytest.mark.parametrize(
     ("start_date", "end_date"),
     [
@@ -123,6 +164,8 @@ def test_trip_response_converts_persistence_attributes() -> None:
     assert payload["status"] == "draft"
     assert payload["start_date"] == "2026-09-10"
     assert payload["created_at"] == "2026-08-27T09:00:00Z"
+    assert payload["origin_location"] is None
+    assert payload["destination_location"] is None
 
 
 def test_trip_list_response_contains_items_and_cursor() -> None:

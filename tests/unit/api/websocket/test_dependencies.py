@@ -1,13 +1,15 @@
 """Unit tests for WebSocket authentication helpers."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import WebSocket
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.websocket.connection_manager import ConnectionManager
 from app.api.websocket.dependencies import (
+    create_travel_response_service,
     extract_bearer_token,
     get_connection_manager,
     get_websocket_session_factory,
@@ -85,3 +87,31 @@ def test_get_websocket_session_factory_returns_the_application_resource() -> Non
     )
 
     assert get_websocket_session_factory(websocket) is session_factory
+
+
+def test_create_travel_response_service_shares_the_message_session() -> None:
+    """Conversation and itinerary writes should use one message-scoped session."""
+
+    settings = MagicMock(spec=Settings)
+    settings.conversation_history_message_limit = 20
+    settings.assistant_run_lease_seconds = 120
+    settings.travel_response_timeout_seconds = 75.0
+    settings.max_model_attempts = 3
+    graph = object()
+    websocket = MagicMock(spec=WebSocket)
+    websocket.app = SimpleNamespace(
+        state=SimpleNamespace(
+            settings=settings,
+            travel_graph=graph,
+        )
+    )
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = create_travel_response_service(
+        websocket=websocket,
+        database_session=database_session,
+    )
+
+    assert service.graph is graph
+    assert service.processing.session is database_session
+    assert service.itineraries.session is database_session

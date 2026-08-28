@@ -31,7 +31,7 @@ class GooglePlacesResponseModel(BaseModel):
 class GooglePlaceTextSearchRequest(GooglePlacesRequestModel):
     """One cost-bounded Google Places Text Search request."""
 
-    text_query: str = Field(min_length=3, max_length=400)
+    text_query: str = Field(min_length=2, max_length=400)
     page_size: int = Field(default=5, ge=1, le=10)
     language_code: str = Field(default="en", min_length=2, max_length=10)
     region_code: str | None = Field(default=None, min_length=2, max_length=2)
@@ -54,6 +54,14 @@ class GoogleLatLng(GooglePlacesResponseModel):
     longitude: float = Field(ge=-180, le=180)
 
 
+class GoogleAddressComponent(GooglePlacesResponseModel):
+    """One typed component used to derive an ISO country code."""
+
+    long_text: str = Field(min_length=1, max_length=200)
+    short_text: str | None = Field(default=None, min_length=1, max_length=50)
+    types: list[str] = Field(min_length=1, max_length=10)
+
+
 class GooglePlaceResponse(GooglePlacesResponseModel):
     """Relevant canonical fields for one Google place."""
 
@@ -65,6 +73,10 @@ class GooglePlaceResponse(GooglePlacesResponseModel):
     primary_type: str | None = Field(default=None, max_length=100)
     website_uri: HttpUrl | None = None
     google_maps_uri: HttpUrl | None = None
+    address_components: list[GoogleAddressComponent] = Field(
+        default_factory=list,
+        max_length=30,
+    )
 
 
 class GooglePlaceTextSearchResponse(GooglePlacesResponseModel):

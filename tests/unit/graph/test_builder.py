@@ -2,6 +2,8 @@
 
 import asyncio
 from collections.abc import Sequence
+from datetime import date
+from uuid import uuid4
 
 import pytest
 from langchain_core.messages import (
@@ -16,6 +18,8 @@ from langchain_core.tools import StructuredTool
 from app.common.exceptions import ProviderUnavailableError
 from app.graph.builder import build_travel_graph
 from app.graph.exceptions import ToolRoundLimitError
+from app.graph.schemas.trips import ActiveTripContext
+from app.graph.tools import ITINERARY_SUBMISSION_TOOL_NAME
 
 
 class FakeModelGateway:
@@ -80,6 +84,36 @@ def weather_tool_call(call_number: int) -> AIMessage:
     )
 
 
+def itinerary_submission_call() -> AIMessage:
+    """Build one valid final itinerary handoff from the model."""
+
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": ITINERARY_SUBMISSION_TOOL_NAME,
+                "args": {
+                    "summary": "Two-day London culture plan.",
+                    "items": [
+                        {
+                            "day_number": 1,
+                            "item_type": "place",
+                            "title": "British Museum",
+                        },
+                        {
+                            "day_number": 2,
+                            "item_type": "place",
+                            "title": "Hyde Park",
+                        },
+                    ],
+                },
+                "id": "itinerary-call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
 def test_travel_graph_generates_a_final_assistant_response() -> None:
     """Graph should invoke the gateway and build the final text response."""
 
@@ -102,10 +136,50 @@ def test_travel_graph_generates_a_final_assistant_response() -> None:
     assert result["assistant_response"] == "Here is your Lahore itinerary."
     assert len(gateway.calls) == 1
     assert isinstance(gateway.calls[0][0], SystemMessage)
-    assert gateway.calls[0][1].content == "Plan Lahore trip"
+    assert isinstance(gateway.calls[0][1], SystemMessage)
+    assert "Do not call submit_itinerary" in gateway.calls[0][1].content
+    assert gateway.calls[0][2].content == "Plan Lahore trip"
     assert len(result["messages"]) == 2
     assert all(not isinstance(message, SystemMessage) for message in result["messages"])
     assert result["messages"][-1].content == "Here is your Lahore itinerary."
+
+
+def test_travel_graph_captures_an_itinerary_without_executing_a_tool() -> None:
+    """A final itinerary handoff should produce typed state and concise text."""
+
+    gateway = FakeModelGateway([itinerary_submission_call()])
+    graph = build_travel_graph(
+        model_gateway=gateway,
+        tools=[create_weather_tool()],
+        max_tool_rounds=2,
+    )
+    trip_id = uuid4()
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="Plan my London trip")],
+                "locale": "en-PK",
+                "trip_id": trip_id,
+                "trip_context": ActiveTripContext(
+                    origin=None,
+                    destination="London",
+                    start_date=date(2026, 9, 10),
+                    end_date=date(2026, 9, 11),
+                ),
+            }
+        )
+    )
+
+    assert result["trip_id"] == trip_id
+    assert result["generated_itinerary"].summary == ("Two-day London culture plan.")
+    assert len(result["generated_itinerary"].items) == 2
+    assert result["assistant_response"] == (
+        "Two-day London culture plan. I created a 2-day itinerary draft for your trip."
+    )
+    assert "tool_rounds" not in result
+    assert len(gateway.calls) == 1
+    assert '"destination":"London"' in gateway.calls[0][1].content
 
 
 def test_travel_graph_executes_weather_and_returns_a_model_summary() -> None:

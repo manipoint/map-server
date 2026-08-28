@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.graph.exceptions import ToolRoundLimitError
 from app.graph.routing import route_after_model
 from app.graph.state import TravelGraphState
+from app.graph.tools import ITINERARY_SUBMISSION_TOOL_NAME
 
 
 def test_route_after_model_sends_text_to_response_builder() -> None:
@@ -40,6 +41,85 @@ def test_route_after_model_sends_tool_calls_to_execution() -> None:
     }
 
     assert route_after_model(state, max_tool_rounds=2) == "execute_tools"
+
+
+def test_route_after_model_sends_itinerary_submission_to_capture() -> None:
+    """A final structured itinerary should bypass normal tool execution."""
+
+    state: TravelGraphState = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": ITINERARY_SUBMISSION_TOOL_NAME,
+                        "args": {},
+                        "id": "itinerary-call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ],
+        "locale": "en-PK",
+        "trip_id": None,
+    }
+
+    assert route_after_model(state, max_tool_rounds=2) == "capture_itinerary"
+
+
+def test_route_after_model_sends_mixed_submission_to_capture() -> None:
+    """A mixed submission should be captured and rejected before tools run."""
+
+    state: TravelGraphState = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": ITINERARY_SUBMISSION_TOOL_NAME,
+                        "args": {},
+                        "id": "itinerary-call-1",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "get_current_weather",
+                        "args": {"city": "Lahore"},
+                        "id": "weather-call-1",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+        ],
+        "locale": "en-PK",
+        "trip_id": None,
+    }
+
+    assert route_after_model(state, max_tool_rounds=2) == "capture_itinerary"
+
+
+def test_itinerary_submission_is_not_blocked_by_tool_round_limit() -> None:
+    """A final handoff should not consume another external-tool round."""
+
+    state: TravelGraphState = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": ITINERARY_SUBMISSION_TOOL_NAME,
+                        "args": {},
+                        "id": "itinerary-call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ],
+        "locale": "en-PK",
+        "trip_id": None,
+        "tool_rounds": 2,
+    }
+
+    assert route_after_model(state, max_tool_rounds=2) == "capture_itinerary"
 
 
 def test_route_after_model_rejects_empty_messages() -> None:

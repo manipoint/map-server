@@ -76,6 +76,8 @@ def test_get_trip_returns_authenticated_users_trip() -> None:
         "title": "London museums",
         "origin": "Lahore",
         "destination": "London",
+        "origin_location": None,
+        "destination_location": None,
         "start_date": "2026-09-10",
         "end_date": "2026-09-15",
         "status": "draft",

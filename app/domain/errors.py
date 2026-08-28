@@ -27,3 +27,19 @@ class InvalidTripDetailsError(TripError):
 
 class InvalidTripStatusTransitionError(TripError):
     """Raised when a trip status transition is not allowed."""
+
+
+class ItineraryError(Exception):
+    """Base exception for itinerary-management failures."""
+
+
+class ItineraryNotFoundError(ItineraryError):
+    """Raised when an itinerary is missing or owned by another user."""
+
+
+class InvalidItineraryDetailsError(ItineraryError):
+    """Raised when itinerary contents violate planning rules."""
+
+
+class InvalidItineraryStatusTransitionError(ItineraryError):
+    """Raised when an itinerary lifecycle transition is not allowed."""

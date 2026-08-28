@@ -47,7 +47,11 @@ from app.api.websocket.events import (
 )
 from app.database.session import AsyncSessionFactory
 from app.domain.enums import TravelResponseErrorCode
-from app.domain.errors import ClientMessageConflictError, ConversationNotFoundError
+from app.domain.errors import (
+    ClientMessageConflictError,
+    ConversationNotFoundError,
+    TripNotFoundError,
+)
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.services.conversation_service import AcceptedTravelRequest, ConversationService
 from app.services.travel_response_service import TravelResponseResult
@@ -69,6 +73,7 @@ async def persist_travel_request(
             user_id=user_id,
             client_message_id=event.payload.client_message_id,
             conversation_id=event.payload.conversation_id,
+            trip_id=event.payload.trip_id,
             message=event.payload.message,
             locale=event.payload.locale,
         )
@@ -203,6 +208,7 @@ async def travel_websocket(
                     is_duplicate=(
                         accepted_request.is_duplicate or response_result.is_cached
                     ),
+                    itinerary_id=response_result.itinerary_id,
                 )
             )
             await send_event(completed_event.model_dump(mode="json"))
@@ -304,6 +310,15 @@ async def travel_websocket(
                     payload=TravelRequestRejectedPayload(
                         client_message_id=client_event.payload.client_message_id,
                         code="client_message_conflict",
+                    )
+                )
+                await send_event(rejected_event.model_dump(mode="json"))
+                continue
+            except TripNotFoundError:
+                rejected_event = TravelRequestRejectedEvent(
+                    payload=TravelRequestRejectedPayload(
+                        client_message_id=client_event.payload.client_message_id,
+                        code="trip_not_found",
                     )
                 )
                 await send_event(rejected_event.model_dump(mode="json"))

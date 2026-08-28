@@ -17,6 +17,7 @@ from app.config import Settings
 from app.domain.places import PlaceSearchStatus
 from app.providers.locations.schemas import ResolvedLocation
 from app.providers.places.google_client import (
+    GOOGLE_LOCATION_FIELD_MASK,
     GOOGLE_PLACES_FIELD_MASK,
     GooglePlacesClient,
 )
@@ -192,6 +193,69 @@ def test_google_search_places_makes_one_call_and_normalizes_result() -> None:
     assert result.status is PlaceSearchStatus.PLACES_AVAILABLE
     assert result.searched_at == searched_at
     assert result.places[0].name == "British Museum"
+
+
+def test_google_location_search_makes_one_cost_bounded_call() -> None:
+    """Canonical resolution should use one call and only required fields."""
+
+    captured_request: httpx.Request | None = None
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_request, request_count
+        captured_request = request
+        request_count += 1
+        return httpx.Response(
+            200,
+            json=create_response_payload(
+                places=[
+                    {
+                        "id": "london-id",
+                        "displayName": {"text": "London", "languageCode": "en"},
+                        "formattedAddress": "London, United Kingdom",
+                        "location": {"latitude": 51.5074, "longitude": -0.1278},
+                        "types": ["locality", "political"],
+                        "addressComponents": [
+                            {
+                                "longText": "United Kingdom",
+                                "shortText": "GB",
+                                "types": ["country", "political"],
+                            }
+                        ],
+                    }
+                ]
+            ),
+            request=request,
+        )
+
+    async def exercise() -> object:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = GooglePlacesClient(
+                http_client=http_client,
+                settings=create_settings(),
+            )
+            return await client.search_canonical_locations(
+                query="  London  ",
+                max_results=3,
+            )
+
+    result = asyncio.run(exercise())
+
+    assert request_count == 1
+    assert captured_request is not None
+    assert captured_request.headers["X-Goog-FieldMask"] == (GOOGLE_LOCATION_FIELD_MASK)
+    assert "places.photos" not in GOOGLE_LOCATION_FIELD_MASK
+    assert "places.reviews" not in GOOGLE_LOCATION_FIELD_MASK
+    assert json.loads(captured_request.content) == {
+        "textQuery": "London",
+        "pageSize": 3,
+        "languageCode": "en",
+        "strictTypeFiltering": False,
+    }
+    assert len(result) == 1
+    assert result[0].provider_location_id == "london-id"
+    assert result[0].country_code == "GB"
 
 
 @pytest.mark.parametrize("status_code", [401, 403])

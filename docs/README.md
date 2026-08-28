@@ -53,6 +53,6 @@ This directory describes both the implemented backend and its target architectur
 - FastAPI is the public backend boundary.
 - FastMCP currently runs in process and is invoked through `TravelMcpClient`; a mounted HTTP transport is a target option.
 - The implemented LangGraph is a bounded model/tool loop. Deterministic routing, interrupts, and checkpoint/resume are targets.
-- PostgreSQL currently owns users, sessions, conversations, messages, and assistant-run leases. Trip/search/itinerary tables and LangGraph checkpoints are targets.
+- PostgreSQL currently owns users, sessions, conversations, messages, assistant-run leases, trips, itineraries, and itinerary items. Search snapshots and LangGraph checkpoints are targets.
 - LangSmith tracing and evaluations are planned; structured JSON logging is the current observability baseline.
 - Redis is deferred until distributed WebSocket routing, shared caching, or multi-instance rate limiting is required.

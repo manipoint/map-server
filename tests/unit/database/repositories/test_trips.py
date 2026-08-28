@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.trip import Trip
 from app.database.repositories.trips import TripPage, TripRepository
-from app.domain.trips import TripStatus
+from app.domain.trips import CanonicalLocation, TripStatus
 
 
 def create_mock_session() -> Mock:
@@ -51,6 +51,37 @@ def test_create_adds_and_flushes_draft_trip_without_commit() -> None:
     session.add.assert_called_once_with(trip)
     session.flush.assert_awaited_once_with()
     session.commit.assert_not_awaited()
+
+
+def test_create_persists_canonical_location_as_one_unit() -> None:
+    """Repository creation should flatten provider-qualified metadata."""
+
+    location = CanonicalLocation(
+        provider="google",
+        provider_location_id="london-id",
+        canonical_name="London, United Kingdom",
+        country_code="gb",
+        latitude=51.5074,
+        longitude=-0.1278,
+    )
+    repository = TripRepository(create_mock_session())
+
+    trip = asyncio.run(
+        repository.create(
+            user_id=uuid4(),
+            destination="London",
+            destination_location=location,
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 12),
+        )
+    )
+
+    assert trip.destination_location_provider == "google"
+    assert trip.destination_provider_location_id == "london-id"
+    assert trip.destination_canonical_name == "London, United Kingdom"
+    assert trip.destination_country_code == "GB"
+    assert trip.destination_latitude == 51.5074
+    assert trip.destination_longitude == -0.1278
 
 
 def test_owner_lookup_returns_matching_trip() -> None:
@@ -325,6 +356,8 @@ def test_update_details_replaces_fields_and_flushes_without_commit(
             destination="Paris",
             start_date=date(2026, 10, 1),
             end_date=date(2026, 10, 5),
+            origin_location=None,
+            destination_location=None,
         )
     )
 
@@ -371,4 +404,58 @@ def test_set_status_persists_enum_value_and_refreshes_timestamp(
     assert isinstance(trip.status, str)
     assert trip.updated_at == updated_at
     session.flush.assert_awaited_once_with()
+    session.commit.assert_not_awaited()
+
+
+def test_delete_by_id_for_user_reports_deleted_owned_trip() -> None:
+    """A matching returned identifier should report successful deletion."""
+
+    trip_id = uuid4()
+    user_id = uuid4()
+    query_result = Mock()
+    query_result.scalar_one_or_none.return_value = trip_id
+    session = create_mock_session()
+    session.execute.return_value = query_result
+    repository = TripRepository(session)
+
+    deleted = asyncio.run(
+        repository.delete_by_id_for_user(
+            trip_id=trip_id,
+            user_id=user_id,
+        )
+    )
+
+    assert deleted is True
+    statement = session.execute.await_args.kwargs["statement"]
+    compiled_statement = statement.compile()
+    compiled_sql = str(compiled_statement)
+
+    assert statement.is_delete
+    assert trip_id in compiled_statement.params.values()
+    assert user_id in compiled_statement.params.values()
+    assert "trips.id" in compiled_sql
+    assert "trips.user_id" in compiled_sql
+    assert "RETURNING app.trips.id" in compiled_sql
+    session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+def test_delete_by_id_for_user_reports_missing_or_differently_owned_trip() -> None:
+    """No matching returned row should report that nothing was deleted."""
+
+    query_result = Mock()
+    query_result.scalar_one_or_none.return_value = None
+    session = create_mock_session()
+    session.execute.return_value = query_result
+    repository = TripRepository(session)
+
+    deleted = asyncio.run(
+        repository.delete_by_id_for_user(
+            trip_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert deleted is False
+    session.execute.assert_awaited_once()
     session.commit.assert_not_awaited()

@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.time import utc_now
 from app.database.models.trip import Trip
-from app.domain.trips import TripStatus
+from app.domain.trips import CanonicalLocation, TripStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +35,8 @@ class TripRepository:
         end_date: date,
         title: str | None = None,
         origin: str | None = None,
+        origin_location: CanonicalLocation | None = None,
+        destination_location: CanonicalLocation | None = None,
     ) -> Trip:
         """Create and flush a draft trip without committing."""
 
@@ -43,6 +45,8 @@ class TripRepository:
             title=title,
             origin=origin,
             destination=destination,
+            **self._location_columns("origin", origin_location),
+            **self._location_columns("destination", destination_location),
             start_date=start_date,
             end_date=end_date,
             status=TripStatus.DRAFT.value,
@@ -125,6 +129,8 @@ class TripRepository:
         destination: str,
         start_date: date,
         end_date: date,
+        origin_location: CanonicalLocation | None,
+        destination_location: CanonicalLocation | None,
     ) -> Trip:
         """Replace editable trip details and flush without committing."""
 
@@ -133,10 +139,52 @@ class TripRepository:
         trip.destination = destination
         trip.start_date = start_date
         trip.end_date = end_date
+        self._assign_location(trip, "origin", origin_location)
+        self._assign_location(trip, "destination", destination_location)
         trip.updated_at = utc_now()
 
         await self.session.flush()
         return trip
+
+    @staticmethod
+    def _location_columns(
+        prefix: str,
+        location: CanonicalLocation | None,
+    ) -> dict[str, object | None]:
+        """Map one atomic domain location to flat persistence fields."""
+
+        values = (
+            {
+                "location_provider": location.provider,
+                "provider_location_id": location.provider_location_id,
+                "canonical_name": location.canonical_name,
+                "country_code": location.country_code,
+                "latitude": location.latitude,
+                "longitude": location.longitude,
+            }
+            if location is not None
+            else {
+                "location_provider": None,
+                "provider_location_id": None,
+                "canonical_name": None,
+                "country_code": None,
+                "latitude": None,
+                "longitude": None,
+            }
+        )
+        return {f"{prefix}_{name}": value for name, value in values.items()}
+
+    @classmethod
+    def _assign_location(
+        cls,
+        trip: Trip,
+        prefix: str,
+        location: CanonicalLocation | None,
+    ) -> None:
+        """Replace all columns for one location as a single unit."""
+
+        for field_name, value in cls._location_columns(prefix, location).items():
+            setattr(trip, field_name, value)
 
     async def set_status(
         self,
@@ -150,3 +198,21 @@ class TripRepository:
         trip.updated_at = utc_now()
         await self.session.flush()
         return trip
+
+    async def delete_by_id_for_user(
+        self,
+        *,
+        trip_id: UUID,
+        user_id: UUID,
+    ) -> bool:
+        """Delete a user-owned trip and report whether it existed."""
+        statement = (
+            delete(Trip)
+            .where(
+                Trip.id == trip_id,
+                Trip.user_id == user_id,
+            )
+            .returning(Trip.id)
+        )
+        result = await self.session.execute(statement=statement)
+        return result.scalar_one_or_none() is not None

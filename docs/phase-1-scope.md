@@ -13,6 +13,7 @@ The release is a travel search-and-planning product. It does not book travel or 
 | Authentication | Email and password registration and login, token refresh, current-device logout, selected-device logout, logout from all devices, and active-session listing. |
 | AI assistant | Authenticated WebSocket conversation with weather, airport, flight, hotel, places, and currency tools. |
 | Trips | Create, list, retrieve, update, archive, and delete a user's own trips. |
+| Location selection | Resolve ambiguous user text to a provider-qualified canonical location before persisting a trip. |
 | Itineraries | Persist generated itineraries, retrieve them with their ordered items, and expose saved itineraries to Flutter. |
 | Discovery | Database-backed Popular destinations and activity-derived Trending destinations when enough first-party data exists. |
 | Profile | Basic account identity and security/session controls required by the implemented authentication system. |
@@ -40,6 +41,7 @@ Flutter MUST hide or omit deferred controls instead of presenting non-functional
 | Active devices and logout | Authentication REST API and PostgreSQL | No |
 | AI assistant | Authenticated WebSocket and LangGraph | Yes |
 | Trips and trip history | Trip REST API and PostgreSQL | No |
+| Trip location selection | Authenticated canonical-location REST API and Google Places | No LLM or MCP; one bounded provider request |
 | Saved itinerary detail | Itinerary REST API and PostgreSQL | No |
 | Popular destinations | Destination REST API and curated PostgreSQL records | No |
 | Trending destinations | Aggregated first-party destination events | No |
@@ -123,14 +125,20 @@ Each milestone is complete only when:
 - Ruff, formatting, and the complete test suite pass;
 - current implementation status is updated in the README without presenting target behavior as finished.
 
-## Immediate next coding milestone
+## Current itinerary milestone
 
-Complete the remaining Trip REST contract before starting itinerary persistence:
+The itinerary persistence and REST slice is implemented:
 
-1. define explicit permanent-deletion semantics distinct from archive/history;
-2. add an ownership-safe repository and service deletion operation;
-3. expose authenticated `DELETE /api/v1/trips/{trip_id}` with an idempotency decision documented in its contract;
-4. cover success, cross-user/missing-resource behavior, rollback, and HTTP response tests;
-5. run Alembic drift checks, Ruff, formatting, and the complete test suite.
+1. versioned `draft`, `saved`, and `superseded` lifecycle contracts;
+2. ordered itinerary items linked to trips with database cascade behavior;
+3. unique versions, one saved version per trip, and unique daily positions;
+4. ownership-safe repository queries and trip-row locking for version/save races;
+5. transactional service validation and safe domain errors;
+6. authenticated create, version-detail, current-saved, and save REST routes;
+7. model, repository, service, schema, handler, dependency, and route tests.
 
-The trip table must not contain live provider payloads or an `is_trending` flag. Those concerns belong to normalized snapshot/event records introduced by later milestones.
+The next integration milestone is to convert validated LangGraph itinerary output
+into this service contract. Provider/model calls must finish before opening the
+short persistence transaction.
+
+Itinerary records store durable user selections and generated plans. Live provider payloads and prices remain timestamped observations rather than permanent booking guarantees.

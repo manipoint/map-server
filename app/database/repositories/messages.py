@@ -94,11 +94,13 @@ class MessageRepository:
         conversation_id: UUID,
         client_message_id: UUID,
         content: str,
+        trip_id: UUID | None = None,
     ) -> Message:
         """Create and flush a user message without committing."""
         message = Message(
             conversation_id=conversation_id,
             client_message_id=client_message_id,
+            trip_id=trip_id,
             reply_to_message_id=None,
             role="user",
             content=content,

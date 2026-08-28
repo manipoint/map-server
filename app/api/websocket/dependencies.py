@@ -12,6 +12,7 @@ from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
 from app.services.conversation_processing_service import ConversationProcessingService
+from app.services.itinerary_service import ItineraryService
 from app.services.travel_response_service import TravelResponseService
 
 
@@ -83,6 +84,7 @@ def create_travel_response_service(
 
     return TravelResponseService(
         processing_service=processing_service,
+        itinerary_service=ItineraryService(session=database_session),
         graph=websocket.app.state.travel_graph,
         assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
         travel_response_timeout_seconds=settings.travel_response_timeout_seconds,

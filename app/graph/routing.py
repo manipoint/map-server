@@ -6,12 +6,13 @@ from langchain_core.messages import AIMessage
 
 from app.graph.exceptions import ToolRoundLimitError
 from app.graph.state import TravelGraphState
+from app.graph.tools import ITINERARY_SUBMISSION_TOOL_NAME
 
 
 def route_after_model(
     state: TravelGraphState, *, max_tool_rounds: int
-) -> Literal["execute_tools", "build_response"]:
-    """Route model tool requests to execution, otherwise finalize text."""
+) -> Literal["execute_tools", "capture_itinerary", "build_response"]:
+    """Choose the next step after a model response."""
 
     messages = state["messages"]
 
@@ -22,9 +23,15 @@ def route_after_model(
     if not isinstance(response, AIMessage):
         raise ValueError("Travel model did not return an AI message")
 
-    if response.tool_calls:
-        completed_rounds = state.get("tool_rounds", 0)
-        if completed_rounds >= max_tool_rounds:
-            raise ToolRoundLimitError("Travel graph exceeded its tool-round limit")
-        return "execute_tools"
-    return "build_response"
+    if not response.tool_calls:
+        return "build_response"
+
+    if any(
+        tool_call["name"] == ITINERARY_SUBMISSION_TOOL_NAME
+        for tool_call in response.tool_calls
+    ):
+        return "capture_itinerary"
+    completed_rounds = state.get("tool_rounds", 0)
+    if completed_rounds >= max_tool_rounds:
+        raise ToolRoundLimitError("Travel graph exceeded its tool-round limit")
+    return "execute_tools"

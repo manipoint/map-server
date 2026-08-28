@@ -12,6 +12,8 @@ import app.main as main_module
 from app.api.websocket.connection_manager import ConnectionManager
 from app.config import Settings
 
+FAKE_ITINERARY_TOOL = object()
+
 
 @pytest.fixture(autouse=True)
 def mock_travel_graph_construction(monkeypatch):
@@ -19,6 +21,11 @@ def mock_travel_graph_construction(monkeypatch):
 
     monkeypatch.setattr(lifespan_module, "build_model_gateway", MagicMock())
     monkeypatch.setattr(lifespan_module, "build_travel_graph", MagicMock())
+    monkeypatch.setattr(
+        lifespan_module,
+        "create_itinerary_submission_tool",
+        MagicMock(return_value=FAKE_ITINERARY_TOOL),
+    )
 
 
 def create_url_settings(**overrides: object) -> Settings:
@@ -140,13 +147,14 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
     )
     build_gateway.assert_called_once_with(
         settings=settings,
-        tools=[fake_weather_tool],
+        tools=[fake_weather_tool, FAKE_ITINERARY_TOOL],
     )
     build_graph.assert_called_once_with(
         model_gateway=fake_gateway,
-        tools=[fake_weather_tool],
+        tools=[fake_weather_tool, FAKE_ITINERARY_TOOL],
         max_tool_rounds=settings.max_tool_rounds,
     )
+    lifespan_module.create_itinerary_submission_tool.assert_called_once_with()
 
 
 def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
@@ -374,7 +382,12 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
     create_flight_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
-    expected_tools = [fake_weather_tool, fake_airport_tool, fake_flight_tool]
+    expected_tools = [
+        fake_weather_tool,
+        fake_airport_tool,
+        fake_flight_tool,
+        FAKE_ITINERARY_TOOL,
+    ]
     build_gateway.assert_called_once_with(
         settings=settings,
         tools=expected_tools,
@@ -499,7 +512,7 @@ def test_lifespan_wires_enabled_hotel_service_into_mcp(monkeypatch) -> None:
     create_hotel_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
-    expected_tools = [fake_weather_tool, fake_hotel_tool]
+    expected_tools = [fake_weather_tool, fake_hotel_tool, FAKE_ITINERARY_TOOL]
     build_gateway.assert_called_once_with(
         settings=settings,
         tools=expected_tools,
@@ -626,7 +639,7 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
     create_place_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
-    expected_tools = [fake_weather_tool, fake_place_tool]
+    expected_tools = [fake_weather_tool, fake_place_tool, FAKE_ITINERARY_TOOL]
     build_gateway.assert_called_once_with(
         settings=settings,
         tools=expected_tools,
@@ -719,7 +732,7 @@ def test_lifespan_wires_enabled_currency_provider_into_mcp(monkeypatch) -> None:
     create_currency_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
-    expected_tools = [fake_weather_tool, fake_currency_tool]
+    expected_tools = [fake_weather_tool, fake_currency_tool, FAKE_ITINERARY_TOOL]
     build_gateway.assert_called_once_with(settings=settings, tools=expected_tools)
     build_graph.assert_called_once_with(
         model_gateway=fake_gateway,

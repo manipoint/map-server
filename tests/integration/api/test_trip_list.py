@@ -100,6 +100,8 @@ def test_list_trips_forwards_filters_and_returns_next_cursor() -> None:
             "title": "London museums",
             "origin": "Lahore",
             "destination": "London",
+            "origin_location": None,
+            "destination_location": None,
             "start_date": "2026-09-10",
             "end_date": "2026-09-15",
             "status": "planned",

@@ -9,11 +9,59 @@ from pydantic import ValidationError
 from app.domain.flights import FlightCabinClass
 from app.domain.trips import (
     MAX_TRAVELERS_PER_REQUEST,
+    CanonicalLocation,
     TravelerParty,
     TripRequest,
     TripStatus,
     TripUpdate,
 )
+
+
+def test_canonical_location_normalizes_provider_and_country() -> None:
+    """Provider namespaces and country codes should have stable casing."""
+
+    location = CanonicalLocation(
+        provider=" Google_Places ",
+        provider_location_id="place-123",
+        canonical_name=" London, United Kingdom ",
+        country_code=" gb ",
+        latitude=51.5074,
+        longitude=-0.1278,
+    )
+
+    assert location.provider == "google_places"
+    assert location.canonical_name == "London, United Kingdom"
+    assert location.country_code == "GB"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"provider": "Google Places"},
+        {"provider_location_id": ""},
+        {"country_code": "GBR"},
+        {"latitude": 90.1},
+        {"longitude": -180.1},
+        {"unexpected": True},
+    ],
+)
+def test_canonical_location_rejects_invalid_or_partial_data(
+    overrides: dict[str, object],
+) -> None:
+    """A selected location must be complete, bounded, and provider-qualified."""
+
+    values: dict[str, object] = {
+        "provider": "google",
+        "provider_location_id": "place-123",
+        "canonical_name": "London, United Kingdom",
+        "country_code": "GB",
+        "latitude": 51.5074,
+        "longitude": -0.1278,
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValidationError):
+        CanonicalLocation(**values)
 
 
 def test_trip_status_has_only_persisted_lifecycle_values() -> None:
@@ -284,6 +332,23 @@ def test_trip_update_allows_explicitly_clearing_nullable_fields() -> None:
         "title": None,
         "origin": None,
     }
+
+
+def test_trip_update_rejects_location_for_explicitly_cleared_origin() -> None:
+    """Metadata cannot survive when its optional route endpoint is removed."""
+
+    with pytest.raises(ValidationError, match="origin_location requires origin"):
+        TripUpdate(
+            origin=None,
+            origin_location=CanonicalLocation(
+                provider="google",
+                provider_location_id="lahore-id",
+                canonical_name="Lahore, Pakistan",
+                country_code="PK",
+                latitude=31.5204,
+                longitude=74.3587,
+            ),
+        )
 
 
 def test_trip_update_rejects_empty_payload() -> None:

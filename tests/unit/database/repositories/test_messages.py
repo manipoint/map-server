@@ -278,6 +278,7 @@ def test_create_user_message_adds_and_flushes_without_commit() -> None:
 
     conversation_id = uuid4()
     client_message_id = uuid4()
+    trip_id = uuid4()
     session = create_mock_session()
     repository = MessageRepository(session)
 
@@ -285,12 +286,14 @@ def test_create_user_message_adds_and_flushes_without_commit() -> None:
         repository.create_user_message(
             conversation_id=conversation_id,
             client_message_id=client_message_id,
+            trip_id=trip_id,
             content="Plan a weekend in Lahore",
         )
     )
 
     assert message.conversation_id == conversation_id
     assert message.client_message_id == client_message_id
+    assert message.trip_id == trip_id
     assert message.reply_to_message_id is None
     assert message.role == "user"
     assert message.content == "Plan a weekend in Lahore"
@@ -317,6 +320,7 @@ def test_create_assistant_message_adds_and_flushes_without_commit() -> None:
 
     assert message.conversation_id == conversation_id
     assert message.client_message_id is None
+    assert message.trip_id is None
     assert message.reply_to_message_id == reply_to_message_id
     assert message.role == "assistant"
     assert message.content == "Here is your Lahore itinerary."

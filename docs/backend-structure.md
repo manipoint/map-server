@@ -16,6 +16,7 @@ app/
 │   ├── routes/
 │   │   ├── auth.py
 │   │   ├── trips.py
+│   │   ├── locations.py
 │   │   ├── conversations.py
 │   │   └── health.py
 │   └── websocket/
@@ -95,17 +96,17 @@ tests/evaluations/ # LangSmith datasets and quality checks
 
 ## Current implementation status
 
-The directory shape intentionally includes placeholders for later phases. The following files/modules exist but do not yet implement their target use cases:
+The directory shape intentionally includes placeholders for later phases. The following target use cases are not yet implemented:
 
-- REST `conversations.py` and `trips.py` routes;
-- trip/search/usage services and trip domain model;
+- REST conversation routes;
+- search/usage services and models;
 - graph validation and persistence nodes;
 - flight, hotel, and itinerary subgraphs;
 - LangSmith and metrics adapters;
-- trip/search/itinerary repositories and models;
+- search/usage repositories and models;
 - contract/evaluation suites shown in the target support tree.
 
-The working runtime is authentication plus `/ws/travel`, conversation/message/assistant-run persistence, the bounded model/tool graph, in-process MCP, and configured provider adapters. A file's presence must not be treated as proof that its target capability is complete.
+The working runtime includes authentication, trip and itinerary REST APIs, `/ws/travel`, conversation/message/assistant-run persistence, the bounded model/tool graph, in-process MCP, and configured provider adapters. A file's presence must not be treated as proof that its target capability is complete.
 
 ## Dependency direction
 

@@ -17,7 +17,7 @@ from app.domain.errors import (
     InvalidTripStatusTransitionError,
     TripNotFoundError,
 )
-from app.domain.trips import TripStatus, TripUpdate
+from app.domain.trips import CanonicalLocation, TripStatus, TripUpdate
 from app.services.trip_service import TripListResult, TripService
 
 
@@ -31,6 +31,7 @@ def create_dependencies() -> tuple[Mock, Mock]:
     repository.create = AsyncMock()
     repository.get_by_id_for_user = AsyncMock()
     repository.list_for_user = AsyncMock()
+    repository.delete_by_id_for_user = AsyncMock()
     repository.set_status = AsyncMock()
     repository.update_details = AsyncMock()
     return session, repository
@@ -180,9 +181,100 @@ def test_create_trip_commits_repository_result() -> None:
         destination="London",
         start_date=date(2026, 9, 10),
         end_date=date(2026, 9, 12),
+        origin_location=None,
+        destination_location=None,
     )
     session.commit.assert_awaited_once_with()
     session.rollback.assert_not_awaited()
+
+
+def test_update_trip_clears_stale_location_when_endpoint_text_changes() -> None:
+    """Changing free text without a new resolution must discard old metadata."""
+
+    trip = create_stored_trip()
+    trip.destination_location_provider = "google"
+    trip.destination_provider_location_id = "london-id"
+    trip.destination_canonical_name = "London, United Kingdom"
+    trip.destination_country_code = "GB"
+    trip.destination_latitude = 51.5074
+    trip.destination_longitude = -0.1278
+    session, repository = create_dependencies()
+    repository.get_by_id_for_user.return_value = trip
+    repository.update_details.return_value = trip
+    service = TripService(session=session, trip_repository=repository)
+
+    asyncio.run(
+        service.update_trip(
+            trip_id=trip.id,
+            user_id=trip.user_id,
+            update=TripUpdate(destination="Paris"),
+        )
+    )
+
+    assert repository.update_details.await_args.kwargs["destination_location"] is None
+
+
+def test_update_trip_accepts_replacement_canonical_location() -> None:
+    """A location selection should replace text and metadata atomically."""
+
+    trip = create_stored_trip()
+    location = CanonicalLocation(
+        provider="google",
+        provider_location_id="paris-id",
+        canonical_name="Paris, France",
+        country_code="fr",
+        latitude=48.8566,
+        longitude=2.3522,
+    )
+    session, repository = create_dependencies()
+    repository.get_by_id_for_user.return_value = trip
+    repository.update_details.return_value = trip
+    service = TripService(session=session, trip_repository=repository)
+
+    asyncio.run(
+        service.update_trip(
+            trip_id=trip.id,
+            user_id=trip.user_id,
+            update=TripUpdate(
+                destination="Paris",
+                destination_location=location,
+            ),
+        )
+    )
+
+    assert (
+        repository.update_details.await_args.kwargs["destination_location"] == location
+    )
+
+
+def test_update_trip_preserves_location_when_endpoint_text_is_unchanged() -> None:
+    """Idempotent Flutter PATCH payloads must retain resolved metadata."""
+
+    trip = create_stored_trip()
+    trip.destination_location_provider = "google"
+    trip.destination_provider_location_id = "london-id"
+    trip.destination_canonical_name = "London, United Kingdom"
+    trip.destination_country_code = "GB"
+    trip.destination_latitude = 51.5074
+    trip.destination_longitude = -0.1278
+    stored_location = trip.destination_location
+    session, repository = create_dependencies()
+    repository.get_by_id_for_user.return_value = trip
+    repository.update_details.return_value = trip
+    service = TripService(session=session, trip_repository=repository)
+
+    asyncio.run(
+        service.update_trip(
+            trip_id=trip.id,
+            user_id=trip.user_id,
+            update=TripUpdate(destination="london"),
+        )
+    )
+
+    assert (
+        repository.update_details.await_args.kwargs["destination_location"]
+        == stored_location
+    )
 
 
 def test_create_trip_rolls_back_repository_failure() -> None:
@@ -293,6 +385,8 @@ def test_update_trip_locks_merges_commits_and_returns_trip() -> None:
         destination="Paris",
         start_date=date(2026, 9, 10),
         end_date=date(2026, 9, 12),
+        origin_location=None,
+        destination_location=None,
     )
     session.commit.assert_awaited_once_with()
     session.rollback.assert_not_awaited()
@@ -505,5 +599,67 @@ def test_status_transition_hides_missing_or_differently_owned_trip() -> None:
         asyncio.run(service.archive_trip(trip_id=uuid4(), user_id=uuid4()))
 
     repository.set_status.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
+
+
+def test_delete_trip_commits_successful_owned_deletion() -> None:
+    """A deleted owned row should commit exactly once."""
+
+    trip_id = uuid4()
+    user_id = uuid4()
+    session, repository = create_dependencies()
+    repository.delete_by_id_for_user.return_value = True
+    service = TripService(session=session, trip_repository=repository)
+
+    result = asyncio.run(service.delete_trip(trip_id=trip_id, user_id=user_id))
+
+    assert result is None
+    repository.delete_by_id_for_user.assert_awaited_once_with(
+        trip_id=trip_id,
+        user_id=user_id,
+    )
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
+
+
+def test_delete_trip_hides_missing_or_differently_owned_trip() -> None:
+    """No deleted row should produce the same safe not-found error."""
+
+    session, repository = create_dependencies()
+    repository.delete_by_id_for_user.return_value = False
+    service = TripService(session=session, trip_repository=repository)
+
+    with pytest.raises(TripNotFoundError, match="Trip was not found"):
+        asyncio.run(service.delete_trip(trip_id=uuid4(), user_id=uuid4()))
+
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
+
+
+def test_delete_trip_rolls_back_repository_failure() -> None:
+    """A failed DELETE statement should roll back before propagating."""
+
+    session, repository = create_dependencies()
+    repository.delete_by_id_for_user.side_effect = RuntimeError("delete failed")
+    service = TripService(session=session, trip_repository=repository)
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        asyncio.run(service.delete_trip(trip_id=uuid4(), user_id=uuid4()))
+
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
+
+
+def test_delete_trip_rolls_back_cancellation() -> None:
+    """Task cancellation must not leave the transaction open."""
+
+    session, repository = create_dependencies()
+    repository.delete_by_id_for_user.side_effect = asyncio.CancelledError()
+    service = TripService(session=session, trip_repository=repository)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.delete_trip(trip_id=uuid4(), user_id=uuid4()))
+
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once_with()

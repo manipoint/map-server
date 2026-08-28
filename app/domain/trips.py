@@ -14,13 +14,42 @@ from pydantic import (
 )
 
 from app.domain.flights import FlightCabinClass
-from app.domain.value_objects import CurrencyCode
+from app.domain.value_objects import CountryCode, CurrencyCode
 
 MAX_TRAVELERS_PER_REQUEST = 100
 
 ChildAge = Annotated[int, Field(ge=2, le=17)]
 InfantAge = Annotated[int, Field(ge=0, le=1)]
 Interest = Annotated[str, Field(min_length=1, max_length=60)]
+
+
+class CanonicalLocation(BaseModel):
+    """Provider-qualified location selected after ambiguity resolution."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    provider: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z0-9_-]+$",
+    )
+    provider_location_id: str = Field(min_length=1, max_length=256)
+    canonical_name: str = Field(min_length=2, max_length=200)
+    country_code: CountryCode
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> object:
+        """Normalize provider namespaces before pattern validation."""
+
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
 
 class TravelerParty(BaseModel):
@@ -182,6 +211,8 @@ class TripUpdate(BaseModel):
     )
     start_date: date | None = None
     end_date: date | None = None
+    origin_location: CanonicalLocation | None = None
+    destination_location: CanonicalLocation | None = None
 
     @model_validator(mode="after")
     def validate_update(self) -> Self:
@@ -203,5 +234,12 @@ class TripUpdate(BaseModel):
             and self.end_date <= self.start_date
         ):
             raise ValueError("end_date must be after start_date")
+
+        if (
+            "origin" in self.model_fields_set
+            and self.origin is None
+            and self.origin_location is not None
+        ):
+            raise ValueError("origin_location requires origin")
 
         return self

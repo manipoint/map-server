@@ -14,13 +14,18 @@ from app.api.dependencies import (
     get_current_principal,
     get_database_engine,
     get_database_session,
+    get_itinerary_service,
+    get_location_resolution_service,
     get_travel_response_service,
     get_trip_service,
 )
 from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
+from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
+from app.services.itinerary_service import ItineraryService
+from app.services.location_resolution_service import LocationResolutionService
 from app.services.trip_service import TripService
 
 
@@ -126,6 +131,39 @@ def test_trip_service_uses_request_database_session() -> None:
     assert service.trips.session is database_session
 
 
+def test_itinerary_service_uses_request_database_session() -> None:
+    """Itinerary routes should share the request-scoped database transaction."""
+
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = get_itinerary_service(database_session=database_session)
+
+    assert isinstance(service, ItineraryService)
+    assert service.session is database_session
+    assert service.itineraries.session is database_session
+
+
+def test_location_resolution_service_uses_startup_resource() -> None:
+    """Location routes should reuse the provider service created at startup."""
+
+    application = FastAPI()
+    service = MagicMock(spec=LocationResolutionService)
+    application.state.location_resolution_service = service
+    request = Request({"type": "http", "app": application})
+
+    assert get_location_resolution_service(request) is service
+
+
+def test_location_resolution_service_rejects_missing_configuration() -> None:
+    """A disabled location provider should fail safely before route execution."""
+
+    application = FastAPI()
+    request = Request({"type": "http", "app": application})
+
+    with pytest.raises(ProviderConfigurationError, match="not configured"):
+        get_location_resolution_service(request)
+
+
 def test_connection_manager_uses_the_application_resource() -> None:
     """HTTP routes should share the manager created by application lifespan."""
 
@@ -171,6 +209,7 @@ def test_travel_response_service_uses_shared_graph_and_request_session() -> None
 
     assert service.graph is graph
     assert service.processing.session is database_session
+    assert service.itineraries.session is database_session
     assert service.processing.history_limit == 20
     assert service.assistant_run_lease_seconds == 120
     assert service.travel_response_timeout_seconds == 75.0

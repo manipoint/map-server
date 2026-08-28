@@ -85,7 +85,7 @@ def test_database_readiness_timeout_uses_a_safe_default() -> None:
     assert settings.database_readiness_timeout_seconds == 2.0
 
 
-@pytest.mark.parametrize("timeout_seconds", [0, -1, 10.1])
+@pytest.mark.parametrize("timeout_seconds", [0, -1, 30.1])
 def test_database_readiness_timeout_rejects_unsafe_values(
     timeout_seconds: float,
 ) -> None:

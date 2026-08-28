@@ -2,6 +2,7 @@
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from app.graph.schemas.itineraries import GeneratedItinerary
 from app.mcp.client import TravelMcpClient
 from app.mcp.schemas.flights import FlightSearchPreparationInput
 from app.mcp.schemas.weather import CurrentWeatherInput
@@ -9,6 +10,8 @@ from app.providers.airports.schemas import AirportSearchInput
 from app.providers.currency.schemas import CurrencyConversionInput
 from app.providers.hotels.schemas import HotelSearchInput
 from app.providers.places.schemas import PlaceSearchInput
+
+ITINERARY_SUBMISSION_TOOL_NAME = "submit_itinerary"
 
 
 def create_current_weather_tool(
@@ -134,4 +137,23 @@ def create_currency_conversion_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
             "not a payment or booking quote."
         ),
         args_schema=CurrencyConversionInput,
+    )
+
+
+def create_itinerary_submission_tool() -> BaseTool:
+    """Create a side-effect-free itinerary submission tool."""
+
+    async def submit_itinerary(**arguments: object) -> dict[str, object]:
+        itinerary = GeneratedItinerary.model_validate(arguments)
+        return itinerary.model_dump(mode="json")
+
+    return StructuredTool.from_function(
+        coroutine=submit_itinerary,
+        name=ITINERARY_SUBMISSION_TOOL_NAME,
+        description=(
+            "Submit the final day-by-day itinerary for the active trip. "
+            "Call only after required travel searches are complete. "
+            "Do not call for general questions or standalone searches."
+        ),
+        args_schema=GeneratedItinerary,
     )
