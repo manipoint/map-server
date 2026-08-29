@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.api.websocket.constants import PROTOCOL_VERSION
 from app.common.time import utc_now
+from app.domain.clarifications import TravelClarification
 from app.domain.enums import TravelResponseErrorCode
 
 
@@ -165,6 +166,26 @@ class TravelResponseCompletedEvent(WebSocketEvent):
 
     type: Literal["travel.response.completed"] = "travel.response.completed"
     payload: TravelResponseCompletedPayload
+
+
+class TravelInputRequiredPayload(BaseModel):
+    """Return persisted text plus structured controls for required user input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_message_id: UUID
+    conversation_id: UUID
+    assistant_message_id: UUID
+    content: str = Field(min_length=1)
+    is_duplicate: bool
+    clarification: TravelClarification
+
+
+class TravelInputRequiredEvent(WebSocketEvent):
+    """Ask Flutter for deterministic input without parsing assistant prose."""
+
+    type: Literal["travel.input.required"] = "travel.input.required"
+    payload: TravelInputRequiredPayload
 
 
 class TravelResponseFailedPayload(BaseModel):

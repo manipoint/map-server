@@ -324,6 +324,31 @@ def test_create_assistant_message_adds_and_flushes_without_commit() -> None:
     assert message.reply_to_message_id == reply_to_message_id
     assert message.role == "assistant"
     assert message.content == "Here is your Lahore itinerary."
+    assert message.structured_content is None
     session.add.assert_called_once_with(message)
     session.flush.assert_awaited_once_with()
     session.commit.assert_not_awaited()
+
+
+def test_create_assistant_message_retains_bounded_structured_content() -> None:
+    """A clarification should be stored beside its human-readable reply."""
+
+    session = create_mock_session()
+    repository = MessageRepository(session)
+    structured_content = {
+        "type": "airport_selection",
+        "requests": [],
+    }
+
+    message = asyncio.run(
+        repository.create_assistant_message(
+            conversation_id=uuid4(),
+            reply_to_message_id=uuid4(),
+            content="Select an airport.",
+            structured_content=structured_content,
+        )
+    )
+
+    assert message.structured_content == structured_content
+    session.add.assert_called_once_with(message)
+    session.flush.assert_awaited_once_with()

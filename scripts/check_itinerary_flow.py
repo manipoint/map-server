@@ -37,6 +37,7 @@ DEFAULT_MESSAGE = (
     "then call submit_itinerary exactly once."
 )
 TERMINAL_EVENT_TYPES = {
+    "travel.input.required",
     "travel.request.rejected",
     "travel.response.completed",
     "travel.response.failed",

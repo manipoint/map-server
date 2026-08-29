@@ -123,6 +123,7 @@ class ConversationProcessingService:
         accepted_request: AcceptedTravelRequest,
         claim: AssistantRunClaim,
         content: str,
+        structured_content: dict[str, object] | None = None,
     ) -> SaveAssistantReply:
         """Persist a reply and complete its owned processing run atomically."""
         if not claim.acquired:
@@ -141,10 +142,15 @@ class ConversationProcessingService:
             is_duplicate = existing_reply is not None
             if existing_reply is None:
                 try:
+                    create_arguments: dict[str, object] = {
+                        "conversation_id": accepted_request.conversation.id,
+                        "reply_to_message_id": reply_to_message_id,
+                        "content": normalized_content,
+                    }
+                    if structured_content is not None:
+                        create_arguments["structured_content"] = structured_content
                     assistant_message = await self.messages.create_assistant_message(
-                        conversation_id=accepted_request.conversation.id,
-                        reply_to_message_id=reply_to_message_id,
-                        content=normalized_content,
+                        **create_arguments
                     )
 
                 except IntegrityError:

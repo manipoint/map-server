@@ -27,8 +27,22 @@ class FlightSearchPreparationInput(BaseModel):
         str_strip_whitespace=True,
     )
 
-    origin: str = Field(min_length=2, max_length=120)
-    destination: str = Field(min_length=2, max_length=120)
+    origin: str = Field(
+        min_length=2,
+        max_length=120,
+        description=(
+            "Origin text copied unchanged from the user; do not correct spelling. "
+            "A direct IATA code is also accepted."
+        ),
+    )
+    destination: str = Field(
+        min_length=2,
+        max_length=120,
+        description=(
+            "Destination text copied unchanged from the user; do not correct "
+            "spelling. A direct IATA code is also accepted."
+        ),
+    )
     departure_date: date
     return_date: date | None = None
     adults: int = Field(default=1, ge=1)

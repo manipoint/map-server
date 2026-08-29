@@ -329,11 +329,16 @@ def test_flight_search_tool_exposes_bounded_model_schema() -> None:
     tool = create_flight_search_tool(mcp_client=FakeFlightMcpClient(no_flight_offers()))
 
     assert tool.name == "search_flights"
+    assert "origin and destination text unchanged" in tool.description
     assert "exact child ages" in tool.description
     assert "no booking" in tool.description
     assert tool.args_schema is FlightSearchPreparationInput
     schema = tool.args_schema.model_json_schema()
     assert schema["required"] == ["origin", "destination", "departure_date"]
+    assert "copied unchanged" in schema["properties"]["origin"]["description"]
+    assert (
+        "do not correct spelling" in schema["properties"]["destination"]["description"]
+    )
     assert schema["properties"]["max_results"]["minimum"] == 1
     assert schema["properties"]["max_results"]["maximum"] == 10
     assert "children_ages" in schema["properties"]

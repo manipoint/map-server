@@ -12,6 +12,8 @@ from app.api.websocket.events import (
     ConnectionPongEvent,
     ConnectionReadyEvent,
     ConnectionReadyPayload,
+    TravelInputRequiredEvent,
+    TravelInputRequiredPayload,
     TravelRequestAcceptedEvent,
     TravelRequestAcceptedPayload,
     TravelRequestEvent,
@@ -417,6 +419,60 @@ def test_travel_response_completed_defaults_itinerary_id_to_none() -> None:
     )
 
     assert payload.itinerary_id is None
+
+
+def test_travel_input_required_serializes_airport_choices() -> None:
+    """Flutter should receive typed airport controls with response correlation."""
+
+    event = TravelInputRequiredEvent(
+        payload=TravelInputRequiredPayload.model_validate(
+            {
+                "client_message_id": str(uuid4()),
+                "conversation_id": str(uuid4()),
+                "assistant_message_id": str(uuid4()),
+                "content": "Select a London airport.",
+                "is_duplicate": False,
+                "clarification": {
+                    "type": "airport_selection",
+                    "requests": [
+                        {
+                            "field": "origin_airport",
+                            "query": "lindon",
+                            "status": "selection_required",
+                            "question": "Select an airport for lindon.",
+                            "options": [
+                                {
+                                    "provider_location_id": "london-city",
+                                    "iata_code": "LON",
+                                    "location_type": "city",
+                                    "name": "London",
+                                    "city_name": "London",
+                                    "country_name": "United Kingdom",
+                                    "country_code": "GB",
+                                },
+                                {
+                                    "provider_location_id": "stansted",
+                                    "iata_code": "STN",
+                                    "location_type": "airport",
+                                    "name": "London Stansted Airport",
+                                    "city_name": "London",
+                                    "country_name": "United Kingdom",
+                                    "country_code": "GB",
+                                },
+                            ],
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    serialized = event.model_dump(mode="json")
+
+    assert serialized["type"] == "travel.input.required"
+    clarification = serialized["payload"]["clarification"]
+    assert clarification["type"] == "airport_selection"
+    assert clarification["requests"][0]["options"][0]["iata_code"] == "LON"
 
 
 @pytest.mark.parametrize(

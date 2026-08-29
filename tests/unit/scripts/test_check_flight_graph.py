@@ -6,7 +6,7 @@ from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 
 import scripts.check_flight_graph as script
@@ -48,7 +48,25 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
     model_gateway = object()
     graph = MagicMock()
     graph.ainvoke = AsyncMock(
-        return_value={"assistant_response": "Three verified offers are available."}
+        return_value={
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "search_flights",
+                            "args": {
+                                "origin": "LHR",
+                                "destination": "JFK",
+                            },
+                            "id": "flight-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ],
+            "assistant_response": "Three verified offers are available.",
+        }
     )
     create_weather_provider = MagicMock(return_value=weather_provider)
     create_airport_provider = MagicMock(return_value=airport_provider)
@@ -156,9 +174,74 @@ def test_check_flight_graph_assembles_invokes_and_logs_pipeline(
         for item in caplog.records
         if item.getMessage() == "Flight graph check completed"
     )
-    assert record.origin == "LHR"
-    assert record.destination == "JFK"
+    assert record.expected_origin == "LHR"
+    assert record.expected_destination == "JFK"
+    assert record.model_origin == "LHR"
+    assert record.model_destination == "JFK"
     assert record.assistant_response == "Three verified offers are available."
+
+
+def test_find_flight_tool_arguments_returns_model_selected_route() -> None:
+    """The smoke check should expose direction from the actual tool call."""
+
+    messages = [
+        HumanMessage(content="lindon se lhaore jana hy"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search_flights",
+                    "args": {"origin": "London", "destination": "Lahore"},
+                    "id": "flight-call",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+    ]
+
+    assert script.find_flight_tool_arguments(messages) == {
+        "origin": "London",
+        "destination": "Lahore",
+    }
+
+
+def test_build_graph_message_preserves_raw_roman_urdu_prompt() -> None:
+    """A caller should be able to evaluate spelling and direction understanding."""
+
+    request = script.FlightSearchPreparationInput(
+        origin="London",
+        destination="Lahore",
+        departure_date=date(2026, 9, 10),
+    )
+
+    assert (
+        script.build_graph_message(
+            request=request,
+            message="  lindon se lhaore jana hy  ",
+        )
+        == "lindon se lhaore jana hy"
+    )
+
+
+@pytest.mark.parametrize("message", ["   ", "x" * 2001])
+def test_build_graph_message_rejects_invalid_raw_prompt(message: str) -> None:
+    """Invalid prompts should fail before model or provider resources are created."""
+
+    request = script.FlightSearchPreparationInput(
+        origin="London",
+        destination="Lahore",
+        departure_date=date(2026, 9, 10),
+    )
+
+    with pytest.raises(ValueError, match="between 1 and 2000"):
+        script.build_graph_message(request=request, message=message)
+
+
+def test_find_flight_tool_arguments_rejects_missing_flight_call() -> None:
+    """A prose-only result should fail rather than appear to verify direction."""
+
+    with pytest.raises(RuntimeError, match="did not call search_flights"):
+        script.find_flight_tool_arguments([AIMessage(content="Please provide dates")])
 
 
 def test_check_flight_graph_rejects_invalid_route_before_resources(
@@ -196,3 +279,26 @@ def test_parse_arguments_returns_typed_flight_route(
     assert arguments.origin == "LHR"
     assert arguments.destination == "JFK"
     assert arguments.departure_date == date(2026, 9, 10)
+    assert arguments.message is None
+
+
+def test_parse_arguments_accepts_raw_natural_language_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI should retain a Roman Urdu prompt for live model evaluation."""
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_flight_graph",
+            "London",
+            "Lahore",
+            "2026-09-10",
+            "--message",
+            "lindon se lhaore jana hy 10 september ko",
+        ],
+    )
+
+    arguments = script.parse_arguments()
+
+    assert arguments.message == "lindon se lhaore jana hy 10 september ko"

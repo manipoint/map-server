@@ -239,7 +239,6 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
     fake_flight_search_preparation_service = object()
     fake_mcp_server = object()
     fake_weather_tool = object()
-    fake_airport_tool = object()
     fake_flight_tool = object()
     fake_gateway = object()
     fake_graph = object()
@@ -255,7 +254,6 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
     )
     create_server = MagicMock(return_value=fake_mcp_server)
     create_weather_tool = MagicMock(return_value=fake_weather_tool)
-    create_airport_tool = MagicMock(return_value=fake_airport_tool)
     create_flight_tool = MagicMock(return_value=fake_flight_tool)
     build_gateway = MagicMock(return_value=fake_gateway)
     build_graph = MagicMock(return_value=fake_graph)
@@ -310,11 +308,6 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
         lifespan_module,
         "create_current_weather_tool",
         create_weather_tool,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_airport_resolution_tool",
-        create_airport_tool,
     )
     monkeypatch.setattr(
         lifespan_module,
@@ -376,15 +369,11 @@ def test_lifespan_wires_enabled_duffel_provider_into_mcp(monkeypatch) -> None:
     create_weather_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
-    create_airport_tool.assert_called_once_with(
-        mcp_client=application.state.mcp_client,
-    )
     create_flight_tool.assert_called_once_with(
         mcp_client=application.state.mcp_client,
     )
     expected_tools = [
         fake_weather_tool,
-        fake_airport_tool,
         fake_flight_tool,
         FAKE_ITINERARY_TOOL,
     ]

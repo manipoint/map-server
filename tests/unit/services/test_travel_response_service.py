@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import ToolMessage
 
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
@@ -123,6 +124,27 @@ def generated_itinerary() -> GeneratedItinerary:
     )
 
 
+def airport_clarification_content() -> str:
+    """Return one flight-tool clarification encoded as a ToolMessage string."""
+
+    return (
+        '{"status":"airport_resolution_required",'
+        '"origin":{"status":"selection_required","query":"lindon",'
+        '"iata_code":null,"options":['
+        '{"provider_location_id":"london-city","iata_code":"LON",'
+        '"location_type":"city","name":"London",'
+        '"city_name":"London","country_name":"United Kingdom",'
+        '"country_code":"GB"},'
+        '{"provider_location_id":"stansted","iata_code":"STN",'
+        '"location_type":"airport","name":"London Stansted Airport",'
+        '"city_name":"London","country_name":"United Kingdom",'
+        '"country_code":"GB"}]},'
+        '"destination":{"status":"resolved","query":"lhaore",'
+        '"iata_code":"LHE","options":[]},'
+        '"message":"Airport resolution is required for the origin."}'
+    )
+
+
 def test_generate_reply_returns_a_cached_response_without_model_work() -> None:
     """A persisted reply should avoid another model invocation and DB write."""
 
@@ -157,6 +179,71 @@ def test_generate_reply_returns_a_cached_response_without_model_work() -> None:
     graph.ainvoke.assert_not_awaited()
     processing.save_reply.assert_not_awaited()
     service.itineraries.find_generated_draft.assert_not_awaited()
+
+
+def test_generate_reply_restores_cached_structured_clarification() -> None:
+    """A duplicate request should return the same airport selection controls."""
+
+    request = create_accepted_request()
+    cached_reply = Message(
+        id=uuid4(),
+        conversation_id=request.conversation.id,
+        client_message_id=None,
+        reply_to_message_id=request.user_message.id,
+        role="assistant",
+        content="Select a London airport.",
+        structured_content={
+            "type": "airport_selection",
+            "requests": [
+                {
+                    "field": "origin_airport",
+                    "query": "lindon",
+                    "status": "selection_required",
+                    "question": "Select an airport for lindon.",
+                    "options": [
+                        {
+                            "provider_location_id": "london-city",
+                            "iata_code": "LON",
+                            "location_type": "city",
+                            "name": "London",
+                            "city_name": "London",
+                            "country_name": "United Kingdom",
+                            "country_code": "GB",
+                        },
+                        {
+                            "provider_location_id": "stansted",
+                            "iata_code": "STN",
+                            "location_type": "airport",
+                            "name": "London Stansted Airport",
+                            "city_name": "London",
+                            "country_name": "United Kingdom",
+                            "country_code": "GB",
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(),
+            cached_reply=cached_reply,
+        ),
+        claim=None,
+    )
+    service, _, graph = create_service(start=start)
+
+    result = asyncio.run(
+        service.generate_reply(
+            user_id=request.conversation.user_id,
+            accepted_request=request,
+        )
+    )
+
+    assert result.clarification is not None
+    assert result.clarification.requests[0].options[0].iata_code == "LON"
+    graph.ainvoke.assert_not_awaited()
 
 
 def test_generate_reply_returns_cached_generated_itinerary_id() -> None:
@@ -315,6 +402,61 @@ def test_generate_reply_invokes_graph_and_saves_an_owned_response() -> None:
     )
     processing.fail_processing.assert_not_awaited()
     service.itineraries.create_generated_draft.assert_not_awaited()
+
+
+def test_generate_reply_persists_graph_airport_clarification() -> None:
+    """Structured tool guidance should be stored and returned with the reply."""
+
+    request = create_accepted_request()
+    claim = create_claim(acquired=True)
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(request.user_message,),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    saved_message = Message(
+        id=uuid4(),
+        conversation_id=request.conversation.id,
+        client_message_id=None,
+        reply_to_message_id=request.user_message.id,
+        role="assistant",
+        content="Select a London airport.",
+    )
+    tool_message = ToolMessage(
+        content=airport_clarification_content(),
+        name="search_flights",
+        tool_call_id="flight-call",
+    )
+    service, processing, _ = create_service(
+        start=start,
+        graph_result={
+            "messages": [tool_message],
+            "assistant_response": "Select a London airport.",
+        },
+    )
+
+    async def save_reply(**arguments):
+        saved_message.structured_content = arguments["structured_content"]
+        return SaveAssistantReply(message=saved_message, is_duplicate=False)
+
+    processing.save_reply.side_effect = save_reply
+
+    result = asyncio.run(
+        service.generate_reply(
+            user_id=request.conversation.user_id,
+            accepted_request=request,
+        )
+    )
+
+    assert result.clarification is not None
+    clarification = result.clarification
+    assert clarification.requests[0].field == "origin_airport"
+    assert clarification.requests[0].options[0].iata_code == "LON"
+    structured_content = processing.save_reply.await_args.kwargs["structured_content"]
+    assert structured_content["type"] == "airport_selection"
 
 
 def test_generate_reply_persists_generated_itinerary_before_reply() -> None:

@@ -1,6 +1,6 @@
 """Tests for the travel conversation message persistence model."""
 
-from sqlalchemy import CheckConstraint, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Text, UniqueConstraint
 
 from app.database.models import Message
 
@@ -24,6 +24,7 @@ def test_message_contains_required_columns() -> None:
         "reply_to_message_id",
         "role",
         "content",
+        "structured_content",
         "created_at",
     }
     assert Message.__table__.c.id.primary_key is True
@@ -33,6 +34,7 @@ def test_message_contains_required_columns() -> None:
     assert Message.__table__.c.reply_to_message_id.nullable is True
     assert Message.__table__.c.role.nullable is False
     assert Message.__table__.c.content.nullable is False
+    assert Message.__table__.c.structured_content.nullable is True
 
 
 def test_message_foreign_keys_define_delete_behavior() -> None:
@@ -78,6 +80,7 @@ def test_message_has_role_and_content_constraints() -> None:
         "ck_messages_content_not_blank",
         "ck_messages_role",
         "ck_messages_role_identifiers",
+        "ck_messages_structured_content_assistant_only",
         "ck_messages_trip_context_user_only",
     }
 
@@ -107,6 +110,7 @@ def test_message_content_supports_unbounded_text() -> None:
 
     assert isinstance(Message.__table__.c.content.type, Text)
     assert Message.__table__.c.role.type.length == 16
+    assert isinstance(Message.__table__.c.structured_content.type, JSON)
 
 
 def test_message_created_at_is_timezone_aware() -> None:

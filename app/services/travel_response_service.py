@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import ValidationError
 
 from app.database.models.message import Message
+from app.domain.clarifications import TravelClarification
 from app.domain.enums import TravelResponseErrorCode
+from app.graph.clarifications import extract_travel_clarification
 from app.graph.nodes.input import build_travel_graph_input
 from app.graph.schemas.itineraries import to_itinerary_item_drafts
 from app.graph.subgraphs.model_gateway import ModelGatewayError
@@ -24,6 +27,22 @@ class TravelResponseResult:
     is_processing: bool
     error_code: TravelResponseErrorCode | None
     itinerary_id: UUID | None = None
+    clarification: TravelClarification | None = None
+
+
+def parse_persisted_clarification(message: Message) -> TravelClarification | None:
+    """Validate optional structured content stored with an assistant reply."""
+
+    if message.structured_content is None:
+        return None
+    try:
+        return TravelClarification.model_validate(message.structured_content)
+    except ValidationError:
+        logger.warning(
+            "Stored assistant structured content is invalid",
+            extra={"assistant_message_id": str(message.id)},
+        )
+        return None
 
 
 class TravelResponseService:
@@ -75,6 +94,7 @@ class TravelResponseService:
                     if generated_draft is not None
                     else None
                 ),
+                clarification=parse_persisted_clarification(start.context.cached_reply),
             )
 
         if start.is_attempts_exhausted(max_attempts=self.max_model_attempts):
@@ -102,6 +122,9 @@ class TravelResponseService:
             )
             async with asyncio.timeout(self.travel_response_timeout_seconds):
                 graph_result = await self.graph.ainvoke(graph_input)
+                clarification = extract_travel_clarification(
+                    graph_result.get("messages", [])
+                )
                 itinerary_id = None
                 generated_itinerary = graph_result.get("generated_itinerary")
                 if generated_itinerary is not None:
@@ -115,18 +138,24 @@ class TravelResponseService:
                         items=to_itinerary_item_drafts(generated_itinerary),
                     )
                     itinerary_id = generated_draft.itinerary.id
-                save_reply = await self.processing.save_reply(
-                    user_id=user_id,
-                    accepted_request=accepted_request,
-                    claim=claim,
-                    content=graph_result["assistant_response"],
-                )
+                save_arguments: dict[str, object] = {
+                    "user_id": user_id,
+                    "accepted_request": accepted_request,
+                    "claim": claim,
+                    "content": graph_result["assistant_response"],
+                }
+                if clarification is not None:
+                    save_arguments["structured_content"] = clarification.model_dump(
+                        mode="json"
+                    )
+                save_reply = await self.processing.save_reply(**save_arguments)
             return TravelResponseResult(
                 message=save_reply.message,
                 is_cached=save_reply.is_duplicate,
                 is_processing=False,
                 error_code=None,
                 itinerary_id=itinerary_id,
+                clarification=parse_persisted_clarification(save_reply.message),
             )
         except asyncio.CancelledError:
             raise

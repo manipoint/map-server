@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. Search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
+> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. Search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
 
 ## Product scope
 
@@ -149,6 +149,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | [LangGraph design](docs/langgraph.md) | State, nodes, conditional edges, interrupts, and fallback subgraph. |
 | [MCP server](docs/mcp-server.md) | Tool contracts, provider adapters, normalization, and error taxonomy. |
 | [WebSocket protocol](docs/websocket-protocol.md) | Message envelope, events, reconnection, cancellation, and idempotency. |
+| [Flutter location contract](docs/flutter-location-contract.md) | Text search, canonical selection, and trip create/update payloads. |
 | [Authentication](docs/authentication.md) | Access tokens, rotating sessions, device persistence, and logout. |
 | [PostgreSQL model](docs/database.md) | Normalized schema, offer snapshots, retention, and indexes. |
 | [Model routing and cost](docs/model-routing.md) | Multi-provider failover and token/cost controls. |

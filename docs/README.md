@@ -9,14 +9,15 @@ This directory describes both the implemented backend and its target architectur
 3. [Backend Structure](backend-structure.md)
 4. [Authentication and Sessions](authentication.md)
 5. [WebSocket Protocol](websocket-protocol.md)
-6. [LangGraph Design](langgraph.md)
-7. [MCP Server Design](mcp-server.md)
-8. [PostgreSQL Data Model](database.md)
-9. [Model Routing and Cost Controls](model-routing.md)
-10. [Deployment](deployment.md)
-11. [Reliability and SPOF Review](reliability.md)
-12. [Testing Strategy](testing.md)
-13. [Development Commands](development-workflow.md)
+6. [Flutter Location Contract](flutter-location-contract.md)
+7. [LangGraph Design](langgraph.md)
+8. [MCP Server Design](mcp-server.md)
+9. [PostgreSQL Data Model](database.md)
+10. [Model Routing and Cost Controls](model-routing.md)
+11. [Deployment](deployment.md)
+12. [Reliability and SPOF Review](reliability.md)
+13. [Testing Strategy](testing.md)
+14. [Development Commands](development-workflow.md)
 
 ## Source-of-truth boundaries
 
@@ -28,6 +29,7 @@ This directory describes both the implemented backend and its target architectur
 | Graph state, nodes, and edges | `langgraph.md` |
 | Tool input/output and provider behavior | `mcp-server.md` |
 | Client/server event contract | `websocket-protocol.md` |
+| Flutter location selection and trip payloads | `flutter-location-contract.md` |
 | Login, rotation, revocation, and devices | `authentication.md` |
 | Tables, relations, retention, and indexes | `database.md` |
 | LLM selection, retry, fallback, and budgets | `model-routing.md` |

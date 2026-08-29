@@ -13,7 +13,7 @@ from app.graph.schemas.trips import ActiveTripContext
 def test_travel_prompt_version_tracks_live_tool_policy() -> None:
     """A material prompt-policy change should have an explicit version."""
 
-    assert TRAVEL_PROMPT_VERSION == "travel-v10"
+    assert TRAVEL_PROMPT_VERSION == "travel-v12"
 
 
 def test_trip_context_prompt_prohibits_submission_without_active_trip() -> None:
@@ -149,6 +149,19 @@ def test_travel_prompt_matches_language_and_reports_only_verified_fields() -> No
 
     assert "Use the user's language" in prompt
     assert "Use only returned facts" in prompt
+
+
+def test_travel_prompt_handles_roman_urdu_routes_and_typos_safely() -> None:
+    """Obvious spelling variants should be searched without reversing the route."""
+
+    prompt = " ".join(TRAVEL_ASSISTANT_SYSTEM_PROMPT.split())
+
+    assert "Copy user location text unchanged into tools" in prompt
+    assert "never replace typos/transliterations with a similar city" in prompt
+    assert "Tools resolve canonical places" in prompt
+    assert "“X se Y”/“from X to Y”: X origin, Y destination" in prompt
+    assert "“ana”/“jana” never reverse" in prompt
+    assert "Never invent canonical IDs/codes/coordinates" in prompt
 
 
 def test_travel_prompt_requires_verified_reference_rate_conversion() -> None:

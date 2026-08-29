@@ -18,7 +18,6 @@ from app.database.session import (
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
 from app.graph.tools import (
-    create_airport_resolution_tool,
     create_currency_conversion_tool,
     create_current_weather_tool,
     create_flight_search_tool,
@@ -153,12 +152,6 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 mcp_client=mcp_client,
             ),
         ]
-        if airport_resolution_service is not None:
-            tools.append(
-                create_airport_resolution_tool(
-                    mcp_client=mcp_client,
-                )
-            )
         if flight_search_service is not None:
             tools.append(create_flight_search_tool(mcp_client=mcp_client))
         if hotel_search_service is not None:

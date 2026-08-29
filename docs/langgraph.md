@@ -20,10 +20,11 @@ START → invoke_model → route
 - `FallbackModelGateway` tries configured providers in order: Groq, Google, then OpenAI.
 - A model-provider exception, non-AI response, or response without text/tool calls moves to the next model provider. Task cancellation propagates and never triggers fallback.
 - The final node accepts only a non-empty plain-text `AIMessage` and exposes it as `assistant_response`.
-- The model can call registered `get_current_weather`, `resolve_airport`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized. `search_flights` accepts codes, airport names, or cities and resolves both endpoints concurrently in deterministic application code. Ambiguous results require user selection and are never guessed.
+- The model can call registered `get_current_weather`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized. `search_flights` accepts codes, airport names, or cities and resolves both endpoints concurrently in deterministic application code. Ambiguous results require user selection and are never guessed. The lower-level MCP `resolve_airport` tool remains available to deterministic backend workflows, but is not exposed separately to the model because flight search already performs that resolution.
+- The prompt preserves misspelled or transliterated location substrings unchanged in the first tool call. Explicit `X se Y` direction remains origin-to-destination; provider results, rather than model spelling substitution, supply canonical locations. Multiple candidates continue through a normal clarification message in conversation history; durable graph interrupt/resume remains planned.
 - `MAX_TOOL_ROUNDS` bounds tool execution; the default is two rounds. Expected provider errors become safe model-visible tool text.
 - `TRAVEL_RESPONSE_TIMEOUT_SECONDS` applies one end-to-end deadline around graph execution and atomic reply persistence. Its default is 75 seconds, below the 120-second processing lease.
-- The graph does not yet implement deterministic intent routing, fan-out, interrupts, checkpoint/resume, search persistence, or structured Flutter result cards.
+- The graph does not yet implement deterministic intent routing, fan-out, checkpoint-backed interrupts/resume, search persistence, or general structured Flutter result cards. Airport-selection guidance is extracted deterministically from validated flight tool messages and emitted as `travel.input.required`.
 
 The implemented state is intentionally narrower than the target state below:
 
@@ -107,7 +108,6 @@ flowchart TD
 
 ### Tool nodes
 
-- `resolve_airport`
 - `search_flights`
 - `search_hotels`
 - `search_places`

@@ -29,6 +29,7 @@ from app.api.websocket.dependencies import get_websocket_principal
 from app.api.websocket.events import (
     ConnectionPongEvent,
     ConnectionReadyEvent,
+    TravelInputRequiredEvent,
     TravelRequestAcceptedEvent,
     TravelRequestRejectedEvent,
     TravelResponseCompletedEvent,
@@ -40,6 +41,7 @@ from app.auth.service import AuthenticatedPrincipal
 from app.config import Settings
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
+from app.domain.clarifications import AirportInputRequest, TravelClarification
 from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import (
     ClientMessageConflictError,
@@ -47,6 +49,7 @@ from app.domain.errors import (
     TripNotFoundError,
 )
 from app.graph.subgraphs.model_gateway import ModelGatewayError
+from app.providers.airports.schemas import AirportOption
 from app.services.conversation_service import AcceptedTravelRequest
 from app.services.travel_response_service import TravelResponseResult
 
@@ -358,6 +361,87 @@ def test_travel_websocket_reports_a_completed_response(
     assert event.payload.content == "Three-day Lahore itinerary"
     assert event.payload.itinerary_id == itinerary_id
     assert event.payload.is_duplicate is False
+
+
+def test_travel_websocket_returns_structured_airport_input_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Airport ambiguity should become Flutter controls, not prose parsing."""
+
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    assistant_message = MagicMock(spec=Message)
+    assistant_message.id = uuid4()
+    assistant_message.content = "Select a London airport."
+    clarification = TravelClarification(
+        requests=[
+            AirportInputRequest(
+                field="origin_airport",
+                query="lindon",
+                status="selection_required",
+                question="Select an airport for lindon.",
+                options=[
+                    AirportOption(
+                        provider_location_id="london-city",
+                        iata_code="LON",
+                        location_type="city",
+                        name="London",
+                        city_name="London",
+                        country_name="United Kingdom",
+                        country_code="GB",
+                    ),
+                    AirportOption(
+                        provider_location_id="stansted",
+                        iata_code="STN",
+                        location_type="airport",
+                        name="London Stansted Airport",
+                        city_name="London",
+                        country_name="United Kingdom",
+                        country_code="GB",
+                    ),
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(
+            return_value=create_accepted_request(conversation_id=conversation_id)
+        ),
+    )
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        AsyncMock(
+            return_value=TravelResponseResult(
+                message=assistant_message,
+                is_cached=False,
+                is_processing=False,
+                error_code=None,
+                clarification=clarification,
+            )
+        ),
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                create_travel_request_event(client_message_id=client_message_id)
+            )
+            websocket.receive_json()
+            message = websocket.receive_json()
+
+    event = TravelInputRequiredEvent.model_validate(message)
+    assert event.payload.client_message_id == client_message_id
+    assert event.payload.conversation_id == conversation_id
+    assert event.payload.assistant_message_id == assistant_message.id
+    assert event.payload.content == "Select a London airport."
+    request = event.payload.clarification.requests[0]
+    assert request.field == "origin_airport"
+    assert [option.iata_code for option in request.options] == ["LON", "STN"]
 
 
 def test_travel_websocket_reports_a_safe_model_failure(

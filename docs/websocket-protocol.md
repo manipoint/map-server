@@ -2,7 +2,7 @@
 
 ## Purpose
 
-WebSocket currently provides authenticated travel chat, heartbeats, processing state, and final responses. Missing-input interrupts, explicit cancellation, incremental category results, trip history, and ordinary trip/conversation CRUD are target capabilities.
+WebSocket currently provides authenticated travel chat, heartbeats, processing state, final responses, and structured airport clarification. Durable graph interrupts, explicit cancellation, incremental category results, trip history, and ordinary trip/conversation CRUD are target capabilities.
 
 Endpoint:
 
@@ -37,11 +37,66 @@ For each accepted request the server sends `travel.request.accepted` immediately
 
 ```text
 travel.response.processing
+travel.input.required
 travel.response.completed
 travel.response.failed
 ```
 
 `travel.response.completed` includes the persisted assistant message ID, content, duplicate indicator, and a nullable `itinerary_id`. A non-null itinerary ID lets Flutter offer a deterministic **View itinerary** action and fetch the structured timeline from `GET /itineraries/{itinerary_id}`. Normal chat and search replies return `null`. Cached retries return the same generated itinerary ID. Public response failure codes are `provider_error`, `generation_failed`, and `attempts_exhausted`; no provider body, stack trace, token, or credential is sent to Flutter.
+
+When flight airport resolution requires a choice, the terminal event is
+`travel.input.required` instead of `travel.response.completed`. It includes the
+persisted assistant message and typed airport requests. A request may contain
+origin, destination, or both. `selection_required` has two through five options;
+`not_found` has no options and asks for city plus country/region. Flutter sends
+the selected code as a new idempotent `travel.request`; durable graph
+`input.provided` resume is not implemented yet.
+
+```json
+{
+  "version": 1,
+  "type": "travel.input.required",
+  "sent_at": "2026-08-29T10:00:05Z",
+  "payload": {
+    "client_message_id": "018f6f4e-5f43-7b14-91f4-f7f5412c9001",
+    "conversation_id": "018f6f4e-5f43-7b14-91f4-f7f5412c9002",
+    "assistant_message_id": "018f6f4e-5f43-7b14-91f4-f7f5412c9004",
+    "content": "Select a London airport.",
+    "is_duplicate": false,
+    "clarification": {
+      "type": "airport_selection",
+      "requests": [
+        {
+          "field": "origin_airport",
+          "query": "lindon",
+          "status": "selection_required",
+          "question": "Select an airport for lindon.",
+          "options": [
+            {
+              "provider_location_id": "provider-location-id",
+              "iata_code": "LON",
+              "location_type": "city",
+              "name": "London",
+              "city_name": "London",
+              "country_name": "United Kingdom",
+              "country_code": "GB"
+            },
+            {
+              "provider_location_id": "provider-stansted-id",
+              "iata_code": "STN",
+              "location_type": "airport",
+              "name": "London Stansted Airport",
+              "city_name": "London",
+              "country_name": "United Kingdom",
+              "country_code": "GB"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
 
 ```json
 {
@@ -194,7 +249,9 @@ Example progress event:
 
 ## Missing input
 
-Interrupt/resume is not implemented yet.
+The generic checkpoint-backed interrupt/resume contract below is not implemented
+yet. Airport choices currently use `travel.input.required` from the baseline and
+continue through a new `travel.request`.
 
 The server sends:
 

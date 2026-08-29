@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -52,6 +53,10 @@ class Message(Base):
             "role = 'user' OR trip_id IS NULL",
             name="trip_context_user_only",
         ),
+        CheckConstraint(
+            "role = 'assistant' OR structured_content IS NULL",
+            name="structured_content_assistant_only",
+        ),
         {"schema": "app"},
     )
 
@@ -88,6 +93,10 @@ class Message(Base):
     content: Mapped[str] = mapped_column(
         Text(),
         nullable=False,
+    )
+    structured_content: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

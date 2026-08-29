@@ -436,6 +436,43 @@ def test_save_reply_creates_normalized_content_and_commits() -> None:
     )
 
 
+def test_save_reply_persists_structured_content_with_new_reply() -> None:
+    """A new clarification must survive retries with its assistant message."""
+
+    service, _, messages, _ = create_service()
+    accepted_request = create_accepted_request()
+    assistant_message = Message(
+        id=uuid4(),
+        conversation_id=accepted_request.conversation.id,
+        client_message_id=None,
+        reply_to_message_id=accepted_request.user_message.id,
+        role="assistant",
+        content="Select an airport.",
+        structured_content={"type": "airport_selection", "requests": []},
+    )
+    messages.get_assistant_reply.return_value = None
+    messages.create_assistant_message.return_value = assistant_message
+    structured_content = {"type": "airport_selection", "requests": []}
+
+    result = asyncio.run(
+        service.save_reply(
+            user_id=uuid4(),
+            accepted_request=accepted_request,
+            claim=create_processing_claim(),
+            content="Select an airport.",
+            structured_content=structured_content,
+        )
+    )
+
+    assert result.message is assistant_message
+    messages.create_assistant_message.assert_awaited_once_with(
+        conversation_id=accepted_request.conversation.id,
+        reply_to_message_id=accepted_request.user_message.id,
+        content="Select an airport.",
+        structured_content=structured_content,
+    )
+
+
 def test_save_reply_recovers_the_winner_after_a_unique_race() -> None:
     """A concurrent unique conflict should return the reply committed first."""
 

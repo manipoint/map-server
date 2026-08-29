@@ -71,6 +71,8 @@ def create_flight_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
         name="search_flights",
         description=(
             "Search live flight offers by route, dates, cabin, and party. "
+            "Copy the user's origin and destination text unchanged; this tool "
+            "resolves them. "
             "Provide exact child ages and classify infants as seated or on-lap. "
             "Returned totals cover the whole party. Search only; no booking."
         ),

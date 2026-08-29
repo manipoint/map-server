@@ -110,7 +110,12 @@ class MessageRepository:
         return message
 
     async def create_assistant_message(
-        self, *, conversation_id: UUID, reply_to_message_id: UUID, content: str
+        self,
+        *,
+        conversation_id: UUID,
+        reply_to_message_id: UUID,
+        content: str,
+        structured_content: dict[str, object] | None = None,
     ) -> Message:
         """Create and flush an assistant reply without committing."""
         message = Message(
@@ -119,6 +124,7 @@ class MessageRepository:
             reply_to_message_id=reply_to_message_id,
             role="assistant",
             content=content,
+            structured_content=structured_content,
         )
 
         self.session.add(message)

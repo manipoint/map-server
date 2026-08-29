@@ -32,6 +32,8 @@ from app.api.websocket.events import (
     ConnectionPongEvent,
     ConnectionReadyEvent,
     ConnectionReadyPayload,
+    TravelInputRequiredEvent,
+    TravelInputRequiredPayload,
     TravelRequestAcceptedEvent,
     TravelRequestAcceptedPayload,
     TravelRequestEvent,
@@ -199,15 +201,28 @@ async def travel_websocket(
                 )
                 return
 
+            is_duplicate = accepted_request.is_duplicate or response_result.is_cached
+            if response_result.clarification is not None:
+                input_required_event = TravelInputRequiredEvent(
+                    payload=TravelInputRequiredPayload(
+                        client_message_id=event.payload.client_message_id,
+                        conversation_id=accepted_request.conversation.id,
+                        assistant_message_id=response_result.message.id,
+                        content=response_result.message.content,
+                        is_duplicate=is_duplicate,
+                        clarification=response_result.clarification,
+                    )
+                )
+                await send_event(input_required_event.model_dump(mode="json"))
+                return
+
             completed_event = TravelResponseCompletedEvent(
                 payload=TravelResponseCompletedPayload(
                     client_message_id=event.payload.client_message_id,
                     conversation_id=accepted_request.conversation.id,
                     assistant_message_id=response_result.message.id,
                     content=response_result.message.content,
-                    is_duplicate=(
-                        accepted_request.is_duplicate or response_result.is_cached
-                    ),
+                    is_duplicate=is_duplicate,
                     itinerary_id=response_result.itinerary_id,
                 )
             )
