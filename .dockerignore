@@ -1,0 +1,56 @@
+#GIT
+.git
+.gitignore
+.gitattributes
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+service-account*.json
+application_default_credentials.json
+
+# Python environments and caches
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pytype
+.coverage
+coverage.xml
+htmlcov
+
+# Development tools
+.pre-commit-config.yaml
+.python-version
+.vscode
+.idea
+
+# Tests and local scripts
+tests
+scripts
+
+# Documentation and repository metadata
+docs
+README.md
+LICENSE
+
+# Local files
+.DS_Store
+*.log
+*.sqlite
+*.sqlite3
+
+# Build output
+build
+dist
+*.egg-info
+
+# Unused dependency export
+requirements.txt
