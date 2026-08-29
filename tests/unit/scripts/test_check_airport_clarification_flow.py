@@ -149,11 +149,15 @@ def test_validate_airport_selection_completion_rejects_clarification_loop() -> N
 def test_validate_airport_selection_completion_rejects_failed_response() -> None:
     """A provider or graph failure should not pass as a completed search."""
 
-    with pytest.raises(RuntimeError, match="travel.response.failed"):
+    with pytest.raises(RuntimeError, match="flight search failed: provider_error"):
         script.validate_airport_selection_completion(
             event_data={
                 "type": "travel.response.failed",
-                "payload": {"code": "provider_unavailable"},
+                "payload": {
+                    "client_message_id": str(uuid4()),
+                    "conversation_id": str(uuid4()),
+                    "code": "provider_error",
+                },
             }
         )
 

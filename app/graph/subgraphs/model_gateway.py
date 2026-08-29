@@ -1,5 +1,6 @@
 """Provider-independent model gateway contracts."""
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -11,6 +12,8 @@ from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class ModelGatewayError(Exception):
@@ -75,9 +78,23 @@ class FallbackModelGateway:
 
             except Exception as error:
                 last_error = error
+                logger.warning(
+                    "Model provider attempt failed",
+                    extra={
+                        "model_provider": provider.name,
+                        "error_type": type(error).__name__,
+                    },
+                )
                 continue
             if not isinstance(response, AIMessage):
                 last_error = TypeError("model provider returned a non-AI message")
+                logger.warning(
+                    "Model provider returned an invalid response",
+                    extra={
+                        "model_provider": provider.name,
+                        "error_type": type(last_error).__name__,
+                    },
+                )
                 continue
             has_text_response = isinstance(response.content, str) and bool(
                 response.content.strip()
@@ -86,6 +103,13 @@ class FallbackModelGateway:
             if not has_text_response and not has_tool_calls:
                 last_error = ValueError(
                     "model provider returned neither text nor tool calls"
+                )
+                logger.warning(
+                    "Model provider returned an invalid response",
+                    extra={
+                        "model_provider": provider.name,
+                        "error_type": type(last_error).__name__,
+                    },
                 )
                 continue
 

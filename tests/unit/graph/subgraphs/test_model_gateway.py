@@ -1,6 +1,7 @@
 """Tests for provider-independent model fallback behavior."""
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from unittest.mock import MagicMock
 
@@ -135,7 +136,9 @@ def test_gateway_accepts_a_tool_call_without_text() -> None:
     assert fallback.calls == []
 
 
-def test_gateway_falls_back_after_a_provider_failure() -> None:
+def test_gateway_falls_back_after_a_provider_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A provider exception should move to the next configured provider."""
 
     primary = FakeChatModel(RuntimeError("primary unavailable"))
@@ -148,11 +151,20 @@ def test_gateway_falls_back_after_a_provider_failure() -> None:
     )
     messages = [HumanMessage(content="Plan a Lahore trip")]
 
-    response = asyncio.run(gateway.generate(messages=messages))
+    with caplog.at_level(logging.WARNING, logger=model_gateway.__name__):
+        response = asyncio.run(gateway.generate(messages=messages))
 
     assert response.content == "Fallback itinerary"
     assert primary.calls == [messages]
     assert fallback.calls == [messages]
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "Model provider attempt failed"
+    )
+    assert record.model_provider == "groq"
+    assert record.error_type == "RuntimeError"
+    assert "primary unavailable" not in record.getMessage()
 
 
 @pytest.mark.parametrize(

@@ -133,9 +133,22 @@ async def travel_websocket(
         event: TravelRequestEvent,
         accepted_request: AcceptedTravelRequest,
         code: TravelResponseErrorCode,
+        error_type: str | None = None,
     ) -> None:
         """Send a safe failure response without leaking provider details."""
 
+        log_context = {
+            "connection_id": str(connection.connection_id),
+            "client_message_id": str(event.payload.client_message_id),
+            "conversation_id": str(accepted_request.conversation.id),
+            "error_code": code.value,
+        }
+        if error_type is not None:
+            log_context["error_type"] = error_type
+        logger.warning(
+            "Travel response generation failed",
+            extra=log_context,
+        )
         failed_event = TravelResponseFailedEvent(
             payload=TravelResponseFailedPayload(
                 client_message_id=event.payload.client_message_id,
@@ -160,18 +173,20 @@ async def travel_websocket(
                     accepted_request=accepted_request,
                     session_factory=session_factory,
                 )
-            except ModelGatewayError:
+            except ModelGatewayError as error:
                 await send_failed_response(
                     event=event,
                     accepted_request=accepted_request,
                     code=TravelResponseErrorCode.PROVIDER_ERROR,
+                    error_type=type(error).__name__,
                 )
                 return
-            except Exception:
+            except Exception as error:
                 await send_failed_response(
                     event=event,
                     accepted_request=accepted_request,
                     code=TravelResponseErrorCode.GENERATION_FAILED,
+                    error_type=type(error).__name__,
                 )
                 return
 

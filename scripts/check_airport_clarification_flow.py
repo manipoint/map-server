@@ -14,6 +14,7 @@ from app.api.websocket.events import (
     TravelRequestEvent,
     TravelRequestPayload,
     TravelResponseCompletedEvent,
+    TravelResponseFailedEvent,
 )
 from app.common.time import utc_now
 from app.config import get_settings
@@ -116,6 +117,11 @@ def validate_airport_selection_completion(
         raise RuntimeError(
             f"airport selection caused another clarification loop for: {fields}"
         )
+    if isinstance(event_data, dict) and event_data.get("type") == (
+        "travel.response.failed"
+    ):
+        event = TravelResponseFailedEvent.model_validate(event_data)
+        raise RuntimeError(f"flight search failed: {event.payload.code.value}")
     if not isinstance(event_data, dict) or event_data.get("type") != (
         "travel.response.completed"
     ):

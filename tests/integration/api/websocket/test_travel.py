@@ -1,6 +1,7 @@
 """Integration tests for the authenticated travel WebSocket endpoint."""
 
 import asyncio
+import logging
 from json import dumps
 from time import sleep
 from unittest.mock import AsyncMock, MagicMock
@@ -446,6 +447,7 @@ def test_travel_websocket_returns_structured_airport_input_request(
 
 def test_travel_websocket_reports_a_safe_model_failure(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Provider errors must not leak details through the WebSocket protocol."""
 
@@ -465,20 +467,29 @@ def test_travel_websocket_reports_a_safe_model_failure(
         AsyncMock(side_effect=ModelGatewayError("provider secret detail")),
     )
 
-    with TestClient(application) as client:
-        with client.websocket_connect("/ws/travel") as websocket:
-            websocket.receive_json()
-            websocket.send_json(
-                create_travel_request_event(client_message_id=client_message_id)
-            )
-            websocket.receive_json()
-            message = websocket.receive_json()
+    with caplog.at_level(logging.WARNING, logger=travel.__name__):
+        with TestClient(application) as client:
+            with client.websocket_connect("/ws/travel") as websocket:
+                websocket.receive_json()
+                websocket.send_json(
+                    create_travel_request_event(client_message_id=client_message_id)
+                )
+                websocket.receive_json()
+                message = websocket.receive_json()
 
     event = TravelResponseFailedEvent.model_validate(message)
     assert event.payload.client_message_id == client_message_id
     assert event.payload.conversation_id == conversation_id
     assert event.payload.code is TravelResponseErrorCode.PROVIDER_ERROR
     assert "provider secret detail" not in str(message)
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "Travel response generation failed"
+    )
+    assert record.error_code == "provider_error"
+    assert record.error_type == "ModelGatewayError"
+    assert "provider secret detail" not in record.getMessage()
 
 
 def test_travel_websocket_reports_exhausted_model_attempts(
