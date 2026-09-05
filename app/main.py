@@ -16,9 +16,11 @@ from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.request_id import RequestIdMiddleware
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
+from app.api.routes.home import router as home_router
 from app.api.routes.itineraries import router as itineraries_router
 from app.api.routes.locations import router as locations_router
 from app.api.routes.trips import router as trips_router
+from app.api.routes.user_preferences import router as user_preferences_router
 from app.api.websocket.travel import router as travel_websocket_router
 from app.auth.exceptions import AuthenticationError
 from app.common.exceptions import InvalidCursorError, ProviderError
@@ -82,6 +84,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.include_router(
         locations_router,
+        prefix=resolved_settings.api_v1_prefix,
+    )
+    application.include_router(
+        user_preferences_router,
+        prefix=resolved_settings.api_v1_prefix,
+    )
+    application.include_router(
+        home_router,
         prefix=resolved_settings.api_v1_prefix,
     )
     application.add_exception_handler(

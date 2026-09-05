@@ -2,15 +2,20 @@
 
 ## Purpose
 
-PostgreSQL is the system of record for implemented users, authentication sessions, conversations, messages, assistant-run leases, trips, itineraries, and ordered itinerary items. The target model also stores normalized provider results, usage records, and LangGraph checkpoints without coupling workflow state to product tables.
+PostgreSQL is the system of record for implemented users, normalized onboarding preferences, curated destinations, authentication sessions, conversations, messages, assistant-run leases, trips, itineraries, and ordered itinerary items. The target model also stores normalized provider results, usage records, and LangGraph checkpoints without coupling workflow state to product tables.
 
 The design targets third normal form for durable business data. Provider payloads may also be retained temporarily as JSONB for debugging and reconciliation, but they are not the primary query model.
 
 ## Current migration status
 
-Alembic currently creates eight product tables in the `app` schema:
+Alembic currently creates thirteen product tables in the `app` schema:
 
 - `users`;
+- `user_preferences`;
+- `user_interests`;
+- `destinations`;
+- `destination_styles`;
+- `destination_interests`;
 - `auth_sessions`;
 - `conversations`;
 - `messages`;
@@ -36,6 +41,8 @@ Application roles should receive only the privileges required for their schema. 
 ```mermaid
 erDiagram
     USER ||--o{ AUTH_SESSION : owns
+    USER ||--o| USER_PREFERENCE : configures
+    USER_PREFERENCE ||--o{ USER_INTEREST : contains
     USER ||--o{ CONVERSATION : starts
     USER ||--o{ TRIP : plans
     CONVERSATION ||--o{ MESSAGE : contains
@@ -49,6 +56,22 @@ erDiagram
         string status
         datetime created_at
         datetime updated_at
+    }
+    USER_PREFERENCE {
+        uuid user_id PK_FK
+        string travel_style
+        string budget_tier
+        string trip_pace
+        string recommendation_scope
+        string home_canonical_name
+        string home_country_code
+        datetime onboarding_completed_at
+        datetime created_at
+        datetime updated_at
+    }
+    USER_INTEREST {
+        uuid user_id PK_FK
+        string interest PK
     }
     AUTH_SESSION {
         uuid id PK
@@ -109,6 +132,44 @@ erDiagram
         jsonb criteria
         datetime created_at
         datetime completed_at
+    }
+```
+
+## Curated destination catalogue
+
+The implemented Home catalogue is independent of live provider-search results.
+`destinations` stores stable card content, geographic data, budget tier,
+publication state, and editorial ranks. Styles and interests remain normalized
+for indexed querying and controlled vocabulary enforcement.
+
+```mermaid
+erDiagram
+    DESTINATION ||--o{ DESTINATION_STYLE : supports
+    DESTINATION ||--o{ DESTINATION_INTEREST : matches
+
+    DESTINATION {
+        uuid id PK
+        string slug UK
+        string name
+        string country_name
+        string country_code
+        string summary
+        string image_url
+        string budget_tier
+        boolean is_published
+        boolean is_featured
+        integer featured_rank
+        boolean is_popular
+        integer popular_rank
+        integer editorial_rank
+    }
+    DESTINATION_STYLE {
+        uuid destination_id PK_FK
+        string style PK
+    }
+    DESTINATION_INTEREST {
+        uuid destination_id PK_FK
+        string interest PK
     }
 ```
 
@@ -254,6 +315,13 @@ the user's display/search input; LangGraph prefers the canonical names when they
 exist. Changing a route endpoint without replacement metadata clears its stale
 canonical location.
 
+User interests are normalized rows keyed by `(user_id, interest)` rather than an
+array or JSON document. One optional `user_preferences` row owns scalar choices,
+the onboarding completion timestamp, and an atomic provider-qualified home
+location. A missing row has the same public meaning as incomplete onboarding.
+Local or international recommendation scope requires an explicitly selected home
+location at the API boundary; budget alone never determines geographic scope.
+
 - A trip `end_date` must be after its `start_date`.
 - A Phase 1 trip status must be `draft`, `planned`, or `archived`; upcoming, active, and history are date-derived views.
 - Monetary amounts must be non-negative and paired with an ISO 4217 currency code.
@@ -275,6 +343,8 @@ Create indexes from measured query patterns, starting with:
 - `search_request(trip_id, search_type, created_at desc)`.
 - Offer tables on `(trip_id, captured_at desc)`.
 - `itinerary_item(itinerary_id, day_number, position)`.
+- `destination(is_published, editorial_rank)` plus curated Featured and Popular
+  composite indexes.
 - Usage tables on `(trip_id, created_at)` and `(provider, created_at)`.
 
 Avoid indexing arbitrary JSONB until an observed query needs it.

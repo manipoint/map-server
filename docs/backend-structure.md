@@ -17,6 +17,8 @@ app/
 │   │   ├── auth.py
 │   │   ├── trips.py
 │   │   ├── locations.py
+│   │   ├── user_preferences.py
+│   │   ├── home.py
 │   │   ├── conversations.py
 │   │   └── health.py
 │   └── websocket/
@@ -63,10 +65,14 @@ app/
 │   ├── flights.py
 │   ├── hotels.py
 │   ├── places.py
+│   ├── preferences.py
+│   ├── destinations.py
 │   └── trips.py
 ├── services/
 │   ├── search_service.py
 │   ├── trip_service.py
+│   ├── user_preference_service.py
+│   ├── home_discovery_service.py
 │   ├── conversation_service.py
 │   └── usage_service.py
 ├── database/
@@ -106,7 +112,11 @@ The directory shape intentionally includes placeholders for later phases. The fo
 - search/usage repositories and models;
 - contract/evaluation suites shown in the target support tree.
 
-The working runtime includes authentication, trip and itinerary REST APIs, `/ws/travel`, conversation/message/assistant-run persistence, the bounded model/tool graph, in-process MCP, and configured provider adapters. A file's presence must not be treated as proof that its target capability is complete.
+The working runtime includes authentication, normalized onboarding preferences,
+curated and deterministic Home discovery, trip and itinerary REST APIs,
+`/ws/travel`, conversation/message/assistant-run persistence, the bounded
+model/tool graph, in-process MCP, and configured provider adapters. A file's
+presence must not be treated as proof that its target capability is complete.
 
 ## Dependency direction
 

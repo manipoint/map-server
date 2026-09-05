@@ -14,8 +14,9 @@ The release is a travel search-and-planning product. It does not book travel or 
 | AI assistant | Authenticated WebSocket conversation with weather, airport, flight, hotel, places, and currency tools. |
 | Trips | Create, list, retrieve, update, archive, and delete a user's own trips. |
 | Location selection | Resolve ambiguous user text to a provider-qualified canonical location before persisting a trip. |
+| Onboarding preferences | Persist travel style, normalized interests, budget tier, pace, recommendation scope, and optional canonical home location. |
 | Itineraries | Persist generated itineraries, retrieve them with their ordered items, and expose saved itineraries to Flutter. |
-| Discovery | Database-backed Popular destinations and activity-derived Trending destinations when enough first-party data exists. |
+| Discovery | Database-backed Suggested, Popular, and Featured destinations; activity-derived Trending remains gated on enough first-party data. |
 | Profile | Basic account identity and security/session controls required by the implemented authentication system. |
 
 ## Deferred capabilities
@@ -26,7 +27,7 @@ The following design concepts are intentionally outside Phase 1:
 - email verification;
 - phone-number login;
 - password recovery and reset screens until the backend recovery flow exists;
-- profile statistics and travel-preference management;
+- profile statistics;
 - booking, payment, cancellation, and refund workflows;
 - bus and train search;
 - public social feeds, reviews, likes, and popularity imported from third-party platforms.
@@ -42,6 +43,7 @@ Flutter MUST hide or omit deferred controls instead of presenting non-functional
 | AI assistant | Authenticated WebSocket and LangGraph | Yes |
 | Trips and trip history | Trip REST API and PostgreSQL | No |
 | Trip location selection | Authenticated canonical-location REST API and Google Places | No LLM or MCP; one bounded provider request |
+| Onboarding preferences | User-preference REST API and PostgreSQL | No |
 | Saved itinerary detail | Itinerary REST API and PostgreSQL | No |
 | Popular destinations | Destination REST API and curated PostgreSQL records | No |
 | Trending destinations | Aggregated first-party destination events | No |
@@ -71,11 +73,11 @@ These labels have different meanings and MUST not be used interchangeably.
 
 ### Popular
 
-Popular destinations are curated records stored in PostgreSQL. They provide deterministic, low-cost discovery from the first day of the product. The destination record should support at least a stable identifier, name, country, summary, image reference, publication state, and editorial ordering.
+Popular destinations are curated records stored in PostgreSQL. They provide deterministic, low-cost discovery from the first day of the product. The implemented destination record has a stable identifier, name, country, summary, image reference, publication state, normalized styles and interests, budget tier, and editorial ordering.
 
 ### Featured fallback
 
-Featured destinations are curated records used when the service does not yet have enough trustworthy activity to calculate Trending. The API must tell Flutter which collection type it returned so the UI can display the correct heading.
+Featured destinations are curated records used while the service does not have enough trustworthy activity to calculate Trending. The implemented Home API returns `spotlight.kind=featured`, allowing Flutter to display an honest heading.
 
 ### Trending
 

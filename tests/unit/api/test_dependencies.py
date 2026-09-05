@@ -14,19 +14,23 @@ from app.api.dependencies import (
     get_current_principal,
     get_database_engine,
     get_database_session,
+    get_home_discovery_service,
     get_itinerary_service,
     get_location_resolution_service,
     get_travel_response_service,
     get_trip_service,
+    get_user_preference_service,
 )
 from app.api.websocket.connection_manager import ConnectionManager
 from app.auth.exceptions import InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
+from app.services.home_discovery_service import HomeDiscoveryService
 from app.services.itinerary_service import ItineraryService
 from app.services.location_resolution_service import LocationResolutionService
 from app.services.trip_service import TripService
+from app.services.user_preference_service import UserPreferenceService
 
 
 def create_request(session_factory: MagicMock) -> Request:
@@ -129,6 +133,30 @@ def test_trip_service_uses_request_database_session() -> None:
     assert isinstance(service, TripService)
     assert service.session is database_session
     assert service.trips.session is database_session
+
+
+def test_user_preference_service_uses_request_database_session() -> None:
+    """Preference routes should share the request-scoped transaction."""
+
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = get_user_preference_service(database_session=database_session)
+
+    assert isinstance(service, UserPreferenceService)
+    assert service.session is database_session
+    assert service.preferences.session is database_session
+
+
+def test_home_discovery_service_uses_request_database_session() -> None:
+    """Home repositories should share one request-scoped read transaction."""
+
+    database_session = AsyncMock(spec=AsyncSession)
+
+    service = get_home_discovery_service(database_session=database_session)
+
+    assert isinstance(service, HomeDiscoveryService)
+    assert service.destinations.session is database_session
+    assert service.preferences.session is database_session
 
 
 def test_itinerary_service_uses_request_database_session() -> None:

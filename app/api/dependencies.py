@@ -19,10 +19,12 @@ from app.database.session import AsyncSessionFactory
 from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
+from app.services.home_discovery_service import HomeDiscoveryService
 from app.services.itinerary_service import ItineraryService
 from app.services.location_resolution_service import LocationResolutionService
 from app.services.travel_response_service import TravelResponseService
 from app.services.trip_service import TripService
+from app.services.user_preference_service import UserPreferenceService
 
 
 async def get_database_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -79,6 +81,34 @@ def get_trip_service(
 TripServiceDependency = Annotated[
     TripService,
     Depends(get_trip_service),
+]
+
+
+def get_user_preference_service(
+    database_session: DatabaseSession,
+) -> UserPreferenceService:
+    """Create one database-bound preference service per HTTP request."""
+
+    return UserPreferenceService(session=database_session)
+
+
+UserPreferenceServiceDependency = Annotated[
+    UserPreferenceService,
+    Depends(get_user_preference_service),
+]
+
+
+def get_home_discovery_service(
+    database_session: DatabaseSession,
+) -> HomeDiscoveryService:
+    """Create one database-only Home discovery service per request."""
+
+    return HomeDiscoveryService(session=database_session)
+
+
+HomeDiscoveryServiceDependency = Annotated[
+    HomeDiscoveryService,
+    Depends(get_home_discovery_service),
 ]
 
 

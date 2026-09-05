@@ -11,13 +11,15 @@ This directory describes both the implemented backend and its target architectur
 5. [WebSocket Protocol](websocket-protocol.md)
 6. [Flutter Location Contract](flutter-location-contract.md)
 7. [LangGraph Design](langgraph.md)
-8. [MCP Server Design](mcp-server.md)
-9. [PostgreSQL Data Model](database.md)
-10. [Model Routing and Cost Controls](model-routing.md)
-11. [Deployment](deployment.md)
-12. [Reliability and SPOF Review](reliability.md)
-13. [Testing Strategy](testing.md)
-14. [Development Commands](development-workflow.md)
+8. [Flutter Onboarding Contract](flutter-onboarding-contract.md)
+9. [Flutter Home Discovery Contract](flutter-home-contract.md)
+10. [MCP Server Design](mcp-server.md)
+11. [PostgreSQL Data Model](database.md)
+12. [Model Routing and Cost Controls](model-routing.md)
+13. [Deployment](deployment.md)
+14. [Reliability and SPOF Review](reliability.md)
+15. [Testing Strategy](testing.md)
+16. [Development Commands](development-workflow.md)
 
 ## Source-of-truth boundaries
 
@@ -30,6 +32,8 @@ This directory describes both the implemented backend and its target architectur
 | Tool input/output and provider behavior | `mcp-server.md` |
 | Client/server event contract | `websocket-protocol.md` |
 | Flutter location selection and trip payloads | `flutter-location-contract.md` |
+| Flutter preference onboarding and routing | `flutter-onboarding-contract.md` |
+| Flutter personalized and curated Home sections | `flutter-home-contract.md` |
 | Login, rotation, revocation, and devices | `authentication.md` |
 | Tables, relations, retention, and indexes | `database.md` |
 | LLM selection, retry, fallback, and budgets | `model-routing.md` |
@@ -49,12 +53,12 @@ This directory describes both the implemented backend and its target architectur
 ## Decision summary
 
 - The MVP is search and itinerary planning, not booking or payment.
-- Phase 1 includes trips, saved itineraries, and database-backed discovery; social login, email verification, profile statistics, and preference management are deferred.
-- Popular destinations are curated; Trending uses first-party events only and falls back to correctly labelled Featured content until its activity threshold is met.
+- Phase 1 includes trips, saved itineraries, normalized onboarding preferences, and database-backed discovery; social login, email verification, and profile statistics are deferred.
+- Popular and Featured destinations are implemented as curated catalogue queries; Trending remains first-party-event driven and falls back to correctly labelled Featured content until its activity threshold is met.
 - Flutter uses REST for resource operations and WebSocket for interactive search/chat events.
 - FastAPI is the public backend boundary.
 - FastMCP currently runs in process and is invoked through `TravelMcpClient`; a mounted HTTP transport is a target option.
 - The implemented LangGraph is a bounded model/tool loop. Deterministic routing, interrupts, and checkpoint/resume are targets.
-- PostgreSQL currently owns users, sessions, conversations, messages, assistant-run leases, trips, itineraries, and itinerary items. Search snapshots and LangGraph checkpoints are targets.
+- PostgreSQL currently owns users, onboarding preferences, curated destinations and tags, sessions, conversations, messages, assistant-run leases, trips, itineraries, and itinerary items. Destination events, search snapshots, and LangGraph checkpoints are targets.
 - LangSmith tracing and evaluations are planned; structured JSON logging is the current observability baseline.
 - Redis is deferred until distributed WebSocket routing, shared caching, or multi-instance rate limiting is required.
