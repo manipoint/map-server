@@ -1,59 +1,9 @@
 """Public schemas for the low-cost personalized Home screen."""
 
-from uuid import UUID
+from pydantic import BaseModel
 
-from pydantic import BaseModel, ConfigDict, HttpUrl
-
-from app.domain.destinations import (
-    DestinationCandidate,
-    DiscoveryCollectionKind,
-    HomeDiscovery,
-)
-from app.domain.preferences import BudgetTier, TravelInterest, TravelStyle
-from app.domain.value_objects import CountryCode
-
-
-class DestinationCardResponse(BaseModel):
-    """Stable destination card content rendered directly by Flutter."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: UUID
-    slug: str
-    name: str
-    country_name: str
-    country_code: CountryCode
-    summary: str
-    image_url: HttpUrl
-    image_alt: str
-    latitude: float
-    longitude: float
-    budget_tier: BudgetTier
-    styles: list[TravelStyle]
-    interests: list[TravelInterest]
-
-    @classmethod
-    def from_candidate(
-        cls,
-        candidate: DestinationCandidate,
-    ) -> "DestinationCardResponse":
-        """Exclude internal editorial ranks from the public contract."""
-
-        return cls(
-            id=candidate.id,
-            slug=candidate.slug,
-            name=candidate.name,
-            country_name=candidate.country_name,
-            country_code=candidate.country_code,
-            summary=candidate.summary,
-            image_url=candidate.image_url,
-            image_alt=candidate.image_alt,
-            latitude=candidate.latitude,
-            longitude=candidate.longitude,
-            budget_tier=candidate.budget_tier,
-            styles=list(candidate.styles),
-            interests=list(candidate.interests),
-        )
+from app.api.schemas.destinations import DestinationCardResponse
+from app.domain.destinations import DiscoveryCollectionKind, HomeDiscovery
 
 
 class DestinationCollectionResponse(BaseModel):
@@ -64,10 +14,12 @@ class DestinationCollectionResponse(BaseModel):
 
 
 class HomeDiscoveryResponse(BaseModel):
-    """Single response required to render Phase 1 Home discovery."""
+    """Single response required to render Home discovery sections."""
 
     personalization_ready: bool
     suggested: list[DestinationCardResponse]
+    suggested_local: list[DestinationCardResponse]
+    suggested_international: list[DestinationCardResponse]
     popular: list[DestinationCardResponse]
     spotlight: DestinationCollectionResponse
 
@@ -80,6 +32,14 @@ class HomeDiscoveryResponse(BaseModel):
             suggested=[
                 DestinationCardResponse.from_candidate(item)
                 for item in discovery.suggested
+            ],
+            suggested_local=[
+                DestinationCardResponse.from_candidate(item)
+                for item in discovery.suggested_local
+            ],
+            suggested_international=[
+                DestinationCardResponse.from_candidate(item)
+                for item in discovery.suggested_international
             ],
             popular=[
                 DestinationCardResponse.from_candidate(item)

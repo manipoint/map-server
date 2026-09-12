@@ -9,7 +9,7 @@ from app.domain.trips import CanonicalLocation
 
 
 class TravelStyle(StrEnum):
-    """Primary experience style used to personalize destinations."""
+    """An experience style used to personalize destinations."""
 
     BEACHES = "beaches"
     ADVENTURE = "adventure"
@@ -63,7 +63,7 @@ class UserPreferenceSnapshot:
     """Transport-independent view of one user's current preferences."""
 
     user_id: UUID
-    travel_style: TravelStyle | None
+    travel_styles: tuple[TravelStyle, ...]
     interests: tuple[TravelInterest, ...]
     budget_tier: BudgetTier | None
     trip_pace: TripPace | None
@@ -84,7 +84,7 @@ class UserPreferenceSnapshot:
         """Report whether enough choices exist for personalized ranking."""
 
         return (
-            self.travel_style is not None
+            bool(self.travel_styles)
             and bool(self.interests)
             and self.budget_tier is not None
             and self.trip_pace is not None

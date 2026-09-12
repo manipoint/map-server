@@ -21,7 +21,7 @@ class UserPreferenceUpdateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    travel_style: TravelStyle
+    travel_styles: list[TravelStyle] = Field(min_length=1, max_length=3)
     interests: list[TravelInterest] = Field(min_length=1, max_length=5)
     budget_tier: BudgetTier
     trip_pace: TripPace
@@ -38,6 +38,18 @@ class UserPreferenceUpdateRequest(BaseModel):
 
         if len(values) != len(set(values)):
             raise ValueError("interests must not contain duplicates")
+        return values
+
+    @field_validator("travel_styles")
+    @classmethod
+    def reject_duplicate_styles(
+        cls,
+        values: list[TravelStyle],
+    ) -> list[TravelStyle]:
+        """Reject repeated style IDs from stale or malformed clients."""
+
+        if len(values) != len(set(values)):
+            raise ValueError("travel_styles must not contain duplicates")
         return values
 
     @model_validator(mode="after")
@@ -60,7 +72,7 @@ class UserPreferenceResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    travel_style: TravelStyle | None
+    travel_styles: list[TravelStyle]
     interests: list[TravelInterest]
     budget_tier: BudgetTier | None
     trip_pace: TripPace | None
@@ -80,7 +92,7 @@ class UserPreferenceResponse(BaseModel):
         """Create a public response without leaking persistence ownership fields."""
 
         return cls(
-            travel_style=snapshot.travel_style,
+            travel_styles=list(snapshot.travel_styles),
             interests=list(snapshot.interests),
             budget_tier=snapshot.budget_tier,
             trip_pace=snapshot.trip_pace,

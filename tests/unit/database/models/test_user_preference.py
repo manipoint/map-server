@@ -2,7 +2,7 @@
 
 from sqlalchemy import CheckConstraint
 
-from app.database.models import UserInterest, UserPreference
+from app.database.models import UserInterest, UserPreference, UserTravelStyle
 
 
 def test_user_preference_is_one_to_one_with_user() -> None:
@@ -41,6 +41,20 @@ def test_user_interest_uses_normalized_composite_primary_key() -> None:
 
     assert UserInterest.__table__.schema == "app"
     assert primary_key == ("user_id", "interest")
+    assert foreign_key.target_fullname == "app.user_preferences.user_id"
+    assert foreign_key.ondelete == "CASCADE"
+
+
+def test_user_travel_style_uses_normalized_composite_primary_key() -> None:
+    """Users should select multiple styles without arrays or scalar duplication."""
+
+    primary_key = tuple(
+        column.name for column in UserTravelStyle.__table__.primary_key.columns
+    )
+    foreign_key = next(iter(UserTravelStyle.__table__.c.user_id.foreign_keys))
+
+    assert UserTravelStyle.__table__.schema == "app"
+    assert primary_key == ("user_id", "travel_style")
     assert foreign_key.target_fullname == "app.user_preferences.user_id"
     assert foreign_key.ondelete == "CASCADE"
 

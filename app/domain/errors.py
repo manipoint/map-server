@@ -43,3 +43,15 @@ class InvalidItineraryDetailsError(ItineraryError):
 
 class InvalidItineraryStatusTransitionError(ItineraryError):
     """Raised when an itinerary lifecycle transition is not allowed."""
+
+
+class DestinationError(Exception):
+    """Base exception for curated destination catalogue failures."""
+
+
+class DestinationNotFoundError(DestinationError):
+    """Raised when a destination is missing or unpublished."""
+
+
+class DestinationPlaceNotFoundError(DestinationError):
+    """Raised when a nested destination place is missing or unpublished."""

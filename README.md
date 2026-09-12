@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Cloud SQL-capable asynchronous persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized onboarding preferences, curated Home discovery, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
+> **Project status:** the FastAPI foundation, Neon PostgreSQL persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized multi-style onboarding preferences, backend-owned onboarding options, curated Home discovery, paginated destination collections, destination/place details, GCS catalogue media, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
 
 ## Product scope
 
@@ -48,6 +48,8 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/api/routes/locations.py` | Authenticated, cost-bounded canonical location resolution for explicit user selection. |
 | `app/api/routes/user_preferences.py` | Authenticated onboarding preference retrieval, replacement, and skip operations. |
 | `app/api/routes/home.py` | Authenticated, database-only Suggested, Popular, and Featured Home discovery. |
+| `app/api/routes/onboarding.py` | Public, versioned onboarding option catalogue for Flutter. |
+| `app/api/routes/destinations.py` | Authenticated View All, destination detail, nested places, maps, and galleries. |
 | `app/auth/` | Password hashing, tokens, authentication services, schemas, and domain errors. |
 | `app/database/` | Async SQLAlchemy sessions plus user, session, conversation, assistant-run, trip, and versioned itinerary persistence. |
 | `app/services/conversation_service.py` | Idempotently persists conversations and user messages with optional ownership-checked trip context. |
@@ -154,6 +156,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | [Flutter location contract](docs/flutter-location-contract.md) | Text search, canonical selection, and trip create/update payloads. |
 | [Flutter onboarding contract](docs/flutter-onboarding-contract.md) | Preference collection, canonical home selection, routing, and API payloads. |
 | [Flutter Home contract](docs/flutter-home-contract.md) | Personalized ranking, curated sections, caching, and cost boundaries. |
+| [Destination catalogue](docs/destination-catalogue.md) | View All pagination, details, places, maps, and media ownership. |
 | [Authentication](docs/authentication.md) | Access tokens, rotating sessions, device persistence, and logout. |
 | [PostgreSQL model](docs/database.md) | Normalized schema, offer snapshots, retention, and indexes. |
 | [Model routing and cost](docs/model-routing.md) | Multi-provider failover and token/cost controls. |

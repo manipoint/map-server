@@ -43,6 +43,7 @@ def test_get_missing_preferences_uses_one_query_and_returns_defaults() -> None:
     assert snapshot.onboarding_completed is False
     assert snapshot.personalization_ready is False
     assert snapshot.interests == ()
+    assert snapshot.travel_styles == ()
     session.execute.assert_awaited_once()
 
 
@@ -53,7 +54,6 @@ def test_get_preferences_builds_sorted_snapshot_from_one_join() -> None:
     now = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
     preference = UserPreference(
         user_id=user_id,
-        travel_style=TravelStyle.NATURE.value,
         budget_tier=BudgetTier.MID_RANGE.value,
         trip_pace=TripPace.BALANCED.value,
         recommendation_scope=RecommendationScope.BOTH.value,
@@ -63,8 +63,9 @@ def test_get_preferences_builds_sorted_snapshot_from_one_join() -> None:
     )
     query_result = Mock()
     query_result.all.return_value = [
-        (preference, TravelInterest.HIKING.value),
-        (preference, TravelInterest.HISTORY.value),
+        (preference, TravelInterest.HIKING.value, TravelStyle.NATURE.value),
+        (preference, TravelInterest.HISTORY.value, TravelStyle.NATURE.value),
+        (preference, TravelInterest.HIKING.value, TravelStyle.ADVENTURE.value),
     ]
     session = create_session()
     session.execute.return_value = query_result
@@ -72,7 +73,7 @@ def test_get_preferences_builds_sorted_snapshot_from_one_join() -> None:
 
     snapshot = asyncio.run(repository.get_snapshot(user_id=user_id))
 
-    assert snapshot.travel_style is TravelStyle.NATURE
+    assert snapshot.travel_styles == (TravelStyle.ADVENTURE, TravelStyle.NATURE)
     assert snapshot.interests == (
         TravelInterest.HIKING,
         TravelInterest.HISTORY,
@@ -88,7 +89,6 @@ def test_replace_uses_upsert_and_bulk_interest_addition() -> None:
     now = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
     preference = UserPreference(
         user_id=user_id,
-        travel_style=TravelStyle.NATURE.value,
         budget_tier=BudgetTier.MID_RANGE.value,
         trip_pace=TripPace.BALANCED.value,
         recommendation_scope=RecommendationScope.BOTH.value,
@@ -99,13 +99,13 @@ def test_replace_uses_upsert_and_bulk_interest_addition() -> None:
     upsert_result = Mock()
     upsert_result.scalar_one.return_value = preference
     session = create_session()
-    session.execute.side_effect = [upsert_result, Mock()]
+    session.execute.side_effect = [upsert_result, Mock(), Mock()]
     repository = UserPreferenceRepository(session)
 
     snapshot = asyncio.run(
         repository.replace(
             user_id=user_id,
-            travel_style=TravelStyle.NATURE,
+            travel_styles=(TravelStyle.ADVENTURE, TravelStyle.NATURE),
             interests=(TravelInterest.HIKING, TravelInterest.HISTORY),
             budget_tier=BudgetTier.MID_RANGE,
             trip_pace=TripPace.BALANCED,
@@ -119,11 +119,14 @@ def test_replace_uses_upsert_and_bulk_interest_addition() -> None:
         TravelInterest.HIKING,
         TravelInterest.HISTORY,
     )
-    assert session.execute.await_count == 2
+    assert snapshot.travel_styles == (TravelStyle.ADVENTURE, TravelStyle.NATURE)
+    assert session.execute.await_count == 3
     upsert = session.execute.await_args_list[0].args[0]
     assert "coalesce" in str(upsert.compile()).lower()
-    added = list(session.add_all.call_args.args[0])
-    assert {item.interest for item in added} == {"hiking", "history"}
+    interest_rows = list(session.add_all.call_args_list[0].args[0])
+    style_rows = list(session.add_all.call_args_list[1].args[0])
+    assert {item.interest for item in interest_rows} == {"hiking", "history"}
+    assert {item.travel_style for item in style_rows} == {"adventure", "nature"}
     session.flush.assert_awaited_once_with()
 
 

@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+AGENTS.md
+.agents/skills/neon-postgres/SKILL.md
+.agents/skills/neon/SKILL.md
+.agents/skills/neon/references/claimable-neon.md
+.agents/skills/neon-postgres/references/full-text-search.md
+.agents/skills/neon-postgres/references/hybrid-search.md
+.agents/skills/neon-postgres/references/vector-search.md

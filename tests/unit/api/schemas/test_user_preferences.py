@@ -10,7 +10,7 @@ def valid_payload() -> dict[str, object]:
     """Return one valid personalized onboarding payload."""
 
     return {
-        "travel_style": "nature",
+        "travel_styles": ["nature", "adventure"],
         "interests": ["hiking", "history"],
         "budget_tier": "mid_range",
         "trip_pace": "balanced",
@@ -40,6 +40,16 @@ def test_update_rejects_duplicate_interests() -> None:
 
     payload = valid_payload()
     payload["interests"] = ["hiking", "hiking"]
+
+    with pytest.raises(ValidationError, match="must not contain duplicates"):
+        UserPreferenceUpdateRequest.model_validate(payload)
+
+
+def test_update_rejects_duplicate_travel_styles() -> None:
+    """Duplicate styles should fail before a database transaction."""
+
+    payload = valid_payload()
+    payload["travel_styles"] = ["nature", "nature"]
 
     with pytest.raises(ValidationError, match="must not contain duplicates"):
         UserPreferenceUpdateRequest.model_validate(payload)

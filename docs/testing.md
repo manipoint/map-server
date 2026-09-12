@@ -23,7 +23,20 @@ The broadest layer contains the fewest tests. Most edge cases should be covered 
 
 The default suite has extensive unit and FastAPI/WebSocket integration coverage for authentication, persistence services, assistant-run leases, graph routing/tool execution, MCP schemas/tools, and provider mapping/HTTP behavior. External HTTP and model calls use fakes or `httpx.MockTransport`; live scripts under `scripts/` are manual checks and are not part of ordinary CI.
 
-Most tests named `integration` still use dependency overrides, mocked sessions, or fake providers. The repository does not yet provide a containerized PostgreSQL migration suite, real LangGraph checkpoint/resume tests, provider circuit-breaker tests, load tests, a versioned LLM evaluation dataset, or end-to-end Cloud Run tests. The remaining sections describe the target coverage unless identified as current.
+Most tests named `integration` still use dependency overrides, mocked sessions, or fake providers. An opt-in destination catalogue test now starts an isolated local PostgreSQL cluster, executes migrations, checks schema parity, and exercises real repository/service reads. Real LangGraph checkpoint/resume tests, provider circuit-breaker tests, load tests, a versioned LLM evaluation dataset, and end-to-end Cloud Run tests remain targets.
+
+Run the real catalogue test by pointing to installed PostgreSQL binaries:
+
+```bash
+TEST_POSTGRES_BIN=/Library/PostgreSQL/18/bin uv run pytest tests/integration/database/test_destination_catalogue.py
+```
+
+Use the equivalent binary directory on other platforms. The fixture creates a
+private temporary cluster and stops it after the test; it never reads application
+database credentials or migrates an existing database. Without this variable the
+test is skipped. Coverage includes populated upgrade/downgrade, legacy style
+backfill, ORM/migration parity, more than 100 destinations/places, deleted cursor
+anchors, ordered galleries, and SQL/Python ranking and Home/View All consistency.
 
 ## Unit tests
 

@@ -38,7 +38,7 @@ class UserPreferenceService:
         self,
         *,
         user_id: UUID,
-        travel_style: TravelStyle,
+        travel_styles: list[TravelStyle],
         interests: list[TravelInterest],
         budget_tier: BudgetTier,
         trip_pace: TripPace,
@@ -50,10 +50,13 @@ class UserPreferenceService:
         normalized_interests = tuple(
             sorted(set(interests), key=lambda item: item.value)
         )
+        normalized_styles = tuple(
+            sorted(set(travel_styles), key=lambda item: item.value)
+        )
         try:
             snapshot = await self.preferences.replace(
                 user_id=user_id,
-                travel_style=travel_style,
+                travel_styles=normalized_styles,
                 interests=normalized_interests,
                 budget_tier=budget_tier,
                 trip_pace=trip_pace,

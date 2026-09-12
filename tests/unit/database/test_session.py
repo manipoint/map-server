@@ -1,6 +1,7 @@
 """Tests for async database session configuration."""
 
 import asyncio
+import ssl
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -38,6 +39,75 @@ def test_create_database_engine_uses_asyncpg() -> None:
 
     finally:
         asyncio.run(engine.dispose())
+
+
+@pytest.mark.parametrize("scheme", ["postgres", "postgresql", "postgresql+asyncpg"])
+@pytest.mark.parametrize("mode", ["require", "verify-full"])
+def test_hosted_url_uses_verified_tls(monkeypatch, scheme, mode) -> None:
+    factory = Mock()
+    monkeypatch.setattr(session_module, "create_async_engine", factory)
+    settings = create_database_settings().model_copy(
+        update={
+            "database_url": SecretStr(
+                f"{scheme}://owner:p%40ss@db.example/db?sslmode={mode}"
+            ),
+        }
+    )
+    create_database_engine(settings)
+    url = factory.call_args.args[0]
+    options = factory.call_args.kwargs
+    assert url.drivername == "postgresql+asyncpg"
+    assert url.password == "p@ss"
+    assert "sslmode" not in url.query
+    context = options["connect_args"]["ssl"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    assert options["connect_args"]["timeout"] == 15
+    assert options["connect_args"]["command_timeout"] == 30
+    assert options["hide_parameters"] is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "channel_binding=require",
+        "sslmode=invalid",
+        "sslmode=require&ssl=disable",
+    ],
+)
+def test_invalid_tls_configuration_fails_before_connect(monkeypatch, query) -> None:
+    factory = Mock()
+    monkeypatch.setattr(session_module, "create_async_engine", factory)
+    settings = create_database_settings().model_copy(
+        update={
+            "database_url": SecretStr(
+                f"postgresql://owner:private-password@db.example/db?{query}"
+            ),
+        }
+    )
+    with pytest.raises(ValueError) as error:
+        create_database_engine(settings)
+    assert "private-password" not in str(error.value)
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "url", ["not-a-url-secret", "postgresql://u:secret@db:bad/db", "sqlite:///local"]
+)
+def test_invalid_database_url_is_redacted(url) -> None:
+    settings = create_database_settings().model_copy(
+        update={"database_url": SecretStr(url)}
+    )
+    with pytest.raises(ValueError) as error:
+        create_database_engine(settings)
+    assert "secret" not in str(error.value)
+
+
+def test_local_url_does_not_force_tls(monkeypatch) -> None:
+    factory = Mock()
+    monkeypatch.setattr(session_module, "create_async_engine", factory)
+    create_database_engine(create_database_settings())
+    assert "ssl" not in factory.call_args.kwargs["connect_args"]
 
 
 def test_create_cloud_sql_resources_uses_async_connector(

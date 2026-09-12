@@ -7,7 +7,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models.user_preference import UserInterest, UserPreference
+from app.database.models.user_preference import (
+    UserInterest,
+    UserPreference,
+    UserTravelStyle,
+)
 from app.domain.preferences import (
     BudgetTier,
     RecommendationScope,
@@ -29,13 +33,21 @@ class UserPreferenceRepository:
         """Return one preference snapshot using one bounded join query."""
 
         result = await self.session.execute(
-            select(UserPreference, UserInterest.interest)
+            select(
+                UserPreference,
+                UserInterest.interest,
+                UserTravelStyle.travel_style,
+            )
             .outerjoin(
                 UserInterest,
                 UserInterest.user_id == UserPreference.user_id,
             )
+            .outerjoin(
+                UserTravelStyle,
+                UserTravelStyle.user_id == UserPreference.user_id,
+            )
             .where(UserPreference.user_id == user_id)
-            .order_by(UserInterest.interest)
+            .order_by(UserTravelStyle.travel_style, UserInterest.interest)
         )
         rows = result.all()
         if not rows:
@@ -43,15 +55,36 @@ class UserPreferenceRepository:
 
         preference = rows[0][0]
         interests = tuple(
-            TravelInterest(interest) for _, interest in rows if interest is not None
+            sorted(
+                {
+                    TravelInterest(interest)
+                    for _, interest, _ in rows
+                    if interest is not None
+                },
+                key=lambda item: item.value,
+            )
         )
-        return self._snapshot(preference=preference, interests=interests)
+        travel_styles = tuple(
+            sorted(
+                {
+                    TravelStyle(travel_style)
+                    for _, _, travel_style in rows
+                    if travel_style is not None
+                },
+                key=lambda item: item.value,
+            )
+        )
+        return self._snapshot(
+            preference=preference,
+            travel_styles=travel_styles,
+            interests=interests,
+        )
 
     async def replace(
         self,
         *,
         user_id: UUID,
-        travel_style: TravelStyle,
+        travel_styles: tuple[TravelStyle, ...],
         interests: tuple[TravelInterest, ...],
         budget_tier: BudgetTier,
         trip_pace: TripPace,
@@ -64,7 +97,6 @@ class UserPreferenceRepository:
         location_values = self._location_values(home_location)
         values: dict[str, object | None] = {
             "user_id": user_id,
-            "travel_style": travel_style.value,
             "budget_tier": budget_tier.value,
             "trip_pace": trip_pace.value,
             "recommendation_scope": recommendation_scope.value,
@@ -93,6 +125,9 @@ class UserPreferenceRepository:
         await self.session.execute(
             delete(UserInterest).where(UserInterest.user_id == user_id)
         )
+        await self.session.execute(
+            delete(UserTravelStyle).where(UserTravelStyle.user_id == user_id)
+        )
         if interests:
             self.session.add_all(
                 [
@@ -100,8 +135,22 @@ class UserPreferenceRepository:
                     for interest in interests
                 ]
             )
+        if travel_styles:
+            self.session.add_all(
+                [
+                    UserTravelStyle(
+                        user_id=user_id,
+                        travel_style=travel_style.value,
+                    )
+                    for travel_style in travel_styles
+                ]
+            )
         await self.session.flush()
-        return self._snapshot(preference=preference, interests=interests)
+        return self._snapshot(
+            preference=preference,
+            travel_styles=travel_styles,
+            interests=interests,
+        )
 
     async def mark_onboarding_skipped(
         self,
@@ -135,7 +184,7 @@ class UserPreferenceRepository:
 
         return UserPreferenceSnapshot(
             user_id=user_id,
-            travel_style=None,
+            travel_styles=(),
             interests=(),
             budget_tier=None,
             trip_pace=None,
@@ -150,17 +199,14 @@ class UserPreferenceRepository:
     def _snapshot(
         *,
         preference: UserPreference,
+        travel_styles: tuple[TravelStyle, ...],
         interests: tuple[TravelInterest, ...],
     ) -> UserPreferenceSnapshot:
         """Map persistence fields to enum-safe domain output."""
 
         return UserPreferenceSnapshot(
             user_id=preference.user_id,
-            travel_style=(
-                TravelStyle(preference.travel_style)
-                if preference.travel_style is not None
-                else None
-            ),
+            travel_styles=travel_styles,
             interests=interests,
             budget_tier=(
                 BudgetTier(preference.budget_tier)

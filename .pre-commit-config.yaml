@@ -5,21 +5,21 @@ repos:
     hooks:
       - id: ruff-check
         name: Ruff lint and safe fixes
-        entry: uv run --locked --no-sync ruff check --fix
+        entry: /bin/sh -c 'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; exec uv run --locked --no-sync ruff check --fix "$@"' --
         language: system
         types_or: [python, pyi]
         require_serial: true
 
       - id: ruff-format
         name: Ruff format
-        entry: uv run --locked --no-sync ruff format
+        entry: /bin/sh -c 'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; exec uv run --locked --no-sync ruff format "$@"' --
         language: system
         types_or: [python, pyi]
         require_serial: true
 
       - id: pytest
         name: Pytest full suite
-        entry: uv run --locked --no-sync pytest -q
+        entry: /bin/sh -c 'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; exec uv run --locked --no-sync pytest -q' --
         language: system
         pass_filenames: false
         always_run: true

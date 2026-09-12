@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.exception_handlers import (
     authentication_exception_handler,
+    destination_exception_handler,
     invalid_cursor_exception_handler,
     itinerary_exception_handler,
     provider_exception_handler,
@@ -15,17 +16,19 @@ from app.api.exception_handlers import (
 from app.api.middleware.access_log import AccessLogMiddleware
 from app.api.middleware.request_id import RequestIdMiddleware
 from app.api.routes.auth import router as auth_router
+from app.api.routes.destinations import router as destinations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.home import router as home_router
 from app.api.routes.itineraries import router as itineraries_router
 from app.api.routes.locations import router as locations_router
+from app.api.routes.onboarding import router as onboarding_router
 from app.api.routes.trips import router as trips_router
 from app.api.routes.user_preferences import router as user_preferences_router
 from app.api.websocket.travel import router as travel_websocket_router
 from app.auth.exceptions import AuthenticationError
 from app.common.exceptions import InvalidCursorError, ProviderError
 from app.config import Settings, get_settings
-from app.domain.errors import ItineraryError, TripError
+from app.domain.errors import DestinationError, ItineraryError, TripError
 from app.lifespan import lifespan
 from app.observability.logging import configure_logging
 
@@ -91,7 +94,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prefix=resolved_settings.api_v1_prefix,
     )
     application.include_router(
+        onboarding_router,
+        prefix=resolved_settings.api_v1_prefix,
+    )
+    application.include_router(
         home_router,
+        prefix=resolved_settings.api_v1_prefix,
+    )
+    application.include_router(
+        destinations_router,
         prefix=resolved_settings.api_v1_prefix,
     )
     application.add_exception_handler(
@@ -113,6 +124,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(
         ProviderError,
         provider_exception_handler,
+    )
+    application.add_exception_handler(
+        DestinationError,
+        destination_exception_handler,
     )
     logger.info(
         "Application configured",

@@ -5,8 +5,10 @@ from uuid import uuid4
 from app.api.schemas.home import HomeDiscoveryResponse
 from app.domain.destinations import (
     DestinationCandidate,
+    DestinationType,
     DiscoveryCollectionKind,
     HomeDiscovery,
+    MediaAssetValue,
 )
 from app.domain.preferences import BudgetTier, TravelInterest, TravelStyle
 
@@ -18,13 +20,22 @@ def test_home_response_hides_internal_editorial_ranks() -> None:
         id=uuid4(),
         slug="hunza-pakistan",
         name="Hunza",
+        destination_type=DestinationType.REGION,
         country_name="Pakistan",
         country_code="PK",
         summary="A mountain destination with trails and expansive valley views.",
-        image_url="https://images.example.com/hunza.jpg",
-        image_alt="Hunza valley",
+        full_description="A complete mountain destination description for testing.",
+        cover_image=MediaAssetValue(
+            id=uuid4(),
+            url="https://images.example.com/hunza.jpg",
+            alt_text="Hunza valley",
+            caption=None,
+            width=None,
+            height=None,
+        ),
         latitude=36.3167,
         longitude=74.65,
+        map_zoom=9,
         budget_tier=BudgetTier.MID_RANGE,
         styles=(TravelStyle.ADVENTURE, TravelStyle.NATURE),
         interests=(TravelInterest.HIKING,),
@@ -35,6 +46,8 @@ def test_home_response_hides_internal_editorial_ranks() -> None:
     discovery = HomeDiscovery(
         personalization_ready=True,
         suggested=(candidate,),
+        suggested_local=(candidate,),
+        suggested_international=(),
         popular=(candidate,),
         spotlight_kind=DiscoveryCollectionKind.FEATURED,
         spotlight=(candidate,),

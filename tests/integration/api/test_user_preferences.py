@@ -68,7 +68,7 @@ def create_snapshot(*, user_id, completed: bool) -> UserPreferenceSnapshot:
     now = datetime(2026, 9, 5, 9, 0, tzinfo=UTC) if completed else None
     return UserPreferenceSnapshot(
         user_id=user_id,
-        travel_style=TravelStyle.NATURE if completed else None,
+        travel_styles=(TravelStyle.NATURE,) if completed else (),
         interests=(TravelInterest.HIKING, TravelInterest.HISTORY) if completed else (),
         budget_tier=BudgetTier.MID_RANGE if completed else None,
         trip_pace=TripPace.BALANCED if completed else None,
@@ -97,7 +97,7 @@ def test_get_returns_stable_defaults_for_new_user() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "travel_style": None,
+        "travel_styles": [],
         "interests": [],
         "budget_tier": None,
         "trip_pace": None,
@@ -128,7 +128,7 @@ def test_put_validates_and_returns_completed_preferences() -> None:
         response = client.put(
             "/api/v1/users/me/preferences",
             json={
-                "travel_style": "nature",
+                "travel_styles": ["nature", "adventure"],
                 "interests": ["hiking", "history"],
                 "budget_tier": "mid_range",
                 "trip_pace": "balanced",
@@ -156,7 +156,7 @@ def test_put_rejects_local_scope_without_home_before_service() -> None:
         response = client.put(
             "/api/v1/users/me/preferences",
             json={
-                "travel_style": "nature",
+                "travel_styles": ["nature"],
                 "interests": ["hiking"],
                 "budget_tier": "budget",
                 "trip_pace": "relaxed",

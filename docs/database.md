@@ -8,14 +8,24 @@ The design targets third normal form for durable business data. Provider payload
 
 ## Current migration status
 
-Alembic currently creates thirteen product tables in the `app` schema:
+Revision `b7e2f9a41063` adds partial indexes for published Popular/Featured
+seek ordering and published country filtering. It is prepared for the next
+database migration rollout. These indexes are verified in an isolated test
+database; this does not imply they have been applied to a deployed database.
+
+Alembic creates eighteen product tables in the `app` schema:
 
 - `users`;
 - `user_preferences`;
 - `user_interests`;
+- `user_travel_styles`;
 - `destinations`;
 - `destination_styles`;
 - `destination_interests`;
+- `destination_places`;
+- `media_assets`;
+- `destination_media`;
+- `destination_place_media`;
 - `auth_sessions`;
 - `conversations`;
 - `messages`;
@@ -43,6 +53,7 @@ erDiagram
     USER ||--o{ AUTH_SESSION : owns
     USER ||--o| USER_PREFERENCE : configures
     USER_PREFERENCE ||--o{ USER_INTEREST : contains
+    USER_PREFERENCE ||--o{ USER_TRAVEL_STYLE : selects
     USER ||--o{ CONVERSATION : starts
     USER ||--o{ TRIP : plans
     CONVERSATION ||--o{ MESSAGE : contains
@@ -59,7 +70,6 @@ erDiagram
     }
     USER_PREFERENCE {
         uuid user_id PK_FK
-        string travel_style
         string budget_tier
         string trip_pace
         string recommendation_scope
@@ -72,6 +82,10 @@ erDiagram
     USER_INTEREST {
         uuid user_id PK_FK
         string interest PK
+    }
+    USER_TRAVEL_STYLE {
+        uuid user_id PK_FK
+        string travel_style PK
     }
     AUTH_SESSION {
         uuid id PK
@@ -139,22 +153,36 @@ erDiagram
 
 The implemented Home catalogue is independent of live provider-search results.
 `destinations` stores stable card content, geographic data, budget tier,
-publication state, and editorial ranks. Styles and interests remain normalized
-for indexed querying and controlled vocabulary enforcement.
+publication state, editorial ranks, detail copy, and map presentation metadata.
+Styles, interests, selected user styles, places, and media associations remain
+normalized for indexed querying and controlled vocabulary enforcement. Image
+bytes are not stored in PostgreSQL.
+
+The production seed currently has 27 destinations and 108 places. Suggested
+ranking is computed deterministically from user styles, interests, budget, and
+scope. `popular_rank` and `featured_rank` are nullable editorial decisions; a
+new destination is not made Popular or Featured merely because media was added.
 
 ```mermaid
 erDiagram
     DESTINATION ||--o{ DESTINATION_STYLE : supports
     DESTINATION ||--o{ DESTINATION_INTEREST : matches
+    DESTINATION ||--o{ DESTINATION_PLACE : contains
+    DESTINATION ||--o{ DESTINATION_MEDIA : displays
+    MEDIA_ASSET ||--o{ DESTINATION_MEDIA : attaches
+    DESTINATION_PLACE ||--o{ DESTINATION_PLACE_MEDIA : displays
+    MEDIA_ASSET ||--o{ DESTINATION_PLACE_MEDIA : attaches
 
     DESTINATION {
         uuid id PK
         string slug UK
         string name
+        string destination_type
         string country_name
         string country_code
         string summary
-        string image_url
+        text full_description
+        integer map_zoom
         string budget_tier
         boolean is_published
         boolean is_featured
@@ -162,6 +190,30 @@ erDiagram
         boolean is_popular
         integer popular_rank
         integer editorial_rank
+    }
+    DESTINATION_PLACE {
+        uuid id PK
+        uuid destination_id FK
+        string slug
+        string name
+        string place_type
+        string summary
+        text full_description
+        float latitude
+        float longitude
+        integer sort_order
+        boolean is_published
+    }
+    MEDIA_ASSET {
+        uuid id PK
+        string storage_key UK
+        string url
+        string mime_type
+        integer width
+        integer height
+        string alt_text
+        string caption
+        boolean is_active
     }
     DESTINATION_STYLE {
         uuid destination_id PK_FK

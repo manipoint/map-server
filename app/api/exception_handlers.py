@@ -17,6 +17,9 @@ from app.auth.exceptions import (
 )
 from app.common.exceptions import InvalidCursorError, ProviderError
 from app.domain.errors import (
+    DestinationError,
+    DestinationNotFoundError,
+    DestinationPlaceNotFoundError,
     InvalidItineraryDetailsError,
     InvalidItineraryStatusTransitionError,
     InvalidTripDetailsError,
@@ -35,6 +38,46 @@ class ErrorDefinition:
     status_code: int
     code: str
     message: str
+
+
+DESTINATION_ERROR_DEFINITIONS: dict[type[DestinationError], ErrorDefinition] = {
+    DestinationNotFoundError: ErrorDefinition(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="destination_not_found",
+        message="Destination was not found",
+    ),
+    DestinationPlaceNotFoundError: ErrorDefinition(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="destination_place_not_found",
+        message="Destination place was not found",
+    ),
+}
+
+
+async def destination_exception_handler(
+    request: Request,
+    error: DestinationError,
+) -> JSONResponse:
+    """Convert catalogue-domain errors into safe public responses."""
+
+    definition = DESTINATION_ERROR_DEFINITIONS.get(
+        type(error),
+        ErrorDefinition(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="destination_operation_failed",
+            message="Destination operation failed",
+        ),
+    )
+    return JSONResponse(
+        status_code=definition.status_code,
+        content={
+            "error": {
+                "code": definition.code,
+                "message": definition.message,
+                "request_id": getattr(request.state, "request_id", None),
+            }
+        },
+    )
 
 
 AUTH_ERROR_DEFINITIONS: dict[

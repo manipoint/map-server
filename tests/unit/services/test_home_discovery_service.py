@@ -10,7 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.repositories.destinations import DestinationRepository
 from app.database.repositories.user_preferences import UserPreferenceRepository
-from app.domain.destinations import DestinationCandidate, DiscoveryCollectionKind
+from app.domain.destination_ranking import rank_featured, rank_popular, rank_suggested
+from app.domain.destinations import (
+    DestinationCandidate,
+    DestinationCollection,
+    DestinationType,
+    DiscoveryCollectionKind,
+    MediaAssetValue,
+    RankedDestination,
+)
 from app.domain.preferences import (
     BudgetTier,
     RecommendationScope,
@@ -40,13 +48,22 @@ def candidate(
         id=uuid4(),
         slug=slug,
         name=slug.title(),
+        destination_type=DestinationType.REGION,
         country_name="Pakistan" if country_code == "PK" else "France",
         country_code=country_code,
         summary="A sufficiently descriptive destination summary for the Home card.",
-        image_url=f"https://images.example.com/{slug}.jpg",
-        image_alt=f"View of {slug}",
+        full_description="A sufficiently descriptive destination detail for testing.",
+        cover_image=MediaAssetValue(
+            id=uuid4(),
+            url=f"https://images.example.com/{slug}.jpg",
+            alt_text=f"View of {slug}",
+            caption=None,
+            width=None,
+            height=None,
+        ),
         latitude=31.5,
         longitude=74.3,
+        map_zoom=9,
         budget_tier=budget,
         styles=styles,
         interests=interests,
@@ -66,7 +83,7 @@ def preference(
     now = datetime(2026, 9, 5, 10, 0, tzinfo=UTC)
     return UserPreferenceSnapshot(
         user_id=uuid4(),
-        travel_style=TravelStyle.NATURE if completed else None,
+        travel_styles=(TravelStyle.NATURE,) if completed else (),
         interests=(TravelInterest.HIKING,) if completed else (),
         budget_tier=BudgetTier.MID_RANGE if completed else None,
         trip_pace=TripPace.BALANCED if completed else None,
@@ -97,7 +114,22 @@ def create_service(
     """Create a service with isolated database repositories."""
 
     destinations = Mock(spec=DestinationRepository)
-    destinations.list_published_catalog = AsyncMock(return_value=catalogue)
+
+    async def ranked(
+        *, collection, preference=None, scope=RecommendationScope.BOTH, limit=6
+    ):
+        if collection is DestinationCollection.SUGGESTED:
+            items = rank_suggested(catalogue, preference, scope=scope)
+        elif collection is DestinationCollection.POPULAR:
+            items = rank_popular(catalogue)
+        else:
+            items = rank_featured(catalogue)
+        return [
+            RankedDestination(item, (0, item.editorial_rank, item.slug))
+            for item in items[:limit]
+        ]
+
+    destinations.list_ranked = AsyncMock(side_effect=ranked)
     preferences = Mock(spec=UserPreferenceRepository)
     preferences.get_snapshot = AsyncMock(return_value=snapshot)
     session = Mock(spec=AsyncSession)
@@ -162,7 +194,9 @@ def test_personalized_ranking_uses_fixed_weights_and_curated_sections() -> None:
     assert [item.slug for item in result.popular] == ["lahore", "hunza"]
     assert [item.slug for item in result.spotlight] == ["paris", "hunza"]
     assert result.spotlight_kind is DiscoveryCollectionKind.FEATURED
-    destinations.list_published_catalog.assert_awaited_once_with()
+    assert result.suggested_local == ()
+    assert result.suggested_international == ()
+    assert destinations.list_ranked.await_count == 3
     preferences.get_snapshot.assert_awaited_once_with(user_id=snapshot.user_id)
 
 
@@ -227,5 +261,5 @@ def test_home_rejects_unbounded_section_limit(limit: int) -> None:
     with pytest.raises(ValueError, match="between 1 and 6"):
         asyncio.run(service.get_home(user_id=snapshot.user_id, section_limit=limit))
 
-    destinations.list_published_catalog.assert_not_awaited()
+    destinations.list_ranked.assert_not_awaited()
     preferences.get_snapshot.assert_not_awaited()

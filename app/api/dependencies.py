@@ -19,6 +19,7 @@ from app.database.session import AsyncSessionFactory
 from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
+from app.services.destination_catalogue_service import DestinationCatalogueService
 from app.services.home_discovery_service import HomeDiscoveryService
 from app.services.itinerary_service import ItineraryService
 from app.services.location_resolution_service import LocationResolutionService
@@ -109,6 +110,20 @@ def get_home_discovery_service(
 HomeDiscoveryServiceDependency = Annotated[
     HomeDiscoveryService,
     Depends(get_home_discovery_service),
+]
+
+
+def get_destination_catalogue_service(
+    database_session: DatabaseSession,
+) -> DestinationCatalogueService:
+    """Create one database-only destination catalogue service per request."""
+
+    return DestinationCatalogueService(session=database_session)
+
+
+DestinationCatalogueServiceDependency = Annotated[
+    DestinationCatalogueService,
+    Depends(get_destination_catalogue_service),
 ]
 
 

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_connection_mode: Literal["url", "cloud_sql"] = "url"
 
-    # Local PostgreSQL / tests
+    # PostgreSQL URL (local or hosted, including Neon)
     database_url: SecretStr | None = None
 
     # Google Cloud SQL
@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=10, ge=0, le=100)
     database_pool_timeout_seconds: float = Field(default=30.0, gt=0)
     database_pool_recycle_seconds: int = Field(default=1800, ge=60)
+    database_connect_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
+    database_command_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     database_readiness_timeout_seconds: float = Field(
         default=2.0,
         gt=0,

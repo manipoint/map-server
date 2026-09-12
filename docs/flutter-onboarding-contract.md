@@ -21,6 +21,21 @@ final `PUT`. This avoids partial database writes and unnecessary network calls.
 Login and session restoration perform one preference read. Home rebuilds must not
 repeat it unless the user refreshes or edits preferences.
 
+## Backend-owned options
+
+Flutter MUST load active onboarding options from the backend and submit their
+stable IDs. It may cache the last successful response for offline rendering.
+Labels and ordering are presentation metadata; business logic uses IDs only.
+
+```http
+GET /api/v1/onboarding/options
+```
+
+The response contains a version plus ordered `travel_styles`, `interests`,
+`budget_tiers`, `trip_paces`, and `recommendation_scopes`. Each option contains
+`id`, `label`, `description`, `icon_key`, and `sort_order`. The endpoint performs
+no provider call and returns public cache headers.
+
 ## Location and cost rules
 
 - Budget never decides whether a trip is local or international.
@@ -42,7 +57,7 @@ A new user receives `200`, not `404`:
 
 ```json
 {
-  "travel_style": null,
+  "travel_styles": [],
   "interests": [],
   "budget_tier": null,
   "trip_pace": null,
@@ -69,7 +84,7 @@ Content-Type: application/json
 
 ```json
 {
-  "travel_style": "nature",
+  "travel_styles": ["nature", "adventure"],
   "interests": ["hiking", "history"],
   "budget_tier": "mid_range",
   "trip_pace": "balanced",
@@ -86,7 +101,9 @@ Content-Type: application/json
 ```
 
 The operation is idempotent and replaces the complete preference selection in one
-transaction. Interests accept one through five unique supported values.
+transaction. Travel styles accept one through three unique values. Interests
+accept one through five unique values. The backend rejects unknown or duplicate
+IDs even if Flutter has stale cached options.
 
 ## Skip onboarding
 
@@ -101,7 +118,7 @@ already stored. The response has `onboarding_completed=true` and may have
 
 ## Recommendation boundary
 
-These endpoints only collect inputs. The next backend slice will rank a curated
-destination catalogue deterministically and cache the result by preference
-version. It must not call an LLM on every Home load. LangGraph and MCP remain for
-explicit interactive travel planning and live provider searches.
+These endpoints only collect inputs. Home and View All rank the curated catalogue
+deterministically from all selected styles, interests, budget, and geographic
+scope. They never call an LLM. LangGraph and MCP remain for explicit interactive
+travel planning and live provider searches.

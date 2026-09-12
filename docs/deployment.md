@@ -44,14 +44,14 @@ The implemented startup path:
 4. Initialize FastMCP tools, the model gateway, and the compiled LangGraph.
 5. Create the process-local WebSocket connection manager.
 
-No LangGraph checkpointer, background worker, dependency probe, or startup/readiness state is currently initialized. Those remain target requirements before production.
+No LangGraph checkpointer or background worker is currently initialized. Database readiness is checked on demand by `/health/ready`; it does not probe optional travel or LLM providers.
 
 At shutdown, stop accepting new connections, allow bounded request completion, close WebSockets with a retryable code, and release provider and database clients.
 
 ## Health endpoints
 
 - `GET /health/live`: implemented; confirms the process event loop is responsive and makes no external calls.
-- `GET /health/ready`: required but not implemented; it should check initialization and a bounded lightweight database query.
+- `GET /health/ready`: implemented; performs a bounded database `SELECT 1`, returning 200 when ready or 503 on failure.
 - `GET /health/startup`: optional and not implemented.
 
 Do not make readiness depend on every optional travel provider. Provider health belongs in internal diagnostics and circuit-breaker metrics.
@@ -103,6 +103,56 @@ Do not commit real values. Rotate any credential that has appeared in source cod
 
 ## PostgreSQL deployment
 
+### Neon development deployment (September 2026)
+
+The restored database is in Neon project `tiny-mouse-51917897`, branch
+`production`, database `neondb`, at Alembic revision `b7e2f9a41063`.
+The September 10 backup and the September 11 media-import snapshot were restored;
+image binaries remain in Google Cloud Storage.
+
+Rollout completed on September 12: Cloud Run revision
+`travel-assistant-api-neon-20260912` serves 100% of traffic using image digest
+`sha256:07f4ed17ba94dc0d1bbf559d80532337713bd2993a4f341cfb4b66a2f2ac5207`.
+Tagged-revision and public-URL checks passed: liveness/readiness and onboarding
+returned 200; unauthenticated destination requests returned 401 as required.
+The full suite passed 1,544 tests with one environment-dependent skip; that
+PostgreSQL integration test also passed when run separately with PostgreSQL 18.
+The application engine and built Linux container both passed live pooled-Neon
+schema reads. Authenticated Flutter end-to-end testing remains a user task.
+
+Use `DATABASE_CONNECTION_MODE=url` and the pooled Neon `DATABASE_URL` at runtime.
+Cloud Run receives the URL through a pinned Secret Manager version of
+`neon-database-url`; never place the URL in the deployment YAML or command line.
+Standard `postgres://`, `postgresql://`, and `postgresql+asyncpg://` schemes are
+accepted. Use `sslmode=verify-full`: the engine verifies the certificate and
+hostname using the certifi CA bundle. `sslmode=require` is also upgraded to full
+verification. asyncpg does not support libpq's `channel_binding` URL option;
+configuration containing it fails explicitly rather than silently ignoring it.
+The runtime URL has this unsupported option removed, with verified TLS retained.
+
+Connection establishment and commands have bounded configurable timeouts
+(`DATABASE_CONNECT_TIMEOUT_SECONDS=15`, `DATABASE_COMMAND_TIMEOUT_SECONDS=30`).
+Cloud Run keeps the small 3+2 connection pool and 10-second readiness deadline.
+No periodic database pings are added; readiness runs only when requested.
+
+For Alembic and backups, supply a **direct/unpooled** URL through the process
+environment, not the runtime pooled URL. Run migrations as a separate authorized
+operation; container startup does not mutate the schema. Schema migrations may
+need a longer explicitly selected command timeout.
+
+Deploy the immutable image with `--no-traffic --tag=neon-check`, remove the old
+Cloud SQL attachment and database-password reference from the new revision, then
+verify the tagged revision's `/health/live` and `/health/ready` before switching
+traffic. Preserve all other provider/auth secret references and IAM settings.
+Keep request-based billing, minimum instances 0 and maximum instances 1.
+
+The old Cloud SQL revision is **not a working database rollback** while its
+instance is suspended. Prefer a forward fix against Neon; restoring older data
+requires separate approval. The current development runtime uses `neondb_owner`;
+a restricted application role remains required before a multi-user production
+launch. The Cloud Run and Neon regions currently differ, so cross-region database
+latency remains a known limitation; region migration is a separate decision.
+
 Prefer a managed PostgreSQL service with automated backups, point-in-time recovery, monitoring, and TLS. Maintain separate `app` and `langgraph` schemas as described in [Database Design](database.md).
 
 > **Current infrastructure finding (reported during the 25 August 2026 review):** the selected Cloud SQL instance was zonal and automated backups were disabled. That is acceptable only for disposable development data. It is a production release blocker because one zone/storage incident can cause downtime or data loss. Recheck the live setting rather than assuming this document remains current.
@@ -143,3 +193,50 @@ Logs must redact authorization headers, cookies, credentials, and sensitive requ
 - Document provider-disable switches and model-route overrides.
 - Exercise database restoration and session-signing-key rotation procedures.
 - Define a degraded mode that can return saved trips when external search providers are unavailable.
+
+## Development catalogue deployment — 11 September 2026 UTC
+
+- Project/service: `travel-assistant-505317` / `travel-assistant-api`, region `asia-south1`.
+- Revision: `travel-assistant-api-catalogue-20260911`, serving 100% of main traffic.
+- Build: `f7d413aa-3b36-4769-8291-13c46405a7d0` (successful).
+- Immutable image: `asia-south1-docker.pkg.dev/travel-assistant-505317/travel-assistant/api@sha256:49b77b2d480a77ac9856aac9f15974c3859b2bc54a32d86f08bcfe7055e554da`.
+- API: <https://travel-assistant-api-kg7jnlrcoq-el.a.run.app>.
+- The build included the current uncommitted catalogue implementation. No Git
+  commit was created; the image digest identifies this deployed artifact.
+- Runtime resources, environment/secret references, service identity, concurrency,
+  timeout, and revision maximum scale were compared with the previous revision
+  and remained unchanged: 1 CPU, 1 GiB memory, concurrency 10, max 1 instance.
+- Live database revision was verified as `b7e2f9a41063`; no migration ran during
+  deployment. The earlier media import remains in place.
+- The candidate was tested with zero main traffic before promotion. Its temporary
+  `catalogue-check` traffic tag was removed after promotion.
+- Validation: 1531 tests passed in the standard suite, with the opt-in PostgreSQL
+  test initially skipped. That test was then run separately against a disposable
+  local PostgreSQL 18 cluster and passed. Ruff lint and formatting checks passed.
+- Candidate and main URL smoke checks: `/health/live`, `/health/ready`, and
+  `/api/v1/onboarding/options` returned 200; all four destination route schemas
+  appeared in OpenAPI. Unauthenticated destination calls correctly returned 401.
+- Authenticated end-to-end Flutter requests were not exercised: use an existing
+  login session for the next client integration check. No test user or forged
+  authentication token was created for this deployment.
+
+The older `travel-assistant-api-00003-nqp` image is retained, but is not a verified
+rollback target for the expanded catalogue schema. Do not blindly switch back:
+the catalogue migration removed legacy destination image columns. Prefer a
+schema-compatible replacement revision; never downgrade the live DB automatically.
+
+## Complete catalogue import — 13 September 2026 PKT
+
+- Neon production advanced from `b7e2f9a41063` to `f3a9c2d7e641` after an
+  expiring 0.25-CU branch passed upgrade, downgrade, and re-upgrade.
+- Production now contains 27 destinations, 108 places, 256 media assets, 27
+  destination-media links, and 219 place-media links. Every published destination
+  and place has an active cover.
+- The public GCS bucket contains 246 immutable objects: 22 existing and 224 new.
+  All new objects passed anonymous MIME, CORS, and full SHA-256 delivery checks.
+- Two byte-identical gallery copies were omitted (Uluwatu Temple and British
+  Museum); their local originals were not deleted.
+- Backup `neon-neondb-20260913-pre-catalogue.dump` was validated with
+  `pg_restore --list` before production migration.
+- No Cloud Run deployment was required because the deployed API already reads
+  catalogue tables dynamically. The live readiness endpoint remained healthy.

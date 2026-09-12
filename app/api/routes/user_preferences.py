@@ -40,7 +40,7 @@ async def replace_user_preferences(
 
     snapshot = await service.complete_onboarding(
         user_id=principal.user.id,
-        travel_style=payload.travel_style,
+        travel_styles=payload.travel_styles,
         interests=payload.interests,
         budget_tier=payload.budget_tier,
         trip_pace=payload.trip_pace,

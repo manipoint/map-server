@@ -7,8 +7,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models.destination import Destination
+from app.database.models.destination import Destination, MediaAsset
 from app.database.repositories.destinations import DestinationRepository
+from app.domain.destinations import DestinationCollection
 from app.domain.preferences import BudgetTier, TravelInterest, TravelStyle
 
 
@@ -19,13 +20,14 @@ def create_destination() -> Destination:
         id=uuid4(),
         slug="hunza-pakistan",
         name="Hunza",
+        destination_type="region",
         country_name="Pakistan",
         country_code="PK",
         summary="A mountain destination with trails and expansive valley views.",
-        image_url="https://images.example.com/hunza.jpg",
-        image_alt="Hunza valley",
+        full_description="A complete mountain destination description for testing.",
         latitude=36.3167,
         longitude=74.65,
+        map_zoom=9,
         budget_tier=BudgetTier.MID_RANGE.value,
         is_published=True,
         is_featured=True,
@@ -36,8 +38,22 @@ def create_destination() -> Destination:
     )
 
 
-def create_session(rows: list[tuple[Destination, str | None, str | None]]) -> Mock:
-    """Create an async session returning flattened tag rows."""
+def create_media() -> MediaAsset:
+    """Create one active cover image."""
+
+    return MediaAsset(
+        id=uuid4(),
+        url="https://images.example.com/hunza.jpg",
+        mime_type="image/jpeg",
+        alt_text="Hunza valley",
+        is_active=True,
+    )
+
+
+def create_session(
+    rows: list[tuple[Destination, list[str] | None, list[str] | None, MediaAsset, int]],
+) -> Mock:
+    """Create an async session returning aggregated tag arrays."""
 
     result = Mock()
     result.all.return_value = rows
@@ -46,21 +62,26 @@ def create_session(rows: list[tuple[Destination, str | None, str | None]]) -> Mo
     return session
 
 
-def test_catalogue_deduplicates_join_products_in_one_query() -> None:
+def test_catalogue_hydrates_aggregated_tags_in_one_query() -> None:
     """Multiple normalized tags should produce one deterministic candidate."""
 
     destination = create_destination()
+    media = create_media()
     session = create_session(
         [
-            (destination, "nature", "hiking"),
-            (destination, "nature", "photography"),
-            (destination, "adventure", "hiking"),
-            (destination, "adventure", "photography"),
+            (destination, ["nature", "adventure"], ["hiking", "photography"], media, 0),
         ]
     )
     repository = DestinationRepository(session)
 
-    result = asyncio.run(repository.list_published_catalog())
+    result = [
+        row.destination
+        for row in asyncio.run(
+            repository.list_ranked(
+                collection=DestinationCollection.POPULAR,
+            )
+        )
+    ]
 
     assert len(result) == 1
     assert result[0].styles == (TravelStyle.ADVENTURE, TravelStyle.NATURE)
@@ -69,19 +90,24 @@ def test_catalogue_deduplicates_join_products_in_one_query() -> None:
         TravelInterest.PHOTOGRAPHY,
     )
     assert result[0].budget_tier is BudgetTier.MID_RANGE
+    assert result[0].cover_image.url.endswith("hunza.jpg")
     session.execute.assert_awaited_once()
     statement = session.execute.await_args.args[0]
     assert "LIMIT" in str(statement.compile()).upper()
 
 
-@pytest.mark.parametrize("limit", [0, 101])
+@pytest.mark.parametrize("limit", [0, 52])
 def test_catalogue_rejects_unbounded_limits(limit: int) -> None:
     """Callers must not accidentally turn Home into an unbounded catalogue read."""
 
     session = create_session([])
     repository = DestinationRepository(session)
 
-    with pytest.raises(ValueError, match="between 1 and 100"):
-        asyncio.run(repository.list_published_catalog(limit=limit))
+    with pytest.raises(ValueError, match="between 1 and 51"):
+        asyncio.run(
+            repository.list_ranked(
+                collection=DestinationCollection.POPULAR, limit=limit
+            )
+        )
 
     session.execute.assert_not_awaited()

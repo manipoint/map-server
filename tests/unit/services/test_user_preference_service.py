@@ -39,7 +39,7 @@ def create_snapshot(*, completed: bool = True) -> UserPreferenceSnapshot:
     now = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
     return UserPreferenceSnapshot(
         user_id=uuid4(),
-        travel_style=TravelStyle.NATURE if completed else None,
+        travel_styles=(TravelStyle.NATURE,) if completed else (),
         interests=(TravelInterest.HIKING,) if completed else (),
         budget_tier=BudgetTier.MID_RANGE if completed else None,
         trip_pace=TripPace.BALANCED if completed else None,
@@ -77,7 +77,7 @@ def test_complete_onboarding_deduplicates_and_orders_interests() -> None:
     result = asyncio.run(
         service.complete_onboarding(
             user_id=snapshot.user_id,
-            travel_style=TravelStyle.NATURE,
+            travel_styles=[TravelStyle.NATURE, TravelStyle.ADVENTURE],
             interests=[
                 TravelInterest.HISTORY,
                 TravelInterest.HIKING,
@@ -95,6 +95,10 @@ def test_complete_onboarding_deduplicates_and_orders_interests() -> None:
         TravelInterest.HIKING,
         TravelInterest.HISTORY,
     )
+    assert repository.replace.await_args.kwargs["travel_styles"] == (
+        TravelStyle.ADVENTURE,
+        TravelStyle.NATURE,
+    )
     session.commit.assert_awaited_once_with()
     session.rollback.assert_not_awaited()
 
@@ -110,7 +114,7 @@ def test_complete_onboarding_rolls_back_failure() -> None:
         asyncio.run(
             service.complete_onboarding(
                 user_id=uuid4(),
-                travel_style=TravelStyle.NATURE,
+                travel_styles=[TravelStyle.NATURE],
                 interests=[TravelInterest.HIKING],
                 budget_tier=BudgetTier.MID_RANGE,
                 trip_pace=TripPace.BALANCED,

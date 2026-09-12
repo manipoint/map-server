@@ -39,10 +39,6 @@ class UserPreference(Base):
     __tablename__ = "user_preferences"
     __table_args__ = (
         CheckConstraint(
-            f"travel_style IS NULL OR travel_style IN ({_allowed_values(TravelStyle)})",
-            name="travel_style",
-        ),
-        CheckConstraint(
             f"budget_tier IS NULL OR budget_tier IN ({_allowed_values(BudgetTier)})",
             name="budget_tier",
         ),
@@ -81,7 +77,6 @@ class UserPreference(Base):
         ForeignKey("app.users.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    travel_style: Mapped[str | None] = mapped_column(String(32), nullable=True)
     budget_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
     trip_pace: Mapped[str | None] = mapped_column(String(32), nullable=True)
     recommendation_scope: Mapped[str] = mapped_column(
@@ -147,3 +142,23 @@ class UserInterest(Base):
         primary_key=True,
     )
     interest: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+
+class UserTravelStyle(Base):
+    """One normalized travel style selected by one user."""
+
+    __tablename__ = "user_travel_styles"
+    __table_args__ = (
+        CheckConstraint(
+            f"travel_style IN ({_allowed_values(TravelStyle)})",
+            name="travel_style",
+        ),
+        {"schema": "app"},
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("app.user_preferences.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    travel_style: Mapped[str] = mapped_column(String(32), primary_key=True)

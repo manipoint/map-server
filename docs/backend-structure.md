@@ -19,6 +19,8 @@ app/
 │   │   ├── locations.py
 │   │   ├── user_preferences.py
 │   │   ├── home.py
+│   │   ├── onboarding.py
+│   │   ├── destinations.py
 │   │   ├── conversations.py
 │   │   └── health.py
 │   └── websocket/
@@ -67,12 +69,14 @@ app/
 │   ├── places.py
 │   ├── preferences.py
 │   ├── destinations.py
+│   ├── destination_ranking.py
 │   └── trips.py
 ├── services/
 │   ├── search_service.py
 │   ├── trip_service.py
 │   ├── user_preference_service.py
 │   ├── home_discovery_service.py
+│   ├── destination_catalogue_service.py
 │   ├── conversation_service.py
 │   └── usage_service.py
 ├── database/

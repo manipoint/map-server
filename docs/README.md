@@ -13,13 +13,14 @@ This directory describes both the implemented backend and its target architectur
 7. [LangGraph Design](langgraph.md)
 8. [Flutter Onboarding Contract](flutter-onboarding-contract.md)
 9. [Flutter Home Discovery Contract](flutter-home-contract.md)
-10. [MCP Server Design](mcp-server.md)
-11. [PostgreSQL Data Model](database.md)
-12. [Model Routing and Cost Controls](model-routing.md)
-13. [Deployment](deployment.md)
-14. [Reliability and SPOF Review](reliability.md)
-15. [Testing Strategy](testing.md)
-16. [Development Commands](development-workflow.md)
+10. [Destination Catalogue Contract](destination-catalogue.md)
+11. [MCP Server Design](mcp-server.md)
+12. [PostgreSQL Data Model](database.md)
+13. [Model Routing and Cost Controls](model-routing.md)
+14. [Deployment](deployment.md)
+15. [Reliability and SPOF Review](reliability.md)
+16. [Testing Strategy](testing.md)
+17. [Development Commands](development-workflow.md)
 
 ## Source-of-truth boundaries
 
@@ -34,6 +35,7 @@ This directory describes both the implemented backend and its target architectur
 | Flutter location selection and trip payloads | `flutter-location-contract.md` |
 | Flutter preference onboarding and routing | `flutter-onboarding-contract.md` |
 | Flutter personalized and curated Home sections | `flutter-home-contract.md` |
+| Destination lists, details, places, maps, and media | `destination-catalogue.md` |
 | Login, rotation, revocation, and devices | `authentication.md` |
 | Tables, relations, retention, and indexes | `database.md` |
 | LLM selection, retry, fallback, and budgets | `model-routing.md` |
@@ -59,6 +61,10 @@ This directory describes both the implemented backend and its target architectur
 - FastAPI is the public backend boundary.
 - FastMCP currently runs in process and is invoked through `TravelMcpClient`; a mounted HTTP transport is a target option.
 - The implemented LangGraph is a bounded model/tool loop. Deterministic routing, interrupts, and checkpoint/resume are targets.
-- PostgreSQL currently owns users, onboarding preferences, curated destinations and tags, sessions, conversations, messages, assistant-run leases, trips, itineraries, and itinerary items. Destination events, search snapshots, and LangGraph checkpoints are targets.
+- PostgreSQL owns users, normalized onboarding preferences, curated destinations,
+  destination places and media metadata, sessions, conversations, messages,
+  assistant-run leases, trips, itineraries, and itinerary items. Object storage
+  owns image bytes after the media-bucket rollout; PostgreSQL stores stable media
+  URLs and object keys.
 - LangSmith tracing and evaluations are planned; structured JSON logging is the current observability baseline.
 - Redis is deferred until distributed WebSocket routing, shared caching, or multi-instance rate limiting is required.

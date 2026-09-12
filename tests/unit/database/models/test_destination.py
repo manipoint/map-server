@@ -2,7 +2,14 @@
 
 from sqlalchemy import CheckConstraint
 
-from app.database.models import Destination, DestinationInterest, DestinationStyle
+from app.database.models import (
+    Destination,
+    DestinationInterest,
+    DestinationMedia,
+    DestinationPlace,
+    DestinationStyle,
+    MediaAsset,
+)
 
 
 def test_destination_contains_publication_and_editorial_fields() -> None:
@@ -13,13 +20,14 @@ def test_destination_contains_publication_and_editorial_fields() -> None:
         "id",
         "slug",
         "name",
+        "destination_type",
         "country_name",
         "country_code",
         "summary",
-        "image_url",
-        "image_alt",
+        "full_description",
         "latitude",
         "longitude",
+        "map_zoom",
         "budget_tier",
         "is_published",
         "is_featured",
@@ -76,3 +84,19 @@ def test_destination_has_bounded_home_query_indexes() -> None:
     assert "ix_destinations_published_editorial" in names
     assert "ix_destinations_published_featured" in names
     assert "ix_destinations_published_popular" in names
+
+
+def test_destination_places_and_media_are_normalized() -> None:
+    """Galleries and nested places must not be stored as destination JSON."""
+
+    assert DestinationPlace.__table__.schema == "app"
+    assert MediaAsset.__table__.schema == "app"
+    assert DestinationMedia.__table__.schema == "app"
+    destination_fk = next(
+        iter(DestinationMedia.__table__.c.destination_id.foreign_keys)
+    )
+    media_fk = next(iter(DestinationMedia.__table__.c.media_asset_id.foreign_keys))
+    assert destination_fk.target_fullname == "app.destinations.id"
+    assert media_fk.target_fullname == "app.media_assets.id"
+    assert destination_fk.ondelete == "CASCADE"
+    assert media_fk.ondelete == "CASCADE"
