@@ -20,7 +20,7 @@ Current configured model defaults are `openai/gpt-oss-20b` on Groq, `gemini-2.5-
 
 The current fallback catches every ordinary provider exception and gives each provider a full per-call timeout. It does not yet classify safety, invalid-input, authentication, quota, or transient errors. `TravelResponseService` now wraps graph execution and atomic reply persistence in a shared 75-second default deadline, so the former theoretical 270-second model path is cancelled before the 120-second assistant lease expires. Configuration also reserves a minimum 15-second margin for timeout/failure handling; see [Reliability and SPOF Review](reliability.md).
 
-The current route is a single chat-response route. Economy/quality profiles, error-aware fallback, circuit breakers, token accounting, and LangSmith production telemetry remain planned work.
+The current route is a single chat-response route. Provider fallback and correlated LangSmith tracing are implemented; economy/quality profiles and circuit breakers remain planned work.
 
 ## Routing classes
 
@@ -130,20 +130,41 @@ stateDiagram-v2
 
 An in-process breaker is acceptable for one MVP instance. Use shared state, such as Redis, only when multiple instances require coordinated provider health.
 
-## LangSmith telemetry
+## LangSmith and MCP telemetry
 
-LangSmith settings exist, but application-specific trace metadata, sampling, usage, and cost instrumentation are not implemented yet.
+When `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` is configured, the
+application creates a fresh privacy-configured LangChain tracer for each LangGraph
+execution. Only the LangSmith client is shared across requests, so completed-run
+callback state does not accumulate over the worker lifetime.
+The root run ID is the generated `trace_id`; `conversation_id` and
+`client_message_id` are trace metadata. LangGraph propagates callbacks through
+model calls and `StructuredTool` execution. The LangSmith client has both
+`hide_inputs` and `hide_outputs` enabled, so prompts, chat history, tool arguments,
+and tool results are not stored there. IDs and non-content run metadata remain
+available for correlation. The database remains authoritative for conversation
+history and audit records.
 
-Attach non-secret metadata to every model run:
+FastMCP's `on_call_tool` middleware observes the actual internal server execution.
+It logs the tool name, outcome, and duration with the same three correlation IDs;
+it never logs arguments or results. Context-local propagation keeps concurrent
+WebSocket requests isolated. Graph, model-provider, and MCP measurements are
+emitted as structured `application_metric` log records with low-cardinality
+labels. Cloud Logging log-based counter/distribution metrics can use these records
+for production dashboards and alert policies without placing IDs in metric labels.
+Every provider attempt emits a counter and duration, including interrupted attempts.
+An expired response deadline is recorded as `timeout`; external task cancellation
+is recorded as `cancelled` and does not trigger a fallback provider. The same
+deadline context is used for graph and MCP cancellation outcomes.
+Graph metrics measure graph execution, not subsequent response persistence.
 
-- Environment and application version.
-- Graph name, node name, and prompt version.
-- Route, provider, model, and fallback attempt.
-- Input/output tokens, latency, and estimated cost.
-- Schema-validation status and terminal error category.
-- An anonymized user or session reference when needed for debugging.
+During shutdown the shared client's trace flush receives a two-second timeout.
+Remaining traces may be dropped at shutdown; flush failures do not prevent the
+WebSocket, HTTP, and database resources from being cleaned up.
 
-Do not send access tokens, API keys, refresh tokens, raw payment details, or unnecessary personal data to traces. Use full tracing in development and sampled tracing in production, with higher sampling for errors and fallback events.
+Set the key through Secret Manager, set `LANGSMITH_PROJECT` to the intended
+project, then enable `LANGSMITH_TRACING`. If tracing is enabled without a key,
+startup logs a warning and continues without LangSmith. This does not affect
+conversation persistence or request outcomes.
 
 ## Quality gates
 

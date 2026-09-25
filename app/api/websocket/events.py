@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.api.websocket.constants import PROTOCOL_VERSION
 from app.common.time import utc_now
+from app.domain.assistant_content import AssistantRichContent
 from app.domain.clarifications import TravelClarification
 from app.domain.enums import TravelResponseErrorCode
 
@@ -159,6 +160,7 @@ class TravelResponseCompletedPayload(BaseModel):
     content: str = Field(min_length=1)
     is_duplicate: bool
     itinerary_id: UUID | None = None
+    structured_content: AssistantRichContent | None = None
 
 
 class TravelResponseCompletedEvent(WebSocketEvent):

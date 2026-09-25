@@ -15,6 +15,39 @@ from app.config import Settings
 FAKE_ITINERARY_TOOL = object()
 
 
+@pytest.mark.parametrize("flush_error", [None, RuntimeError("telemetry unavailable")])
+def test_langsmith_flush_is_bounded_and_cleanup_survives_failure(
+    monkeypatch, flush_error
+) -> None:
+    engine = AsyncMock()
+    http_client = MagicMock()
+    http_client.aclose = AsyncMock()
+    manager = MagicMock()
+    manager.close_all = AsyncMock(return_value=0)
+    factory = MagicMock()
+    factory.client.flush.side_effect = flush_error
+    monkeypatch.setattr(
+        lifespan_module, "create_database_engine", lambda settings: engine
+    )
+    monkeypatch.setattr(
+        lifespan_module, "create_session_factory", lambda engine: object()
+    )
+    monkeypatch.setattr(lifespan_module.httpx, "AsyncClient", lambda: http_client)
+    monkeypatch.setattr(lifespan_module, "ConnectionManager", lambda: manager)
+    monkeypatch.setattr(
+        lifespan_module, "create_langsmith_tracer_factory", lambda settings: factory
+    )
+    application = main_module.create_app(create_url_settings())
+
+    with TestClient(application):
+        assert application.state.langsmith_tracer_factory is factory
+
+    factory.client.flush.assert_called_once_with(timeout=2.0)
+    manager.close_all.assert_awaited_once()
+    http_client.aclose.assert_awaited_once()
+    engine.dispose.assert_awaited_once()
+
+
 @pytest.fixture(autouse=True)
 def mock_travel_graph_construction(monkeypatch):
     """Keep lifespan tests independent from external provider configuration."""

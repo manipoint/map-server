@@ -761,7 +761,7 @@ def test_fail_processing_marks_an_owned_claim_failed_and_commits() -> None:
         error_code="model_timeout",
     )
     session.commit.assert_awaited_once_with()
-    session.rollback.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
 
 
 def test_fail_processing_rolls_back_when_the_claim_is_no_longer_owned() -> None:
@@ -782,7 +782,7 @@ def test_fail_processing_rolls_back_when_the_claim_is_no_longer_owned() -> None:
         )
 
     session.commit.assert_not_awaited()
-    session.rollback.assert_awaited_once_with()
+    assert session.rollback.await_count == 2
 
 
 @pytest.mark.parametrize("acquired, claim_token", [(False, None), (True, None)])
@@ -830,7 +830,7 @@ def test_fail_processing_rolls_back_a_repository_failure() -> None:
         )
 
     session.commit.assert_not_awaited()
-    session.rollback.assert_awaited_once_with()
+    assert session.rollback.await_count == 2
 
 
 def test_fail_processing_rolls_back_a_commit_failure() -> None:
@@ -849,4 +849,4 @@ def test_fail_processing_rolls_back_a_commit_failure() -> None:
         )
 
     session.commit.assert_awaited_once_with()
-    session.rollback.assert_awaited_once_with()
+    assert session.rollback.await_count == 2

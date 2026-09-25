@@ -6,6 +6,12 @@ The Travel MCP Server is the integration boundary between application workflows 
 
 FastMCP currently runs inside the FastAPI process. `TravelMcpClient` invokes the server object directly, so no MCP HTTP route is mounted and Flutter cannot call MCP. `INTERNAL_MCP_PATH` is reserved for a future authenticated network transport.
 
+`ToolExecutionObservabilityMiddleware` uses FastMCP's `on_call_tool` hook to
+measure actual tool execution. It records tool name, outcome, and elapsed time as
+structured logs and low-cardinality metric events. Graph correlation context
+provides `trace_id`, `conversation_id`, and `client_message_id`; raw tool
+arguments and results are excluded.
+
 ## Tool catalog
 
 | Tool | Purpose | LLM required? |

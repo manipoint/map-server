@@ -97,6 +97,43 @@ def test_gateway_returns_the_first_valid_provider_response() -> None:
     assert fallback.calls == []
 
 
+@pytest.mark.parametrize(
+    "result, expected_outcome",
+    [
+        (AIMessage(content="answer"), "success"),
+        (AIMessage(content=""), "invalid_response"),
+        (HumanMessage(content="wrong type"), "invalid_response"),
+        (RuntimeError("provider failure"), "error"),
+        (TimeoutError("provider deadline"), "timeout"),
+        (asyncio.CancelledError(), "cancelled"),
+    ],
+)
+def test_provider_records_exactly_one_counter_and_duration(
+    result, expected_outcome, monkeypatch
+) -> None:
+    metric = MagicMock()
+    monkeypatch.setattr(model_gateway, "record_metric", metric)
+    gateway = FallbackModelGateway([ModelProvider("primary", FakeChatModel(result))])
+
+    async def exercise():
+        try:
+            await gateway.generate(messages=[HumanMessage(content="synthetic")])
+        except (ModelGatewayError, asyncio.CancelledError):
+            pass
+
+    asyncio.run(exercise())
+    assert metric.call_count == 2
+    counter, duration = [call.kwargs for call in metric.call_args_list]
+    assert counter["name"] == "model_provider_attempts"
+    assert counter["value"] == 1
+    assert counter["labels"] == {
+        "model_provider": "primary",
+        "outcome": expected_outcome,
+    }
+    assert duration["name"] == "model_provider_duration_ms"
+    assert duration["value"] >= 0
+
+
 def test_gateway_accepts_a_tool_call_without_text() -> None:
     """A valid tool request should not trigger a fallback model call."""
 

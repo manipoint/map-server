@@ -89,6 +89,9 @@ def create_travel_response_service(
         assistant_run_lease_seconds=settings.assistant_run_lease_seconds,
         travel_response_timeout_seconds=settings.travel_response_timeout_seconds,
         max_model_attempts=settings.max_model_attempts,
+        langsmith_tracer_factory=getattr(
+            websocket.app.state, "langsmith_tracer_factory", None
+        ),
     )
 
 

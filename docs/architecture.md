@@ -8,7 +8,7 @@ The implemented service is a modular monolith: FastAPI, LangGraph, and FastMCP s
 
 ## Runtime architecture
 
-The diagram is the target architecture. Today, PostgreSQL persistence covers identity, sessions, conversations, messages, assistant-run leases, trips, and versioned itineraries with ordered items. Travel search snapshots are not yet stored, and LangSmith tracing is not wired.
+The diagram is the target architecture. PostgreSQL persistence covers identity, sessions, conversations, messages, assistant-run leases, trips, and versioned itineraries with ordered items. Travel search snapshots are not yet stored. LangSmith traces model/graph runs with content hidden, and FastMCP middleware records tool execution against shared correlation IDs; PostgreSQL remains the conversation and audit source of truth.
 
 ```mermaid
 flowchart LR

@@ -86,10 +86,41 @@ Use environment variables or a secret manager for deploy-time configuration. Exp
 - `WEATHER_API_KEY`, `GOOGLE_PLACES_API_KEY`, and `DUFFEL_API_KEY`
 - `FLIGHT_PROVIDER`, `HOTEL_PROVIDER`, `PLACES_PROVIDER`, and `CURRENCY_PROVIDER`
 - `DUFFEL_API_VERSION`, `DUFFEL_SUPPLIER_TIMEOUT_MS`, and `DUFFEL_STAYS_RADIUS_KM`
-- `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_TRACING`
+- `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_TRACING`,
+  `LANGSMITH_ENDPOINT`, `LANGSMITH_TRACING_SAMPLING_RATE`
 - Route-specific model configuration and request budget settings
 
 Do not commit real values. Rotate any credential that has appeared in source code, chat, logs, screenshots, or shell history.
+
+LangSmith tracing is disabled unless explicitly enabled. Store
+`LANGSMITH_API_KEY` in Secret Manager, set the project name, then set
+`LANGSMITH_TRACING=true`. Inputs and outputs are hidden by the application
+tracer; only run metadata and correlation identifiers are retained there.
+Structured `application_metric` entries are written to stdout and ingested by
+Cloud Logging. Define log-based counter metrics for `travel_graph_runs`,
+`model_provider_attempts`, and `mcp_tool_calls`, and distribution metrics for the
+corresponding `*_duration_ms` names. Alert on error/invalid outcomes and elevated
+p95 duration. Include `timeout` outcomes in failure alerts; keep external
+`cancelled` outcomes separate. Keep `trace_id`, `conversation_id`, and `client_message_id` out of
+metric labels; they remain in individual structured log records for investigation.
+
+For local debugging, use `LANGSMITH_PROJECT=travel-assistant-local` and
+`LANGSMITH_ENDPOINT=https://api.smith.langchain.com`. These settings are loaded
+from `.env` as well as process environment variables. Never commit the API key.
+`LANGSMITH_TRACING_SAMPLING_RATE` accepts 0 through 1 and defaults to 1 (all
+traces); 0.1 samples approximately 10% of traces. Sampling reduces volume but
+does not enforce a monthly budget.
+
+Before sending traces under a free-only budget, configure LangSmith's
+**Settings > Billing and Usage > Usage limits** with a zero-spend limit and
+base retention (14 days). If configuring counts, keep total traces within
+the account's remaining free allowance and disallow extended-retention traces.
+Usage from other projects also counts. Do not enable paid upgrades,
+evaluation/retention automations, or LangSmith deployments for this setup.
+The application does not configure or verify billing limits; a project name
+is not a spending cap. Check current
+[pricing](https://www.langchain.com/pricing) and
+[usage-limit instructions](https://docs.langchain.com/langsmith/billing).
 
 ## Network and transport security
 

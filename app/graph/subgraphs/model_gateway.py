@@ -1,8 +1,10 @@
 """Provider-independent model gateway contracts."""
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, BaseMessage
@@ -12,6 +14,8 @@ from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+from app.observability.metrics import record_metric
+from app.observability.request_context import cancellation_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +77,37 @@ class FallbackModelGateway:
         last_error: Exception | None = None
 
         for provider in self.providers:
+            started_at = perf_counter()
+            outcome = "error"
             try:
                 response = await provider.client.ainvoke(list(messages))
-
+                if not isinstance(response, AIMessage):
+                    last_error = TypeError("model provider returned a non-AI message")
+                    outcome = "invalid_response"
+                elif (
+                    not (isinstance(response.content, str) and response.content.strip())
+                    and not response.tool_calls
+                ):
+                    last_error = ValueError(
+                        "model provider returned neither text nor tool calls"
+                    )
+                    outcome = "invalid_response"
+                else:
+                    outcome = "success"
+                    return response
+                logger.warning(
+                    "Model provider returned an invalid response",
+                    extra={
+                        "model_provider": provider.name,
+                        "error_type": type(last_error).__name__,
+                    },
+                )
+            except asyncio.CancelledError:
+                outcome = cancellation_outcome()
+                raise
             except Exception as error:
                 last_error = error
+                outcome = "timeout" if isinstance(error, TimeoutError) else "error"
                 logger.warning(
                     "Model provider attempt failed",
                     extra={
@@ -85,38 +115,37 @@ class FallbackModelGateway:
                         "error_type": type(error).__name__,
                     },
                 )
-                continue
-            if not isinstance(response, AIMessage):
-                last_error = TypeError("model provider returned a non-AI message")
-                logger.warning(
-                    "Model provider returned an invalid response",
-                    extra={
-                        "model_provider": provider.name,
-                        "error_type": type(last_error).__name__,
-                    },
+            finally:
+                _record_provider_attempt(
+                    provider_name=provider.name,
+                    outcome=outcome,
+                    started_at=started_at,
                 )
-                continue
-            has_text_response = isinstance(response.content, str) and bool(
-                response.content.strip()
-            )
-            has_tool_calls = bool(response.tool_calls)
-            if not has_text_response and not has_tool_calls:
-                last_error = ValueError(
-                    "model provider returned neither text nor tool calls"
-                )
-                logger.warning(
-                    "Model provider returned an invalid response",
-                    extra={
-                        "model_provider": provider.name,
-                        "error_type": type(last_error).__name__,
-                    },
-                )
-                continue
-
-            return response
         raise ModelGatewayError(
             "No configured model provider returned a valid response"
         ) from last_error
+
+
+def _record_provider_attempt(
+    *,
+    provider_name: str,
+    outcome: str,
+    started_at: float,
+) -> None:
+    """Emit provider outcome and latency as low-cardinality metric events."""
+
+    record_metric(
+        name="model_provider_attempts",
+        value=1,
+        metric_type="counter",
+        labels={"model_provider": provider_name, "outcome": outcome},
+    )
+    record_metric(
+        name="model_provider_duration_ms",
+        value=round((perf_counter() - started_at) * 1000, 3),
+        metric_type="distribution",
+        labels={"model_provider": provider_name},
+    )
 
 
 def build_model_gateway(

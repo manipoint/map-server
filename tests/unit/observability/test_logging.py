@@ -5,8 +5,11 @@ import logging
 
 from app.observability.logging import JsonFormatter, configure_logging
 from app.observability.request_context import (
+    TraceContext,
     reset_request_id,
+    reset_trace_context,
     set_request_id,
+    set_trace_context,
 )
 
 
@@ -95,3 +98,22 @@ def test_json_formatter_includes_context_request_id() -> None:
         reset_request_id(token)
 
     assert payload["request_id"] == "request-123"
+
+
+def test_json_formatter_includes_trace_correlation_context() -> None:
+    token = set_trace_context(
+        TraceContext(
+            trace_id="trace-123",
+            conversation_id="conversation-123",
+            client_message_id="message-123",
+        )
+    )
+
+    try:
+        payload = json.loads(JsonFormatter().format(make_log_record()))
+    finally:
+        reset_trace_context(token)
+
+    assert payload["trace_id"] == "trace-123"
+    assert payload["conversation_id"] == "conversation-123"
+    assert payload["client_message_id"] == "message-123"

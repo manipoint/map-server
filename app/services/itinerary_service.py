@@ -183,8 +183,9 @@ class ItineraryService:
         user_id: UUID,
         source_message_id: UUID,
         items: Sequence[ItineraryItemDraft],
+        commit: bool = True,
     ) -> ItineraryDetails:
-        """Create or reuse the generated draft for one user message."""
+        """Create or reuse a generated draft, optionally deferring commit."""
 
         self._validate_item_positions(items=items)
 
@@ -219,7 +220,8 @@ class ItineraryService:
                 itinerary=itinerary,
                 items=items,
             )
-            await self.session.commit()
+            if commit:
+                await self.session.commit()
 
         except BaseException:
             await self.session.rollback()

@@ -42,6 +42,7 @@ from app.auth.service import AuthenticatedPrincipal
 from app.config import Settings
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
+from app.domain.assistant_content import AssistantRichContent
 from app.domain.clarifications import AirportInputRequest, TravelClarification
 from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import (
@@ -325,6 +326,26 @@ def test_travel_websocket_reports_a_completed_response(
     assistant_message.id = uuid4()
     assistant_message.content = "Three-day Lahore itinerary"
     itinerary_id = uuid4()
+    rich_content = AssistantRichContent.model_validate(
+        {
+            "type": "rich_response",
+            "schema_version": 1,
+            "sections": [
+                {
+                    "type": "place_carousel",
+                    "id": "suggested-places",
+                    "title": "Suggested for You",
+                    "items": [
+                        {
+                            "id": "gion-district",
+                            "name": "Gion District",
+                            "location": "Kyoto",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
     monkeypatch.setattr(
         travel,
         "persist_travel_request",
@@ -342,6 +363,7 @@ def test_travel_websocket_reports_a_completed_response(
                 is_processing=False,
                 error_code=None,
                 itinerary_id=itinerary_id,
+                rich_content=rich_content,
             )
         ),
     )
@@ -362,6 +384,7 @@ def test_travel_websocket_reports_a_completed_response(
     assert event.payload.content == "Three-day Lahore itinerary"
     assert event.payload.itinerary_id == itinerary_id
     assert event.payload.is_duplicate is False
+    assert event.payload.structured_content == rich_content
 
 
 def test_travel_websocket_returns_structured_airport_input_request(

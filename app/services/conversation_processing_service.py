@@ -239,6 +239,10 @@ class ConversationProcessingService:
         if claim.claim_token is None:
             raise ValueError("acquired assistant processing claim must have a token")
 
+        # Discard any work staged after the processing lease was acquired. The
+        # failure marker must never commit a partially generated response.
+        await self.session.rollback()
+
         try:
             failed_run = await self.runs.fail_run(
                 run_id=claim.run.id,

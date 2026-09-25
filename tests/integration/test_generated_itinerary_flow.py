@@ -150,10 +150,15 @@ def test_generated_itinerary_flows_from_graph_to_persisted_response() -> None:
             "I created a 2-day itinerary draft for your trip."
         ),
     )
-    processing.save_reply.return_value = SaveAssistantReply(
-        message=assistant_message,
-        is_duplicate=False,
-    )
+
+    async def save_reply(**arguments):
+        assistant_message.structured_content = arguments.get("structured_content")
+        return SaveAssistantReply(
+            message=assistant_message,
+            is_duplicate=False,
+        )
+
+    processing.save_reply.side_effect = save_reply
 
     gateway = ItineraryModelGateway()
     submission_tool = create_itinerary_submission_tool()
@@ -193,6 +198,7 @@ def test_generated_itinerary_flows_from_graph_to_persisted_response() -> None:
     assert persistence_call.kwargs["trip_id"] == trip.id
     assert persistence_call.kwargs["user_id"] == user_id
     assert persistence_call.kwargs["source_message_id"] == user_message.id
+    assert persistence_call.kwargs["commit"] is False
     drafts = persistence_call.kwargs["items"]
     assert [
         (draft.day_number, draft.position, draft.item_type) for draft in drafts
@@ -201,10 +207,15 @@ def test_generated_itinerary_flows_from_graph_to_persisted_response() -> None:
         (1, 2, ItineraryItemType.MEAL),
         (2, 1, ItineraryItemType.PLACE),
     ]
-    processing.save_reply.assert_awaited_once_with(
-        user_id=user_id,
-        accepted_request=accepted_request,
-        claim=claim,
-        content=assistant_message.content,
-    )
+    save_call = processing.save_reply.await_args
+    assert save_call.kwargs["user_id"] == user_id
+    assert save_call.kwargs["accepted_request"] is accepted_request
+    assert save_call.kwargs["claim"] is claim
+    assert save_call.kwargs["content"] == assistant_message.content
+    structured_content = save_call.kwargs["structured_content"]
+    assert structured_content["type"] == "rich_response"
+    assert structured_content["sections"][0]["type"] == "itinerary_preview"
+    assert structured_content["sections"][0]["itinerary_id"] == str(itinerary.id)
+    assert result.rich_content is not None
+    assert result.rich_content.sections[0].itinerary_id == itinerary.id
     processing.fail_processing.assert_not_awaited()

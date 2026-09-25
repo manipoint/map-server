@@ -1,6 +1,7 @@
 """Tests for graph-backed travel response orchestration."""
 
 import asyncio
+import logging
 from datetime import date
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -12,9 +13,16 @@ from app.database.models.conversation import Conversation
 from app.database.models.message import Message
 from app.database.models.trip import Trip
 from app.database.repositories.assistant_runs import AssistantRunClaim
+from app.domain.assistant_content import AssistantRichContent
 from app.domain.enums import TravelResponseErrorCode
 from app.graph.schemas.itineraries import GeneratedItinerary
-from app.graph.subgraphs.model_gateway import ModelGatewayError
+from app.graph.subgraphs.model_gateway import (
+    FallbackModelGateway,
+    ModelGatewayError,
+    ModelProvider,
+)
+from app.observability.langsmith import LangSmithTracerFactory
+from app.observability.request_context import get_trace_context
 from app.services.conversation_processing_service import (
     ConversationProcessingContext,
     ProcessingStart,
@@ -373,10 +381,15 @@ def test_generate_reply_invokes_graph_and_saves_an_owned_response() -> None:
         start=start,
         graph_result={"assistant_response": "Three-day Lahore itinerary"},
     )
-    processing.save_reply.return_value = SaveAssistantReply(
-        message=saved_message,
-        is_duplicate=False,
-    )
+
+    async def save_reply(**arguments):
+        saved_message.structured_content = arguments.get("structured_content")
+        return SaveAssistantReply(
+            message=saved_message,
+            is_duplicate=False,
+        )
+
+    processing.save_reply.side_effect = save_reply
 
     result = asyncio.run(
         service.generate_reply(
@@ -389,6 +402,13 @@ def test_generate_reply_invokes_graph_and_saves_an_owned_response() -> None:
     assert result.is_processing is False
     graph.ainvoke.assert_awaited_once()
     graph_input = graph.ainvoke.await_args.args[0]
+    graph_config = graph.ainvoke.await_args.kwargs["config"]
+    assert graph_config["run_id"] != request.user_message.client_message_id
+    assert graph_config["metadata"]["trace_id"] == str(graph_config["run_id"])
+    assert graph_config["metadata"]["conversation_id"] == str(request.conversation.id)
+    assert graph_config["metadata"]["client_message_id"] == str(
+        request.user_message.client_message_id
+    )
     assert graph_input["locale"] == "en-PK"
     assert graph_input["trip_id"] == trip_id
     assert graph_input["trip_context"].destination == "Lahore"
@@ -488,10 +508,15 @@ def test_generate_reply_persists_generated_itinerary_before_reply() -> None:
             "generated_itinerary": generated_itinerary(),
         },
     )
-    processing.save_reply.return_value = SaveAssistantReply(
-        message=saved_message,
-        is_duplicate=False,
-    )
+
+    async def save_reply(**arguments):
+        saved_message.structured_content = arguments.get("structured_content")
+        return SaveAssistantReply(
+            message=saved_message,
+            is_duplicate=False,
+        )
+
+    processing.save_reply.side_effect = save_reply
     itinerary_id = uuid4()
     generated_draft = Mock()
     generated_draft.itinerary = Mock(id=itinerary_id)
@@ -510,11 +535,20 @@ def test_generate_reply_persists_generated_itinerary_before_reply() -> None:
     assert call.kwargs["trip_id"] == trip_id
     assert call.kwargs["user_id"] == request.conversation.user_id
     assert call.kwargs["source_message_id"] == request.user_message.id
+    assert call.kwargs["commit"] is False
     drafts = call.kwargs["items"]
     assert [(item.day_number, item.position) for item in drafts] == [
         (1, 1),
         (2, 1),
     ]
+    structured_content = processing.save_reply.await_args.kwargs["structured_content"]
+    assert structured_content["type"] == "rich_response"
+    assert structured_content["schema_version"] == 1
+    assert structured_content["sections"][0]["type"] == "itinerary_preview"
+    assert structured_content["sections"][0]["itinerary_id"] == str(itinerary_id)
+    assert result.rich_content is not None
+    preview = result.rich_content.sections[0]
+    assert preview.itinerary_id == itinerary_id
     processing.save_reply.assert_awaited_once()
 
 
@@ -760,3 +794,206 @@ def test_generate_reply_does_not_fail_a_claim_when_cancelled() -> None:
 
     processing.fail_processing.assert_not_awaited()
     processing.save_reply.assert_not_awaited()
+
+
+def test_repeated_graph_executions_use_independent_tracers() -> None:
+    request = create_accepted_request()
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request, history=(request.user_message,), cached_reply=None
+        ),
+        claim=create_claim(acquired=True),
+    )
+    service, _, graph = create_service(start=start)
+    client = Mock()
+    service.langsmith_tracer_factory = LangSmithTracerFactory(
+        client=client, project_name="test-project", app_env="test"
+    )
+    graph.ainvoke.side_effect = RuntimeError("synthetic failure")
+
+    async def exercise() -> None:
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="synthetic failure"):
+                await service.generate_reply(
+                    user_id=request.conversation.user_id, accepted_request=request
+                )
+            assert get_trace_context() is None
+
+    asyncio.run(exercise())
+    first, second = [
+        call.kwargs["config"]["callbacks"][0] for call in graph.ainvoke.await_args_list
+    ]
+    assert first is not second
+    assert first.client is second.client is client
+    assert first.order_map is not second.order_map
+    assert first.run_map is not second.run_map
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+def test_graph_and_provider_record_deadline_and_cancellation(outcome, caplog) -> None:
+    request = create_accepted_request()
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request, history=(request.user_message,), cached_reply=None
+        ),
+        claim=create_claim(acquired=True),
+    )
+    service, processing, graph = create_service(
+        start=start,
+        travel_response_timeout_seconds=0.01 if outcome == "timeout" else 75.0,
+    )
+    provider = Mock()
+    fallback = Mock()
+    fallback.ainvoke = AsyncMock()
+
+    async def wait_for_cancellation(_messages):
+        if outcome == "cancelled":
+            asyncio.current_task().cancel()
+        await asyncio.Event().wait()
+
+    provider.ainvoke = wait_for_cancellation
+    gateway = FallbackModelGateway(
+        [ModelProvider("primary", provider), ModelProvider("fallback", fallback)]
+    )
+
+    async def invoke_graph(graph_input, **_kwargs):
+        return await gateway.generate(messages=graph_input["messages"])
+
+    graph.ainvoke.side_effect = invoke_graph
+
+    async def exercise():
+        expected_error = (
+            TimeoutError if outcome == "timeout" else asyncio.CancelledError
+        )
+        with pytest.raises(expected_error):
+            await service.generate_reply(
+                user_id=request.conversation.user_id, accepted_request=request
+            )
+        assert get_trace_context() is None
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(exercise())
+
+    metrics = {
+        record.metric_name: record
+        for record in caplog.records
+        if getattr(record, "event", None) == "application_metric"
+    }
+    assert metrics["model_provider_attempts"].metric_labels["outcome"] == outcome
+    assert metrics["travel_graph_runs"].metric_labels["outcome"] == outcome
+    assert metrics["model_provider_duration_ms"].metric_value >= 0
+    assert metrics["travel_graph_duration_ms"].metric_value >= 0
+    fallback.ainvoke.assert_not_awaited()
+    if outcome == "cancelled":
+        processing.fail_processing.assert_not_awaited()
+    else:
+        processing.fail_processing.assert_awaited_once()
+
+
+def test_generate_reply_restores_cached_rich_content() -> None:
+    """A duplicate request should restore the same rich response."""
+
+    request = create_accepted_request()
+
+    rich_content = AssistantRichContent.model_validate(
+        {
+            "type": "rich_response",
+            "schema_version": 1,
+            "sections": [
+                {
+                    "type": "place_carousel",
+                    "id": "suggested-places",
+                    "title": "Suggested for You",
+                    "items": [
+                        {
+                            "id": "gion-district",
+                            "name": "Gion District",
+                            "location": "Kyoto",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    cached_reply = Message(
+        id=uuid4(),
+        conversation_id=request.conversation.id,
+        client_message_id=None,
+        reply_to_message_id=request.user_message.id,
+        role="assistant",
+        content="Here are some places you may enjoy.",
+        structured_content=rich_content.model_dump(mode="json"),
+    )
+
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(),
+            cached_reply=cached_reply,
+        ),
+        claim=None,
+    )
+
+    service, processing, graph = create_service(start=start)
+
+    result = asyncio.run(
+        service.generate_reply(
+            user_id=request.conversation.user_id,
+            accepted_request=request,
+        )
+    )
+
+    assert result.message is cached_reply
+    assert result.is_cached is True
+    assert result.clarification is None
+    assert result.rich_content == rich_content
+
+    graph.ainvoke.assert_not_awaited()
+    processing.save_reply.assert_not_awaited()
+
+
+def test_generate_reply_ignores_invalid_cached_rich_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Invalid stored content must not prevent the text response."""
+
+    request = create_accepted_request()
+
+    cached_reply = Message(
+        id=uuid4(),
+        conversation_id=request.conversation.id,
+        client_message_id=None,
+        reply_to_message_id=request.user_message.id,
+        role="assistant",
+        content="Your recommendations are ready.",
+        structured_content={
+            "type": "rich_response",
+            "schema_version": 1,
+            "sections": [],
+        },
+    )
+
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(),
+            cached_reply=cached_reply,
+        ),
+        claim=None,
+    )
+
+    service, _, _ = create_service(start=start)
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(
+            service.generate_reply(
+                user_id=request.conversation.user_id,
+                accepted_request=request,
+            )
+        )
+
+    assert result.message is cached_reply
+    assert result.clarification is None
+    assert result.rich_content is None
+    assert "structured content is invalid" in caplog.text

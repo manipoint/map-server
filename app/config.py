@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "travel-assistant-local"
     langsmith_tracing: bool = False
+    langsmith_endpoint: Literal[
+        "https://api.smith.langchain.com", "https://eu.api.smith.langchain.com"
+    ] = "https://api.smith.langchain.com"
+    langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0, le=1)
 
     # Request limits
     provider_timeout_seconds: float = Field(default=15.0, gt=0)

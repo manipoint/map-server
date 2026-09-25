@@ -2,6 +2,7 @@
 
 from fastmcp import FastMCP
 
+from app.mcp.observability import ToolExecutionObservabilityMiddleware
 from app.mcp.tools.airports import register_airport_tools
 from app.mcp.tools.currency import register_currency_tools
 from app.mcp.tools.flights import register_flight_tools
@@ -33,6 +34,7 @@ def create_mcp_server(
         name="Travel Assistant",
         instructions="Internal travel-provider tools. Return normalized data only.",
     )
+    server.add_middleware(ToolExecutionObservabilityMiddleware())
     register_weather_tools(server, weather_provider=weather_provider)
 
     if airport_resolution_service is not None:

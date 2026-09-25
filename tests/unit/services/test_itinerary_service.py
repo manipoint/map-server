@@ -274,6 +274,38 @@ def test_create_generated_draft_persists_one_new_source_version() -> None:
     session.rollback.assert_not_awaited()
 
 
+def test_create_generated_draft_can_defer_commit_to_its_caller() -> None:
+    """A caller sharing the session should own the final atomic commit."""
+
+    service, session, repository = create_service()
+    trip = create_trip()
+    source_message_id = uuid4()
+    itinerary = create_itinerary(status=ItineraryStatus.DRAFT)
+    items = [create_item()]
+    created_items = [MagicMock(spec=ItineraryItem)]
+    repository.get_details_by_source_message.side_effect = [None, None]
+    repository.get_owned_trip_with_lock.return_value = trip
+    repository.create_next_draft_for_locked_trip.return_value = itinerary
+    repository.add_items.return_value = created_items
+
+    result = asyncio.run(
+        service.create_generated_draft(
+            trip_id=trip.id,
+            user_id=trip.user_id,
+            source_message_id=source_message_id,
+            items=items,
+            commit=False,
+        )
+    )
+
+    assert result == ItineraryDetails(
+        itinerary=itinerary,
+        items=created_items,
+    )
+    session.commit.assert_not_awaited()
+    session.rollback.assert_not_awaited()
+
+
 def test_create_generated_draft_rejects_unowned_trip_and_rolls_back() -> None:
     """A generated draft must not bypass trip ownership."""
 

@@ -1,5 +1,6 @@
 """Application resource lifecycle management."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from app.graph.tools import (
 )
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
+from app.observability.langsmith import create_langsmith_tracer_factory
 from app.providers.airports.duffel_client import DuffelAirportClient
 from app.providers.currency.frankfurter_client import FrankfurterCurrencyClient
 from app.providers.flights.duffel_client import DuffelFlightClient
@@ -59,6 +61,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     location_provider: WeatherApiLocationClient | None = None
     place_provider: GooglePlacesClient | None = None
     currency_provider: FrankfurterCurrencyClient | None = None
+    langsmith_tracer_factory = create_langsmith_tracer_factory(settings)
     hotel_search_service: HotelSearchService | None = None
     place_search_service: PlaceSearchService | None = None
     location_resolution_service: LocationResolutionService | None = None
@@ -194,30 +197,43 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         application.state.currency_provider = currency_provider
         application.state.mcp_server = mcp_server
         application.state.mcp_client = mcp_client
+        application.state.langsmith_tracer_factory = langsmith_tracer_factory
 
         logger.info(
             "Application started",
-            extra={"app_env": settings.app_env},
+            extra={
+                "app_env": settings.app_env,
+                "langsmith_tracing_enabled": langsmith_tracer_factory is not None,
+            },
         )
         yield
     finally:
         try:
-            if connection_manager is not None:
-                closed_connection_count = await connection_manager.close_all()
-                logger.info(
-                    "WebSocket connections closed",
-                    extra={"connection_count": closed_connection_count},
-                )
+            if langsmith_tracer_factory is not None:
+                try:
+                    await asyncio.to_thread(
+                        langsmith_tracer_factory.client.flush, timeout=2.0
+                    )
+                except Exception:
+                    logger.warning("LangSmith trace flush failed during shutdown")
         finally:
             try:
-                if http_client is not None:
-                    await http_client.aclose()
+                if connection_manager is not None:
+                    closed_connection_count = await connection_manager.close_all()
+                    logger.info(
+                        "WebSocket connections closed",
+                        extra={"connection_count": closed_connection_count},
+                    )
             finally:
                 try:
-                    await database_engine.dispose()
+                    if http_client is not None:
+                        await http_client.aclose()
                 finally:
-                    if cloud_sql_connector is not None:
-                        await cloud_sql_connector.close_async()
+                    try:
+                        await database_engine.dispose()
+                    finally:
+                        if cloud_sql_connector is not None:
+                            await cloud_sql_connector.close_async()
         logger.info(
             "Application stopped",
             extra={"app_env": settings.app_env},

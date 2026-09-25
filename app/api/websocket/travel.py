@@ -239,6 +239,7 @@ async def travel_websocket(
                     content=response_result.message.content,
                     is_duplicate=is_duplicate,
                     itinerary_id=response_result.itinerary_id,
+                    structured_content=response_result.rich_content,
                 )
             )
             await send_event(completed_event.model_dump(mode="json"))

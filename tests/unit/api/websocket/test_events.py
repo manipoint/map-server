@@ -25,6 +25,7 @@ from app.api.websocket.events import (
     TravelResponseFailedPayload,
     validate_client_event,
 )
+from app.domain.assistant_content import AssistantRichContent
 from app.domain.enums import TravelResponseErrorCode
 
 
@@ -725,3 +726,120 @@ def test_client_event_parser_rejects_an_unsupported_version() -> None:
 
     with pytest.raises(ValidationError):
         validate_client_event(event_data)
+
+
+def create_assistant_rich_content() -> AssistantRichContent:
+    """Return one minimal valid rich assistant response."""
+
+    return AssistantRichContent.model_validate(
+        {
+            "type": "rich_response",
+            "schema_version": 1,
+            "sections": [
+                {
+                    "type": "place_carousel",
+                    "id": "suggested-places",
+                    "title": "Suggested for You",
+                    "items": [
+                        {
+                            "id": "gion-district",
+                            "name": "Gion District",
+                            "location": "Kyoto",
+                            "subtitle": "Historic • Cultural",
+                            "image": {
+                                "url": ("https://cdn.roamly.example/places/gion.jpg"),
+                                "alt_text": ("Traditional street in Gion District"),
+                                "width": 1200,
+                                "height": 800,
+                            },
+                            "latitude": 35.0037,
+                            "longitude": 135.7788,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def test_travel_response_completed_serializes_rich_content() -> None:
+    """Completed events should expose typed sections to Flutter."""
+
+    event = TravelResponseCompletedEvent(
+        payload=TravelResponseCompletedPayload(
+            client_message_id=uuid4(),
+            conversation_id=uuid4(),
+            assistant_message_id=uuid4(),
+            content="Here are some places you may enjoy.",
+            is_duplicate=False,
+            structured_content=create_assistant_rich_content(),
+        )
+    )
+
+    serialized = event.model_dump(mode="json")
+    structured_content = serialized["payload"]["structured_content"]
+
+    assert structured_content["type"] == "rich_response"
+    assert structured_content["schema_version"] == 1
+    assert structured_content["sections"][0]["type"] == "place_carousel"
+    assert structured_content["sections"][0]["items"][0]["location"] == "Kyoto"
+
+
+def test_travel_response_completed_allows_plain_text_response() -> None:
+    """Rich content must remain optional for existing assistant replies."""
+
+    payload = TravelResponseCompletedPayload(
+        client_message_id=uuid4(),
+        conversation_id=uuid4(),
+        assistant_message_id=uuid4(),
+        content="Lahore is sunny today.",
+        is_duplicate=False,
+    )
+
+    assert payload.structured_content is None
+
+
+def test_travel_response_completed_rejects_clarification_content() -> None:
+    """A completed event must not contain input-required controls."""
+
+    with pytest.raises(ValidationError):
+        TravelResponseCompletedPayload.model_validate(
+            {
+                "client_message_id": str(uuid4()),
+                "conversation_id": str(uuid4()),
+                "assistant_message_id": str(uuid4()),
+                "content": "Select an airport.",
+                "is_duplicate": False,
+                "structured_content": {
+                    "type": "airport_selection",
+                    "requests": [],
+                },
+            }
+        )
+
+
+def test_travel_response_completed_rejects_unknown_section() -> None:
+    """Unsupported server section types must fail before transmission."""
+
+    with pytest.raises(ValidationError):
+        TravelResponseCompletedPayload.model_validate(
+            {
+                "client_message_id": str(uuid4()),
+                "conversation_id": str(uuid4()),
+                "assistant_message_id": str(uuid4()),
+                "content": "Your recommendations are ready.",
+                "is_duplicate": False,
+                "structured_content": {
+                    "type": "rich_response",
+                    "schema_version": 1,
+                    "sections": [
+                        {
+                            "type": "unknown_carousel",
+                            "id": "unknown",
+                            "title": "Unknown",
+                            "items": [],
+                        }
+                    ],
+                },
+            }
+        )

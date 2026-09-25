@@ -6,7 +6,7 @@ import sys
 from collections.abc import Mapping
 
 from app.common.time import utc_now
-from app.observability.request_context import get_request_id
+from app.observability.request_context import get_request_id, get_trace_context
 
 _REDACTED_KEYS = frozenset(
     {
@@ -71,6 +71,15 @@ class JsonFormatter(logging.Formatter):
         request_id = get_request_id()
         if request_id is not None:
             payload["request_id"] = request_id
+        trace_context = get_trace_context()
+        if trace_context is not None:
+            payload.update(
+                {
+                    "trace_id": trace_context.trace_id,
+                    "conversation_id": trace_context.conversation_id,
+                    "client_message_id": trace_context.client_message_id,
+                }
+            )
         for key, value in record.__dict__.items():
             if key not in _STANDARD_LOG_FIELDS and not key.startswith("_"):
                 if _is_sensitive_key(key):
