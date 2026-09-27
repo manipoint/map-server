@@ -183,12 +183,15 @@ class AuthSessionRepository:
         family_sessions = list(result.scalars().all())
 
         for auth_session in family_sessions:
-            auth_session.revoked_at = revoked_at
+            effective_revoked_at = max(
+                revoked_at,
+                auth_session.created_at,
+            )
+            auth_session.revoked_at = effective_revoked_at
             auth_session.revoke_reason = reason
 
         if family_sessions:
             await self.session.flush()
-
         return len(family_sessions)
 
     async def get_by_id_for_user(

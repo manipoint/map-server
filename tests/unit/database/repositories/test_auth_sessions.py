@@ -409,10 +409,12 @@ def test_revoke_token_family_revokes_every_session() -> None:
     revoked_at = datetime.now(UTC)
 
     old_session = Mock(spec=AuthSession)
+    old_session.created_at = revoked_at - timedelta(minutes=10)
     old_session.revoked_at = None
     old_session.revoke_reason = None
 
     current_session = Mock(spec=AuthSession)
+    current_session.created_at = revoked_at - timedelta(minutes=5)
     current_session.revoked_at = None
     current_session.revoke_reason = None
 
@@ -435,12 +437,15 @@ def test_revoke_token_family_revokes_every_session() -> None:
     )
 
     assert revoked_count == 2
+
     assert old_session.revoked_at == revoked_at
     assert current_session.revoked_at == revoked_at
+
     assert old_session.revoke_reason == "refresh_token_reuse"
     assert current_session.revoke_reason == "refresh_token_reuse"
 
     statement = session.execute.await_args.args[0]
+
     assert token_family_id in statement.compile().params.values()
     assert "FOR UPDATE" in str(statement.compile())
 
@@ -545,3 +550,54 @@ def test_get_by_id_for_user_can_lock_owned_session() -> None:
     statement = session.execute.await_args.args[0]
 
     assert "FOR UPDATE" in str(statement.compile())
+
+
+def test_revoke_token_family_never_revokes_session_before_creation() -> None:
+    """Concurrent rotation must preserve the revocation timestamp invariant."""
+
+    token_family_id = uuid4()
+    requested_revocation = datetime.now(UTC)
+
+    existing_session = Mock(spec=AuthSession)
+    existing_session.created_at = requested_revocation - timedelta(minutes=5)
+    existing_session.revoked_at = None
+    existing_session.revoke_reason = None
+
+    concurrently_created_session = Mock(spec=AuthSession)
+    concurrently_created_session.created_at = requested_revocation + timedelta(
+        milliseconds=300
+    )
+    concurrently_created_session.revoked_at = None
+    concurrently_created_session.revoke_reason = None
+
+    query_result = Mock()
+    query_result.scalars.return_value.all.return_value = [
+        existing_session,
+        concurrently_created_session,
+    ]
+
+    session = create_mock_session()
+    session.execute.return_value = query_result
+
+    repository = AuthSessionRepository(session)
+
+    revoked_count = asyncio.run(
+        repository.revoke_token_family(
+            token_family_id,
+            revoked_at=requested_revocation,
+            reason="refresh_token_reuse",
+        )
+    )
+
+    assert revoked_count == 2
+
+    assert existing_session.revoked_at == requested_revocation
+    assert (
+        concurrently_created_session.revoked_at
+        == concurrently_created_session.created_at
+    )
+
+    assert existing_session.revoke_reason == "refresh_token_reuse"
+    assert concurrently_created_session.revoke_reason == "refresh_token_reuse"
+
+    session.flush.assert_awaited_once_with()

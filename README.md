@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Neon PostgreSQL persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized multi-style onboarding preferences, backend-owned onboarding options, curated Home discovery, paginated destination collections, destination/place details, GCS catalogue media, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Duffel airport resolution, flights and hotels, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
+> **Project status:** the FastAPI foundation, Neon PostgreSQL persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized multi-style onboarding preferences, backend-owned onboarding options, curated Home discovery, paginated destination collections, destination/place details, GCS catalogue media, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. A shared graph deadline, bounded LangGraph tool loop, and ordered Groq → Google → OpenAI fallback are also implemented. In-process MCP tools currently support WeatherAPI weather, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket coordination, LangSmith instrumentation, and the remaining production reliability controls remain planned.
 
 ## Product scope
 
@@ -57,7 +57,7 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/services/travel_response_service.py` | Orchestrates cached replies, graph execution, retries, and safe failures. |
 | `app/graph/` | Bounded model/tool loop, travel tools, prompts, response validation, and ordered model fallback. |
 | `app/mcp/` | In-process FastMCP server, typed tools and schemas, and graph-facing client. |
-| `app/providers/` | WeatherAPI, Duffel, Google Places, and Frankfurter adapters; see provider status below. |
+| `app/providers/` | WeatherAPI, Google Places, and Frankfurter adapters; see provider status below. |
 | `app/api/websocket/` | Authenticated `/ws/travel` protocol, background response tasks, and event schemas. |
 | `alembic/` | Migrations for users, authentication sessions, conversations, messages, assistant runs, trips, itineraries, and ordered itinerary items. |
 | `app/observability/logging.py` | Structured JSON logging and sensitive-field redaction. |
@@ -109,11 +109,11 @@ The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
 | Capability | Provider | Runtime status |
 | --- | --- | --- |
 | Current weather | WeatherAPI | Always initialized; `WEATHER_API_KEY` is therefore required by the current startup path. |
-| Location resolution | WeatherAPI search | Used by Duffel hotels and Google Places. |
+| Location resolution | WeatherAPI search | Used by Google Places. |
 | Canonical trip location | Google Places Text Search | Authenticated `GET /api/v1/locations/resolve`; one provider call and no LLM/MCP call. |
-| Airport resolution | Duffel Places | Enabled with flights; direct IATA codes skip the provider lookup. |
-| Flights | Duffel | Enabled by `FLIGHT_PROVIDER=duffel`; city/airport names are resolved inside one flight-tool call. |
-| Hotels | Duffel | Enabled by `HOTEL_PROVIDER=duffel`. |
+| Airport resolution | No runtime adapter | Contract and service retained; replacement pending. |
+| Flights | No runtime adapter | Tool disabled until Travelport integration is wired. |
+| Hotels | No runtime adapter | Tool disabled until a replacement is wired. |
 | Places | Google Places | Enabled by `PLACES_PROVIDER=google`. |
 | Currency | Frankfurter | Enabled by `CURRENCY_PROVIDER=frankfurter`. |
 
@@ -185,7 +185,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | 3 | Complete | Versioned REST authentication API, authenticated WebSocket transport, and durable conversation messages. |
 | 4 | In progress | Bounded LangGraph model/tool loop, shared graph deadline, and aligned assistant-run leases are complete; structured routing, interrupts, and checkpointing remain. |
 | 5 | In progress | In-process FastMCP tools are complete; an authenticated mounted MCP transport is not implemented. |
-| 6 | In progress | WeatherAPI, Duffel, Google Places, and Frankfurter adapters exist; provider failover and caching remain. |
+| 6 | In progress | WeatherAPI, Google Places, and Frankfurter adapters exist; provider failover and caching remain. |
 | 7 | In progress | Ordered model gateway fallback and timeout controls are complete; LangSmith traces, budgets, circuit breaking, and evaluations remain. |
 | 8 | Planned | Container deployment, monitoring, and load testing. |
 

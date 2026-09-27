@@ -29,10 +29,10 @@ from app.graph.tools import (
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.observability.langsmith import create_langsmith_tracer_factory
-from app.providers.airports.duffel_client import DuffelAirportClient
+from app.providers.airports.client import AirportProvider
 from app.providers.currency.frankfurter_client import FrankfurterCurrencyClient
-from app.providers.flights.duffel_client import DuffelFlightClient
-from app.providers.hotels.duffel_client import DuffelHotelClient
+from app.providers.flights.client import FlightProvider
+from app.providers.hotels.client import HotelProvider
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
 from app.providers.places.google_client import GooglePlacesClient
 from app.providers.weather.client import WeatherApiClient
@@ -55,9 +55,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     cloud_sql_connector: Connector | None = None
     connection_manager: ConnectionManager | None = None
     http_client: httpx.AsyncClient | None = None
-    flight_provider: DuffelFlightClient | None = None
-    airport_provider: DuffelAirportClient | None = None
-    hotel_provider: DuffelHotelClient | None = None
+    flight_provider: FlightProvider | None = None
+    airport_provider: AirportProvider | None = None
+    hotel_provider: HotelProvider | None = None
     location_provider: WeatherApiLocationClient | None = None
     place_provider: GooglePlacesClient | None = None
     currency_provider: FrankfurterCurrencyClient | None = None
@@ -89,45 +89,11 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 http_client=http_client,
                 settings=settings,
             )
-        if settings.flight_provider == "duffel":
-            airport_provider = DuffelAirportClient(
-                http_client=http_client,
-                settings=settings,
-            )
-            airport_resolution_service = AirportResolutionService(
-                airport_provider=airport_provider,
-            )
-            flight_provider = DuffelFlightClient(
-                http_client=http_client,
-                settings=settings,
-            )
-            flight_search_service = FlightSearchService(
-                flight_provider=flight_provider,
-            )
-            flight_search_preparation_service = FlightSearchPreparationService(
-                airport_resolution_service=airport_resolution_service,
-                flight_search_service=flight_search_service,
-            )
-        if settings.hotel_provider == "duffel" or settings.places_provider == "google":
+        if settings.places_provider == "google":
             location_provider = WeatherApiLocationClient(
                 http_client=http_client,
                 settings=settings,
             )
-        if settings.hotel_provider == "duffel":
-            assert location_provider is not None
-
-            hotel_provider = DuffelHotelClient(
-                http_client=http_client,
-                settings=settings,
-            )
-            hotel_search_service = HotelSearchService(
-                location_provider=location_provider,
-                hotel_provider=hotel_provider,
-                radius_km=settings.duffel_stays_radius_km,
-            )
-
-        if settings.places_provider == "google":
-            assert location_provider is not None
             place_provider = GooglePlacesClient(
                 http_client=http_client,
                 settings=settings,

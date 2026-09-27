@@ -10,9 +10,30 @@ from app.domain.flights import FlightSearchStatus
 from app.providers.flights.schemas import (
     FlightItinerary,
     FlightOffer,
+    FlightSearchInput,
     FlightSearchResult,
     FlightSegment,
 )
+
+
+@pytest.mark.parametrize("adults", [0, -1])
+@pytest.mark.parametrize("children_ages", [[], [4, 9]])
+def test_search_requires_an_adult_even_when_children_are_present(
+    adults: int, children_ages: list[int]
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        FlightSearchInput(
+            origin="LHE",
+            destination="NRT",
+            departure_date="2027-11-07",
+            adults=adults,
+            children_ages=children_ages,
+        )
+
+    assert any(
+        error["loc"] == ("adults",) and error["type"] == "greater_than_equal"
+        for error in caught.value.errors()
+    )
 
 
 def create_segment(**overrides: object) -> FlightSegment:

@@ -83,9 +83,11 @@ Use environment variables or a secret manager for deploy-time configuration. Exp
 - `GROQ_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`
 - `MODEL_TIMEOUT_SECONDS`, `TRAVEL_RESPONSE_TIMEOUT_SECONDS`, `MAX_TOOL_ROUNDS`
 - `ASSISTANT_RUN_LEASE_SECONDS`, `ASSISTANT_RUN_COMPLETION_MARGIN_SECONDS`
-- `WEATHER_API_KEY`, `GOOGLE_PLACES_API_KEY`, and `DUFFEL_API_KEY`
-- `FLIGHT_PROVIDER`, `HOTEL_PROVIDER`, `PLACES_PROVIDER`, and `CURRENCY_PROVIDER`
-- `DUFFEL_API_VERSION`, `DUFFEL_SUPPLIER_TIMEOUT_MS`, and `DUFFEL_STAYS_RADIUS_KM`
+- `WEATHER_API_KEY` and `GOOGLE_PLACES_API_KEY`
+- `PLACES_PROVIDER` and `CURRENCY_PROVIDER`
+- Travelport configuration is preparatory; flight/hotel tools remain disabled.
+  Remove retired `FLIGHT_PROVIDER`, `HOTEL_PROVIDER`, and `DUFFEL_*` variables
+  and secret bindings from deployment configuration.
 - `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_TRACING`,
   `LANGSMITH_ENDPOINT`, `LANGSMITH_TRACING_SAMPLING_RATE`
 - Route-specific model configuration and request budget settings

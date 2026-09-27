@@ -30,9 +30,9 @@ Potential later tools include route estimates, offer refresh, and booking-relate
 | Capability | Implemented adapter | Runtime wiring |
 | --- | --- | --- |
 | Current weather | WeatherAPI | Always registered by the current lifespan. |
-| Airport/city IATA resolution | Duffel Places | Registered with `FLIGHT_PROVIDER=duffel`. |
-| Flights | Duffel | Registered when `FLIGHT_PROVIDER=duffel`. |
-| Hotels | Duffel plus WeatherAPI location search | Registered when `HOTEL_PROVIDER=duffel`. |
+| Airport/city IATA resolution | Replacement pending | Not registered by application startup. |
+| Flights | Replacement pending | Not registered by application startup. |
+| Hotels | Replacement pending | Not registered by application startup. |
 | Places | Google Places plus WeatherAPI location search | Registered when `PLACES_PROVIDER=google`. |
 | Currency | Frankfurter | Registered when `CURRENCY_PROVIDER=frankfurter`. |
 

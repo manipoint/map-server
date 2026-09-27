@@ -78,20 +78,17 @@ class Settings(BaseSettings):
     )
     currency_provider: Literal["frankfurter"] | None = None
     frankfurter_base_url: str = "https://api.frankfurter.dev/v2"
-    flight_provider: Literal["duffel"] | None = None
-    hotel_provider: Literal["duffel"] | None = None
-    duffel_api_key: SecretStr | None = None
-    duffel_base_url: str = "https://api.duffel.com"
-    duffel_api_version: Literal["v2"] = "v2"
-    duffel_supplier_timeout_ms: int = Field(
-        default=10_000,
-        ge=2_000,
-        le=60_000,
-    )
-    duffel_stays_radius_km: int = Field(
-        default=5,
-        ge=1,
-        le=100,
+
+    # Travelport
+    travelport_environment: Literal["preproduction", "production"] = "preproduction"
+    travelport_username: SecretStr | None = None
+    travelport_password: SecretStr | None = None
+    travelport_client_id: SecretStr | None = None
+    travelport_client_secret: SecretStr | None = None
+    travelport_pcc_core: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
     )
 
     # LLM models
@@ -199,30 +196,6 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_duffel_configuration(self) -> Self:
-        """Validate configuration for enabled Duffel products."""
-
-        duffel_enabled = (
-            self.flight_provider == "duffel" or self.hotel_provider == "duffel"
-        )
-
-        if duffel_enabled and self.duffel_api_key is None:
-            raise ValueError(
-                "DUFFEL_API_KEY is required when a Duffel provider is enabled"
-            )
-
-        if self.flight_provider == "duffel":
-            http_timeout_ms = self.provider_timeout_seconds * 1000
-
-            if self.duffel_supplier_timeout_ms >= http_timeout_ms:
-                raise ValueError(
-                    "DUFFEL_SUPPLIER_TIMEOUT_MS must be less than "
-                    "PROVIDER_TIMEOUT_SECONDS"
-                )
-
-        return self
-
-    @model_validator(mode="after")
     def validate_places_provider_configuration(self) -> Self:
         """Require credentials for the enabled places provider."""
 
@@ -233,6 +206,19 @@ class Settings(BaseSettings):
             )
 
         return self
+
+    @property
+    def travelport_auth_url(self) -> str:
+        if self.travelport_environment == "production":
+            return "https://auth.travelport.net/oauth/token"
+        return "https://auth.pp.travelport.net/oauth/token"
+
+    @property
+    def travelport_air_base_url(self) -> str:
+        if self.travelport_environment == "production":
+            return "https://api.travelport.net/11/air"
+
+        return "https://api.pp.travelport.net/11/air"
 
 
 @lru_cache
