@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        hide_input_in_errors=True,
     )
 
     app_name: str = "Travel Assistant"
@@ -78,6 +82,15 @@ class Settings(BaseSettings):
     )
     currency_provider: Literal["frankfurter"] | None = None
     frankfurter_base_url: str = "https://api.frankfurter.dev/v2"
+    flight_provider: Literal["travelport"] | None = None
+    flight_metadata_path: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+    airport_directory_path: str | None = Field(
+        default=None,
+        min_length=1,
+    )
 
     # Travelport
     travelport_environment: Literal["preproduction", "production"] = "preproduction"
@@ -89,6 +102,11 @@ class Settings(BaseSettings):
         default=None,
         min_length=1,
         max_length=100,
+    )
+    travelport_max_response_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        le=20 * 1024 * 1024,
     )
 
     # LLM models
@@ -203,6 +221,39 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GOOGLE_PLACES_API_KEY is required "
                 "when Google Places provider is enabled"
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_flight_provider_configuration(self) -> Self:
+        """Require configuration for the enabled flight provider."""
+        if self.flight_provider != "travelport":
+            return self
+
+        required_settings = {
+            "TRAVELPORT_USERNAME": self.travelport_username,
+            "TRAVELPORT_PASSWORD": self.travelport_password,
+            "TRAVELPORT_CLIENT_ID": self.travelport_client_id,
+            "TRAVELPORT_CLIENT_SECRET": self.travelport_client_secret,
+            "TRAVELPORT_PCC_CORE": self.travelport_pcc_core,
+            "FLIGHT_METADATA_PATH": self.flight_metadata_path,
+            "AIRPORT_DIRECTORY_PATH": self.airport_directory_path,
+        }
+
+        missing_settings: list[str] = []
+
+        for name, value in required_settings.items():
+            raw_value = (
+                value.get_secret_value() if isinstance(value, SecretStr) else value
+            )
+
+            if raw_value is None or not raw_value.strip():
+                missing_settings.append(name)
+
+        if missing_settings:
+            raise ValueError(
+                "Travelport flight provider requires: " + ", ".join(missing_settings)
             )
 
         return self

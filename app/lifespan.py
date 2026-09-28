@@ -4,12 +4,14 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
 from google.cloud.sql.connector import Connector
 
 from app.api.websocket.connection_manager import ConnectionManager
+from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
 from app.database.session import (
     create_cloud_sql_resources,
@@ -30,11 +32,18 @@ from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.observability.langsmith import create_langsmith_tracer_factory
 from app.providers.airports.client import AirportProvider
+from app.providers.airports.local_provider import LocalAirportProvider
 from app.providers.currency.frankfurter_client import FrankfurterCurrencyClient
 from app.providers.flights.client import FlightProvider
+from app.providers.flights.local_metadata_provider import LocalFlightMetadataProvider
 from app.providers.hotels.client import HotelProvider
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
 from app.providers.places.google_client import GooglePlacesClient
+from app.providers.travelport.auth_client import TravelportAuthClient
+from app.providers.travelport.flight_client import TravelportFlightClient
+from app.providers.travelport.flight_request_mapper import (
+    TRAVELPORT_MAX_SEARCH_TRAVELERS,
+)
 from app.providers.weather.client import WeatherApiClient
 from app.services.airport_resolution_service import AirportResolutionService
 from app.services.flight_search_preparation_service import (
@@ -105,7 +114,46 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             location_resolution_service = LocationResolutionService(
                 provider=place_provider,
             )
+        if settings.flight_provider == "travelport":
+            metadata_path = settings.flight_metadata_path
+            directory_path = settings.airport_directory_path
+            if metadata_path is None or not metadata_path.strip():
+                raise ProviderConfigurationError("Flight metadata path is required")
+            if directory_path is None or not directory_path.strip():
+                raise ProviderConfigurationError("Airport directory path is required")
+            flight_metadata_provider = await LocalFlightMetadataProvider.from_file(
+                path=Path(metadata_path)
+            )
+            airport_provider = await LocalAirportProvider.from_file(
+                path=Path(directory_path),
+            )
+            if not airport_provider.airport_codes.issubset(
+                flight_metadata_provider.airport_codes
+            ):
+                raise ProviderConfigurationError(
+                    "Airport directory contains airports without timezone metadata"
+                )
+            travelport_auth_client = TravelportAuthClient(
+                http_client=http_client, settings=settings
+            )
+            flight_provider = TravelportFlightClient(
+                http_client=http_client,
+                auth_client=travelport_auth_client,
+                metadata_provider=flight_metadata_provider,
+                settings=settings,
+            )
+            flight_search_service = FlightSearchService(
+                flight_provider=flight_provider,
+                self_service_traveler_limit=TRAVELPORT_MAX_SEARCH_TRAVELERS,
+            )
+            airport_resolution_service = AirportResolutionService(
+                airport_provider=airport_provider,
+            )
 
+            flight_search_preparation_service = FlightSearchPreparationService(
+                airport_resolution_service=airport_resolution_service,
+                flight_search_service=flight_search_service,
+            )
         mcp_server = create_mcp_server(
             weather_provider=weather_provider,
             airport_resolution_service=airport_resolution_service,
@@ -121,7 +169,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 mcp_client=mcp_client,
             ),
         ]
-        if flight_search_service is not None:
+        if flight_search_preparation_service is not None:
             tools.append(create_flight_search_tool(mcp_client=mcp_client))
         if hotel_search_service is not None:
             tools.append(create_hotel_search_tool(mcp_client=mcp_client))

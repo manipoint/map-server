@@ -107,19 +107,27 @@ class FlightSegment(BaseModel):
         pattern=r"^[A-Z0-9]{2,3}$",
     )
     marketing_carrier_name: str = Field(min_length=1, max_length=120)
+    intermediate_stops: int = Field(default=0, ge=0)
     marketing_flight_number: str = Field(
         min_length=1,
         max_length=8,
         pattern=r"^[A-Z0-9]{1,8}$",
     )
 
-    operating_carrier_code: str = Field(
+    operating_carrier_code: str | None = Field(
+        default=None,
         min_length=2,
         max_length=3,
         pattern=r"^[A-Z0-9]{2,3}$",
     )
-    operating_carrier_name: str = Field(min_length=1, max_length=120)
-    operating_flight_number: str = Field(
+    operating_carrier_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+    )
+
+    operating_flight_number: str | None = Field(
+        default=None,
         min_length=1,
         max_length=8,
         pattern=r"^[A-Z0-9]{1,8}$",
@@ -178,9 +186,13 @@ class FlightItinerary(BaseModel):
     @computed_field
     @property
     def stops(self) -> int:
-        """Return the number of connections."""
+        """Count connections and intermediate stops within flights."""
 
-        return len(self.segments) - 1
+        return (
+            len(self.segments)
+            - 1
+            + sum(segment.intermediate_stops for segment in self.segments)
+        )
 
 
 class FlightOffer(BaseModel):

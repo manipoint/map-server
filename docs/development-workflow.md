@@ -190,10 +190,11 @@ The project configures pytest with `--import-mode=importlib`, so test files in d
 
 ## Flight and hotel provider transition
 
-Duffel adapters and their live smoke scripts have been removed. Airport, flight,
-and hotel contracts and service tests remain, but their runtime tools are disabled.
-Travelport settings alone do not enable search; authentication, adapters, and
-startup wiring must be implemented before live smoke tests can resume.
+Travelport authentication, request/response models, reference decoding and batch
+metadata resolution are implemented. Settings alone do not enable search: a live
+metadata source, normalized offer mapping, search HTTP adapter and startup wiring
+remain. See [Travelport integration status](travelport-integration.md) for current
+boundaries, validation commands and the remaining work.
 
 ## Live currency graph smoke test
 
@@ -241,6 +242,13 @@ Expected response:
 Open the generated API documentation at `http://127.0.0.1:8000/docs`.
 
 ## Before completing a coding step
+
+Pytest isolates application settings before collecting test modules: local `.env`
+files and inherited application environment variables are excluded, and test-only
+database/authentication values are supplied. Configuration tests can explicitly
+set environment variables or pass `_env_file` to exercise those sources. API
+transport tests mock weather and model startup clients; provider behavior is
+covered separately. This does not change normal server configuration requirements.
 
 Run the following quality gate:
 

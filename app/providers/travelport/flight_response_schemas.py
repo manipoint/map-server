@@ -121,7 +121,26 @@ class TravelportFlightResponse(BaseModel):
     )
     duration: timedelta = Field(gt=timedelta(0))
     stops: int = Field(ge=0)
-
+    operating_carrier: str | None = Field(
+        default=None,
+        alias="operatingCarrier",
+        min_length=2,
+        max_length=3,
+        pattern=r"^[A-Z0-9]{2,3}$",
+    )
+    operating_carrier_name: str | None = Field(
+        default=None,
+        alias="operatingCarrierName",
+        min_length=1,
+        max_length=120,
+    )
+    operating_carrier_number: str | None = Field(
+        default=None,
+        alias="operatingCarrierNumber",
+        min_length=1,
+        max_length=8,
+        pattern=r"^[A-Z0-9]{1,8}$",
+    )
     departure: TravelportFlightEndpoint = Field(alias="Departure")
     arrival: TravelportFlightEndpoint = Field(alias="Arrival")
 

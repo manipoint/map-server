@@ -58,6 +58,51 @@ def create_segment(**overrides: object) -> FlightSegment:
     return FlightSegment(**values)
 
 
+@pytest.mark.parametrize("omit", [False, True])
+def test_missing_operating_details_are_not_inferred_from_marketing(omit):
+    data = create_segment().model_dump()
+    fields = (
+        "operating_carrier_code",
+        "operating_carrier_name",
+        "operating_flight_number",
+    )
+    for field in fields:
+        if omit:
+            data.pop(field)
+        else:
+            data[field] = None
+    result = FlightSegment.model_validate(data)
+    assert all(getattr(result, field) is None for field in fields)
+    assert result.marketing_carrier_code == "PK"
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"operating_carrier_code": " aa "},
+        {"operating_carrier_name": " Operating Airline "},
+        {"operating_carrier_code": "aa", "operating_flight_number": "123"},
+    ],
+)
+def test_partial_operating_details_survive_json_round_trip(details):
+    data = create_segment().model_dump()
+    for field in (
+        "operating_carrier_code",
+        "operating_carrier_name",
+        "operating_flight_number",
+    ):
+        data[field] = None
+    data.update(details)
+    result = FlightSegment.model_validate(data)
+    assert FlightSegment.model_validate_json(result.model_dump_json()) == result
+    for field, value in details.items():
+        assert getattr(result, field) == (
+            value.strip().upper()
+            if field != "operating_carrier_name"
+            else value.strip()
+        )
+
+
 def create_offer(**overrides: object) -> FlightOffer:
     """Create one valid whole-party flight offer with optional overrides."""
 

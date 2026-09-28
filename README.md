@@ -119,6 +119,11 @@ The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
 
 MCP is currently an internal Python boundary: `TravelMcpClient` calls the in-process FastMCP server object. No `/internal/mcp` HTTP route is mounted yet.
 
+Travelport auth, request/response parsing and batch metadata resolution are
+implemented, but live flight search remains unwired. See
+[Travelport integration status](docs/travelport-integration.md) for completed
+components, limitations, tests and next steps.
+
 Flutter should call canonical location resolution after an explicit search submit or
 debounced selection action, not on every keystroke. The selected object can be sent
 unchanged as `origin_location` or `destination_location` when creating or updating a

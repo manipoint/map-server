@@ -35,6 +35,16 @@ def test_url_database_mode_requires_database_url() -> None:
         )
 
 
+def test_configuration_error_hides_input_values() -> None:
+    marker = "private-input-must-not-appear"
+    with pytest.raises(ValidationError) as captured:
+        create_settings(flight_provider="travelport", travelport_password=marker)
+
+    assert "FLIGHT_METADATA_PATH" in str(captured.value)
+    assert marker not in str(captured.value)
+    assert "input_value" not in str(captured.value)
+
+
 def test_cloud_sql_mode_accepts_complete_configuration() -> None:
     """Cloud SQL mode should accept all required connection settings."""
 
@@ -300,15 +310,20 @@ def test_assistant_completion_margin_rejects_values_outside_bounds(
 def test_retired_provider_environment_does_not_break_settings(monkeypatch) -> None:
     """Old deployment variables cannot reactivate removed adapters."""
 
-    monkeypatch.setenv("FLIGHT_PROVIDER", "duffel")
     monkeypatch.setenv("HOTEL_PROVIDER", "duffel")
     monkeypatch.setenv("DUFFEL_API_KEY", "retired-test-key")
     settings = create_settings()
 
-    assert "flight_provider" not in Settings.model_fields
+    assert settings.flight_provider is None
     assert "hotel_provider" not in Settings.model_fields
     assert not any(name.startswith("duffel_") for name in Settings.model_fields)
     assert settings.travelport_environment == "preproduction"
+
+
+def test_retired_flight_provider_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("FLIGHT_PROVIDER", "duffel")
+    with pytest.raises(ValidationError, match="flight_provider"):
+        create_settings()
 
 
 def test_places_provider_is_disabled_without_credentials_by_default() -> None:

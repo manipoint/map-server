@@ -49,14 +49,18 @@ class FakeAirportProvider:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
-        return AirportSearchResult(query=request.query, options=self.options)
+        return AirportSearchResult(
+            query=request.query, options=self.options[: request.max_results]
+        )
 
 
-def test_direct_iata_code_resolves_without_provider_cost() -> None:
-    """A supplied code should skip the external airport provider entirely."""
+def test_direct_iata_code_resolves_after_provider_verification() -> None:
+    """A supplied code must be verified rather than accepted by syntax alone."""
 
     async def exercise() -> None:
-        provider = FakeAirportProvider(error=AssertionError("unexpected lookup"))
+        provider = FakeAirportProvider(
+            options=[airport_option(iata_code="LHR", name="Heathrow Airport")]
+        )
         service = AirportResolutionService(airport_provider=provider)
 
         result = await service.resolve_airport(
@@ -66,7 +70,8 @@ def test_direct_iata_code_resolves_without_provider_cost() -> None:
         assert result.status == "resolved"
         assert result.iata_code == "LHR"
         assert result.options == []
-        assert provider.requests == []
+        assert len(provider.requests) == 1
+        assert provider.requests[0].query == "lhr"
 
     asyncio.run(exercise())
 
@@ -86,12 +91,13 @@ def test_single_provider_match_resolves_automatically() -> None:
 
         assert result.status == "resolved"
         assert result.iata_code == "LHR"
-        assert provider.requests[0].max_results == 3
+        assert provider.requests[0].max_results == 5
 
     asyncio.run(exercise())
 
 
-def test_ambiguous_city_requires_user_selection() -> None:
+@pytest.mark.parametrize("max_results", [1, 5])
+def test_ambiguous_city_requires_user_selection(max_results: int) -> None:
     """Multiple airports must be returned as choices instead of guessed."""
 
     async def exercise() -> None:
@@ -104,7 +110,7 @@ def test_ambiguous_city_requires_user_selection() -> None:
         )
 
         result = await service.resolve_airport(
-            request=AirportSearchInput(query="London")
+            request=AirportSearchInput(query="London", max_results=max_results)
         )
 
         assert result.status == "selection_required"
@@ -114,15 +120,14 @@ def test_ambiguous_city_requires_user_selection() -> None:
     asyncio.run(exercise())
 
 
-def test_no_provider_match_returns_not_found() -> None:
+@pytest.mark.parametrize("query", ["Unknown place", "ZZZ"])
+def test_no_provider_match_returns_not_found(query: str) -> None:
     """Unknown places should become a safe structured outcome."""
 
     async def exercise() -> None:
         service = AirportResolutionService(airport_provider=FakeAirportProvider())
 
-        result = await service.resolve_airport(
-            request=AirportSearchInput(query="Unknown place")
-        )
+        result = await service.resolve_airport(request=AirportSearchInput(query=query))
 
         assert result.status == "not_found"
         assert result.iata_code is None
