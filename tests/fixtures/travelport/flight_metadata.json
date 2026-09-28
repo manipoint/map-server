@@ -1,0 +1,8 @@
+{
+  "airports": {
+    "JFK": {"iata_code": "JFK", "time_zone": "America/New_York"},
+    "LAX": {"iata_code": "LAX", "time_zone": "America/Los_Angeles"},
+    "BUR": {"iata_code": "BUR", "time_zone": "America/Los_Angeles"}
+  },
+  "airlines": {"AA": {"carrier_code": "AA", "name": "Fixture Airline"}}
+}

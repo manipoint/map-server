@@ -135,3 +135,13 @@ handling without treating a feature limitation as a transient provider outage.
 Tests exercise the graph-to-MCP-to-service path for one-way and round-trip
 requests with the capability enabled and disabled, plus direct-service and
 direct-adapter guards. Existing invalid-date and group guidance remain unchanged.
+
+### Synthetic complete one-way flow
+
+`tests/integration/test_travelport_one_way_flow.py` exercises the graph tool,
+MCP client/server, airport resolution, flight service, authentication client,
+response decoder and mapper together. Dataset loaders read the JSON fixtures
+under `tests/fixtures/travelport`; only external HTTP is mocked. Coverage includes
+an actual offer with exact decimal pricing and cross-timezone UTC conversion,
+empty inventory, ambiguous and unknown locations, token reuse and response
+closure. These fixtures are not production datasets or live-provider evidence.

@@ -1,0 +1,7 @@
+{
+  "airports": [
+    {"provider_location_id": "fixture:JFK", "iata_code": "JFK", "location_type": "airport", "name": "Fixture JFK Airport", "city_name": "New York", "country_name": "United States", "country_code": "US"},
+    {"provider_location_id": "fixture:LAX", "iata_code": "LAX", "location_type": "airport", "name": "Fixture LAX Airport", "city_name": "Los Angeles", "country_name": "United States", "country_code": "US"},
+    {"provider_location_id": "fixture:BUR", "iata_code": "BUR", "location_type": "airport", "name": "Fixture Alternate Airport", "city_name": "Los Angeles", "country_name": "United States", "country_code": "US"}
+  ]
+}
