@@ -19,7 +19,7 @@ class FlightSearchGuidance(BaseModel):
         str_strip_whitespace=True,
     )
 
-    status: Literal["invalid_dates"]
+    status: Literal["invalid_dates", "unsupported_request"]
     message: str = Field(
         min_length=1,
         max_length=500,

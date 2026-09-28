@@ -862,6 +862,7 @@ def test_travelport_startup_wires_flight_services(
         assert state.flight_provider is flight_provider
         assert state.airport_resolution_service.airport_provider is airport_provider
         assert state.flight_search_service.flight_provider is flight_provider
+        assert state.flight_search_service.supports_round_trip is False
         assert (
             preparation.airport_resolution_service is state.airport_resolution_service
         )

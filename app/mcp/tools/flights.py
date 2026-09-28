@@ -6,7 +6,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
-from app.common.exceptions import InvalidTravelDateError
+from app.common.exceptions import InvalidTravelDateError, UnsupportedFlightRequestError
 from app.domain.flights import FlightCabinClass
 from app.mcp.schemas.flights import (
     FlightSearchGuidance,
@@ -41,6 +41,9 @@ def register_flight_tools(
             "requested travelers. Groups above the supported online limit "
             "receive group-booking guidance without a provider search. "
             "This tool searches flights only and does not make bookings."
+            " Round-trip support depends on the configured provider. Preserve "
+            "return_date; if unsupported_request is returned, explain the "
+            "limitation and ask before searching outbound-only or separate legs."
         ),
     )
     async def search_flights(
@@ -91,5 +94,10 @@ def register_flight_tools(
         except InvalidTravelDateError as error:
             return FlightSearchGuidance(
                 status="invalid_dates",
+                message=str(error),
+            )
+        except UnsupportedFlightRequestError as error:
+            return FlightSearchGuidance(
+                status="unsupported_request",
                 message=str(error),
             )

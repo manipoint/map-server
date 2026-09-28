@@ -9,7 +9,11 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from app.common.exceptions import ProviderConfigurationError, ProviderUnavailableError
+from app.common.exceptions import (
+    ProviderConfigurationError,
+    ProviderUnavailableError,
+    UnsupportedFlightRequestError,
+)
 from app.config import Settings
 from app.providers.flights.metadata_provider import FlightMetadataProvider
 from app.providers.flights.schemas import FlightSearchInput
@@ -180,7 +184,7 @@ def test_unsupported_searches_do_not_authenticate_or_call_http(mode):
                 result = await provider.search_flights(request=request(adults=10))
                 assert result.status.value == "group_booking_required"
             else:
-                with pytest.raises(ProviderUnavailableError, match="return searches"):
+                with pytest.raises(UnsupportedFlightRequestError, match="one-way"):
                     await provider.search_flights(
                         request=request(return_date="2027-11-10")
                     )

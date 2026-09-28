@@ -37,5 +37,9 @@ class InvalidTravelDateError(Exception):
     """Raised when travel dates cannot be searched."""
 
 
+class UnsupportedFlightRequestError(Exception):
+    """Raised when a valid flight request exceeds configured capabilities."""
+
+
 class InvalidCursorError(ValueError):
     """Raised when a pagination cursor cannot be safely decoded."""

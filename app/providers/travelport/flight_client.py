@@ -8,10 +8,11 @@ import httpx
 from app.common.exceptions import (
     ProviderConfigurationError,
     ProviderUnavailableError,
+    UnsupportedFlightRequestError,
 )
 from app.common.time import UtcClock, utc_now
 from app.config import Settings
-from app.domain.flights import FlightSearchStatus
+from app.domain.flights import ONE_WAY_ONLY_MESSAGE, FlightSearchStatus
 from app.providers.flights.metadata_provider import FlightMetadataProvider
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.travelport.auth_client import TravelportAuthClient
@@ -78,9 +79,7 @@ class TravelportFlightClient:
             )
 
         if request.return_date is not None:
-            raise ProviderUnavailableError(
-                "Travelport return searches are not supported yet"
-            )
+            raise UnsupportedFlightRequestError(ONE_WAY_ONLY_MESSAGE)
 
         payload = build_travelport_search_request(request).model_dump(
             mode="json",

@@ -75,6 +75,9 @@ def create_flight_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
             "resolves them. "
             "Provide exact child ages and classify infants as seated or on-lap. "
             "Returned totals cover the whole party. Search only; no booking."
+            " Preserve the user's return_date. Round-trip support depends on "
+            "the provider; unsupported_request means explain the limitation "
+            "and ask before an outbound-only search or separate-leg searches."
         ),
         args_schema=FlightSearchPreparationInput,
     )

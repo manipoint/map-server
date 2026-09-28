@@ -3,9 +3,9 @@
 from datetime import date
 from typing import Protocol
 
-from app.common.exceptions import InvalidTravelDateError
+from app.common.exceptions import InvalidTravelDateError, UnsupportedFlightRequestError
 from app.common.time import UtcClock, utc_now
-from app.domain.flights import FlightSearchStatus
+from app.domain.flights import ONE_WAY_ONLY_MESSAGE, FlightSearchStatus
 from app.providers.flights.client import FlightProvider
 from app.providers.flights.schemas import (
     FlightSearchInput,
@@ -17,6 +17,7 @@ class FlightSearchPolicyInput(Protocol):
     """Minimum request facts needed by date and group policy."""
 
     departure_date: date
+    return_date: date | None
 
     @property
     def total_travelers(self) -> int:
@@ -37,6 +38,7 @@ class FlightSearchService:
         flight_provider: FlightProvider,
         self_service_traveler_limit: int = DEFAULT_SELF_SERVICE_TRAVELER_LIMIT,
         clock: UtcClock = utc_now,
+        supports_round_trip: bool = True,
     ) -> None:
         if self_service_traveler_limit < 1:
             raise ValueError("self_service_traveler_limit must be at least 1")
@@ -44,6 +46,7 @@ class FlightSearchService:
         self.flight_provider = flight_provider
         self.self_service_traveler_limit = self_service_traveler_limit
         self.clock = clock
+        self.supports_round_trip = supports_round_trip
 
     async def search_flights(
         self,
@@ -68,6 +71,8 @@ class FlightSearchService:
             raise InvalidTravelDateError("Flight departure date cannot be in the past")
 
         if request.total_travelers <= self.self_service_traveler_limit:
+            if request.return_date is not None and not self.supports_round_trip:
+                raise UnsupportedFlightRequestError(ONE_WAY_ONLY_MESSAGE)
             return None
 
         return FlightSearchResult(

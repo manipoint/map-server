@@ -145,6 +145,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             flight_search_service = FlightSearchService(
                 flight_provider=flight_provider,
                 self_service_traveler_limit=TRAVELPORT_MAX_SEARCH_TRAVELERS,
+                supports_round_trip=False,
             )
             airport_resolution_service = AirportResolutionService(
                 airport_provider=airport_provider,

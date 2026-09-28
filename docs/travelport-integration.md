@@ -118,3 +118,20 @@ and connecting airport. Response-time metadata validation remains necessary.
 Regression tests cover matching coverage, additional metadata airports, missing
 coverage (including empty metadata), file failures, cleanup and immutable code
 inventories. No live Travelport calls are needed.
+
+### Unsupported round-trip requests
+
+Travelport startup configures `FlightSearchService(supports_round_trip=False)`.
+Other service configurations retain the existing round-trip behavior by default.
+After date and group-booking policy checks, unsupported round trips raise
+`UnsupportedFlightRequestError` before airport resolution or provider search.
+The Travelport adapter also guards direct calls with the same error.
+
+MCP translates this into `FlightSearchGuidance` with status
+`unsupported_request`, which the graph-facing client preserves. The message asks
+for confirmation before an outbound-only search or separate-leg searches; the
+return date is never silently removed. Graph and MCP descriptions explain this
+handling without treating a feature limitation as a transient provider outage.
+Tests exercise the graph-to-MCP-to-service path for one-way and round-trip
+requests with the capability enabled and disabled, plus direct-service and
+direct-adapter guards. Existing invalid-date and group guidance remain unchanged.

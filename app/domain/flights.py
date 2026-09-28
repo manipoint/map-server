@@ -2,6 +2,12 @@
 
 from enum import StrEnum
 
+ONE_WAY_ONLY_MESSAGE = (
+    "Only one-way flight searches are currently supported. "
+    "Ask whether the user wants an outbound-only search. "
+    "Do not discard the return date or split the journey without confirmation."
+)
+
 
 class FlightCabinClass(StrEnum):
     """Supported flight cabin classes."""
