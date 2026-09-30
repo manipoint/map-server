@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -15,6 +16,7 @@ from app.graph.planning_builder import (
     merge_requirements,
     validate_researched_itinerary,
 )
+from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_schemas import ResearchedItinerary
 from app.services.planning_research_service import PlanningResearch, ResearchEvidence
 
@@ -49,13 +51,32 @@ def itinerary(days=5):
     }
 
 
-def run_graph(outputs, *, planning=None, message="Plan Japan"):
+def run_graph(
+    outputs,
+    *,
+    planning=None,
+    message="Plan Japan",
+    user_message_id=None,
+    persist_requirements=None,
+    research_service=None,
+):
+    message_id = user_message_id or uuid4()
     gateway = AsyncMock()
     gateway.generate.side_effect = [
         AIMessage(content=json.dumps(output)) for output in outputs
     ]
-    research = AsyncMock()
+    research = research_service or AsyncMock()
     research.research.return_value = PlanningResearch(searched_at=datetime.now(UTC))
+
+    async def persist(state, _reset_trip):
+        return PlanningState.model_validate(
+            {
+                **state.model_dump(),
+                "requirements_message_id": message_id,
+            }
+        )
+
+    persistence = persist_requirements or AsyncMock(side_effect=persist)
     graph = build_planning_graph(model_gateway=gateway, research_service=research)
     result = asyncio.run(
         graph.ainvoke(
@@ -66,7 +87,13 @@ def run_graph(outputs, *, planning=None, message="Plan Japan"):
                 "trip_context": None,
                 "planning": planning or PlanningState(),
                 "latest_message": message,
-            }
+                "user_message_id": message_id,
+                "requirements_changed": False,
+                "reset_trip": False,
+            },
+            context=PlanningRuntimeContext(
+                persist_requirements=persistence,
+            ),
         )
     )
     return result, gateway, research
@@ -121,13 +148,17 @@ def test_complete_requirements_generate_without_preexisting_trip():
 
 def test_general_chat_does_not_search_or_mutate_requirements():
     state = PlanningState(requirements=requirements(), phase="generated")
+    persist = AsyncMock()
     result, gateway, research = run_graph(
-        [{"intent": "chat", "reply": "You are welcome!"}], planning=state
+        [{"intent": "chat", "reply": "You are welcome!"}],
+        planning=state,
+        persist_requirements=persist,
     )
     assert result["planning"] == state
     assert result["assistant_response"] == "You are welcome!"
     assert gateway.generate.await_count == 1
     research.research.assert_not_awaited()
+    persist.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -141,12 +172,16 @@ def test_general_chat_does_not_search_or_mutate_requirements():
 )
 def test_invalid_patch_preserves_previous_state(updates):
     state = PlanningState(requirements=requirements())
+    persist = AsyncMock()
     result, _, research = run_graph(
-        [{"intent": "plan", "updates": updates}], planning=state
+        [{"intent": "plan", "updates": updates}],
+        planning=state,
+        persist_requirements=persist,
     )
     assert result["planning"] == state
     assert "conflict" in result["assistant_response"]
     research.research.assert_not_awaited()
+    persist.assert_not_awaited()
 
 
 def test_explicit_new_trip_drops_old_requirements_and_revision_context():
@@ -285,3 +320,109 @@ def test_past_dates_ask_again_without_tools():
     )
     assert "start_date" in result["planning"].pending_fields
     research.research.assert_not_awaited()
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_same_message_replay_skips_extraction_and_preserves_revision(complete):
+    message_id = uuid4()
+    persist = AsyncMock()
+    state = PlanningState(
+        requirements=requirements()
+        if complete
+        else TripRequirements(destination="Japan"),
+        phase="ready" if complete else "collecting",
+        revision=3,
+        requirements_message_id=message_id,
+    )
+    result, gateway, research = run_graph(
+        [itinerary()] if complete else [],
+        planning=state,
+        user_message_id=message_id,
+        persist_requirements=persist,
+    )
+    assert gateway.generate.await_count == (1 if complete else 0)
+    assert research.research.await_count == (1 if complete else 0)
+    assert result["planning"].revision == 3
+    assert result["planning"].requirements_message_id == message_id
+    persist.assert_not_awaited()
+
+
+def test_new_message_still_extracts_requirements():
+    state = PlanningState(requirements_message_id=uuid4(), revision=3)
+    result, gateway, _ = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Japan"}}],
+        planning=state,
+        user_message_id=uuid4(),
+    )
+    assert gateway.generate.await_count == 1
+    assert result["planning"].revision == 4
+
+
+def test_valid_requirements_are_persisted_before_research():
+    events = []
+    message_id = uuid4()
+
+    async def persist(state, reset_trip):
+        events.append("persist")
+        assert reset_trip is False
+        return PlanningState.model_validate(
+            {
+                **state.model_dump(),
+                "requirements_message_id": message_id,
+            }
+        )
+
+    research = AsyncMock()
+
+    async def perform_research(_requirements):
+        events.append("research")
+        return PlanningResearch(searched_at=datetime.now(UTC))
+
+    research.research.side_effect = perform_research
+    result, _, _ = run_graph(
+        [
+            {"intent": "plan", "updates": requirements().model_dump(mode="json")},
+            itinerary(),
+        ],
+        user_message_id=message_id,
+        persist_requirements=persist,
+        research_service=research,
+    )
+
+    assert result["planning"].phase == "generated"
+    assert result["planning"].requirements_message_id == message_id
+    assert events == ["persist", "research"]
+
+
+def test_persistence_failure_prevents_research_and_synthesis():
+    persistence_error = RuntimeError("synthetic persistence failure")
+    persist = AsyncMock(side_effect=persistence_error)
+    research = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="synthetic persistence failure"):
+        run_graph(
+            [
+                {
+                    "intent": "plan",
+                    "updates": requirements().model_dump(mode="json"),
+                }
+            ],
+            persist_requirements=persist,
+            research_service=research,
+        )
+
+    persist.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+
+def test_new_trip_persistence_receives_reset_trip():
+    state = PlanningState(requirements=requirements(), phase="generated")
+    persist = AsyncMock(side_effect=lambda current, _reset: current)
+
+    run_graph(
+        [{"intent": "new_trip", "updates": {"destination": "Hunza"}}],
+        planning=state,
+        persist_requirements=persist,
+    )
+
+    assert persist.await_args.args[1] is True

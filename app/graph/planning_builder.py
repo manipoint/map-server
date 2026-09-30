@@ -4,9 +4,11 @@ import json
 from datetime import timedelta
 from time import perf_counter
 from typing import NotRequired, TypeVar
+from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from pydantic import BaseModel, ValidationError
 
 from app.common.time import utc_now
@@ -15,6 +17,7 @@ from app.domain.planning import PlanningState
 from app.domain.trip_requirements import TripRequirements
 from app.domain.trip_rules import inclusive_day_count
 from app.graph.model_response import ModelResponseRefusedError, model_response_text
+from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_questions import clarification_text
 from app.graph.planning_schemas import (
     MAX_PLANNING_DAYS,
@@ -39,8 +42,10 @@ class PlanningGraphState(TravelGraphState):
     planning: PlanningState
     research: NotRequired[PlanningResearch]
     latest_message: str
+    user_message_id: NotRequired[UUID]
     route: NotRequired[str]
     reset_trip: NotRequired[bool]
+    requirements_changed: NotRequired[bool]
 
 
 async def structured_call(
@@ -153,14 +158,66 @@ def validate_researched_itinerary(
     return GeneratedItinerary(summary=generated.summary, items=normalized)
 
 
+def route_planning_requirements(
+    planning: PlanningState, *, reset_trip: bool = False
+) -> dict[str, object]:
+    """Route validated requirements without another extraction call."""
+    missing = TripRequirementsPolicy.missing_fields(
+        planning.requirements,
+        today=utc_now().date(),
+    )
+    current = PlanningState.model_validate(
+        {
+            **planning.model_dump(),
+            "phase": "collecting" if missing else "ready",
+            "pending_fields": missing,
+        }
+    )
+    result: dict[str, object] = {
+        "planning": current,
+        "reset_trip": reset_trip,
+    }
+    if missing:
+        return {
+            **result,
+            "route": "respond",
+            "assistant_response": clarification_text(
+                missing,
+                current.language,
+            ),
+        }
+    requirements = current.requirements
+    days = inclusive_day_count(
+        requirements.start_date,
+        requirements.resolved_end_date,
+    )
+    if days > MAX_PLANNING_DAYS:
+        return {
+            **result,
+            "route": "respond",
+            "assistant_response": (
+                "Please split this trip into plans of at most "
+                f"{MAX_PLANNING_DAYS} days."
+            ),
+        }
+
+    return {
+        **result,
+        "route": "research",
+    }
+
+
 def build_planning_graph(
     *, model_gateway: ModelGateway, research_service: PlanningResearchService
 ):
     """No callable tools are attached to extraction or synthesis models."""
-    graph = StateGraph(PlanningGraphState)
+    graph = StateGraph(PlanningGraphState, context_schema=PlanningRuntimeContext)
 
     async def extract(state: PlanningGraphState) -> dict[str, object]:
         previous = state["planning"]
+        message_id = state.get("user_message_id")
+        if message_id is not None and previous.requirements_message_id == message_id:
+            return route_planning_requirements(previous)
         extraction = await structured_call(
             model_gateway,
             RequirementExtraction,
@@ -209,36 +266,35 @@ def build_planning_graph(
                     else "Those details conflict. Please confirm the dates, travellers and budget."
                 ),
             }
-        missing = TripRequirementsPolicy.missing_fields(
-            requirements, today=utc_now().date()
-        )
         planning = PlanningState(
             requirements=requirements,
             language=extraction.language,
-            phase="collecting" if missing else "ready",
             revision=previous.revision + 1,
-            pending_fields=missing,
             itinerary=base.itinerary,
         )
-        reset = extraction.intent == "new_trip"
-        if missing:
-            return {
-                "reset_trip": reset,
-                "planning": planning,
-                "route": "respond",
-                "assistant_response": clarification_text(missing, planning.language),
-            }
-        days = inclusive_day_count(
-            requirements.start_date, requirements.resolved_end_date
+        return {
+            **route_planning_requirements(
+                planning,
+                reset_trip=extraction.intent == "new_trip",
+            ),
+            "requirements_changed": True,
+        }
+
+    async def persist_requirements(
+        state: PlanningGraphState,
+        runtime: Runtime[PlanningRuntimeContext],
+    ) -> dict[str, object]:
+        if not state.get("requirements_changed", False):
+            return {}
+        if runtime.context is None:
+            raise RuntimeError("Planning requirements persistence context is required")
+        persisted = await runtime.context.persist_requirements(
+            state["planning"], state.get("reset_trip", False)
         )
-        if days > MAX_PLANNING_DAYS:
-            return {
-                "reset_trip": reset,
-                "planning": planning,
-                "route": "respond",
-                "assistant_response": f"Please split this trip into plans of at most {MAX_PLANNING_DAYS} days.",
-            }
-        return {"planning": planning, "route": "research", "reset_trip": reset}
+        return {
+            "planning": persisted,
+            "requirements_changed": False,
+        }
 
     async def research(state: PlanningGraphState) -> dict[str, object]:
         return {
@@ -304,11 +360,14 @@ def build_planning_graph(
         }
 
     graph.add_node("extract_requirements", extract)
+    graph.add_node("persist_requirements", persist_requirements)
     graph.add_node("research", research)
     graph.add_node("synthesize_itinerary", synthesize)
+
     graph.add_edge(START, "extract_requirements")
+    graph.add_edge("extract_requirements", "persist_requirements")
     graph.add_conditional_edges(
-        "extract_requirements",
+        "persist_requirements",
         lambda state: state["route"],
         {"respond": END, "research": "research"},
     )

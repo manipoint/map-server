@@ -1,9 +1,9 @@
 """Serialize planning turns and stage business state with the final reply."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +41,7 @@ class ConversationPlanningService:
         accepted: AcceptedTravelRequest,
         lease_seconds: int,
         wait_seconds: float,
-    ) -> AsyncIterator[PlanningTurn]:
+    ) -> AsyncGenerator[PlanningTurn, None]:
         conversation_id = accepted.conversation.id
         token = uuid4()
         # Authorize before waiting; a missing/foreign conversation cannot spin.
@@ -68,7 +68,14 @@ class ConversationPlanningService:
                     await asyncio.sleep(0.25)
             payload, trip_id = snapshot
             state = PlanningState.model_validate(payload)
-            if accepted.trip is not None and accepted.trip.id != trip_id:
+            is_requirements_replay = (
+                state.requirements_message_id == accepted.user_message.id
+            )
+            if (
+                not is_requirements_replay
+                and accepted.trip is not None
+                and accepted.trip_id != trip_id
+            ):
                 trip = accepted.trip
                 state = PlanningState(
                     requirements=TripRequirements(
@@ -96,6 +103,46 @@ class ConversationPlanningService:
                     conversation_id=conversation_id, user_id=user_id, token=token
                 )
                 await self.session.commit()
+
+    async def save_requirements(
+        self,
+        *,
+        turn: PlanningTurn,
+        state: PlanningState,
+        user_message_id: UUID,
+        reset_trip: bool = False,
+    ) -> PlanningTurn:
+        """Commit requirements and their source message while retaining the lease."""
+
+        if state.phase not in {"collecting", "ready"}:
+            raise ValueError("Requirements must be saved in collecting or ready phase")
+
+        persisted_state = PlanningState.model_validate(
+            {
+                **state.model_dump(),
+                "requirements_message_id": user_message_id,
+            }
+        )
+        trip_id = None if reset_trip else turn.trip_id
+        try:
+            await self.repository.stage(
+                conversation_id=turn.conversation_id,
+                user_id=turn.user_id,
+                token=turn.token,
+                state=persisted_state.model_dump(mode="json"),
+                trip_id=trip_id,
+                release_lease=False,
+            )
+            await self.session.commit()
+        except BaseException:
+            await self.session.rollback()
+            raise
+
+        return replace(
+            turn,
+            state=persisted_state,
+            trip_id=trip_id,
+        )
 
     async def stage(
         self,

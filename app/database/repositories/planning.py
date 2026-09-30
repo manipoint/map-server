@@ -45,7 +45,18 @@ class PlanningRepository:
         token: UUID,
         state: dict[str, object],
         trip_id: UUID | None,
+        release_lease: bool = True,
     ) -> None:
+        """Stage owned planning state, optionally retaining the active lease."""
+        values: dict[str, object] = {
+            "planning_state": state,
+            "planning_trip_id": trip_id,
+        }
+        if release_lease:
+            values.update(
+                planning_lease_token=None,
+                planning_lease_expires_at=None,
+            )
         result = await self.session.execute(
             update(Conversation)
             .where(
@@ -54,12 +65,7 @@ class PlanningRepository:
                 Conversation.planning_lease_token == token,
                 Conversation.planning_lease_expires_at > func.clock_timestamp(),
             )
-            .values(
-                planning_state=state,
-                planning_trip_id=trip_id,
-                planning_lease_token=None,
-                planning_lease_expires_at=None,
-            )
+            .values(**values)
             .returning(Conversation.id)
             .execution_options(synchronize_session=False)
         )

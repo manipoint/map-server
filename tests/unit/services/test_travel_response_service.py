@@ -161,6 +161,27 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
         events.append("release")
 
     planning.turn = open_turn
+    persisted_turn = PlanningTurn(
+        token=turn.token,
+        user_id=turn.user_id,
+        conversation_id=turn.conversation_id,
+        state=PlanningState(
+            requirements=state.requirements,
+            phase="ready",
+            revision=1,
+            requirements_message_id=request.user_message.id,
+        ),
+        trip_id=None,
+    )
+
+    async def save_requirements(**kwargs):
+        events.append("requirements")
+        assert kwargs["turn"] is turn
+        assert kwargs["user_message_id"] == request.user_message.id
+        assert kwargs["reset_trip"] is False
+        return persisted_turn
+
+    planning.save_requirements = AsyncMock(side_effect=save_requirements)
     trip = Trip(
         id=uuid4(),
         user_id=turn.user_id,
@@ -172,6 +193,7 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
 
     async def stage(**kwargs):
         events.append("state")
+        assert kwargs["turn"] is persisted_turn
         return trip
 
     planning.stage = AsyncMock(side_effect=stage)
@@ -190,6 +212,21 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
         },
     )
     service.planning = planning
+
+    async def invoke_graph(_graph_input, *, config, context):
+        assert config["run_name"] == "travel_assistant"
+        persisted = await context.persist_requirements(
+            persisted_turn.state,
+            False,
+        )
+        assert persisted is persisted_turn.state
+        return {
+            "assistant_response": "Draft",
+            "planning": state,
+            "generated_itinerary": generated_itinerary(),
+        }
+
+    graph.ainvoke.side_effect = invoke_graph
     itinerary_id = uuid4()
 
     async def save_draft(**kwargs):
@@ -215,7 +252,14 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
     result = asyncio.run(
         service.generate_reply(user_id=turn.user_id, accepted_request=request)
     )
-    assert events == ["lease", "state", "itinerary", "reply", "release"]
+    assert events == [
+        "lease",
+        "requirements",
+        "state",
+        "itinerary",
+        "reply",
+        "release",
+    ]
     assert result.itinerary_id == itinerary_id
     assert result.rich_content.sections[0].itinerary_id == itinerary_id
     assert graph.ainvoke.await_args.args[0]["messages"] == []

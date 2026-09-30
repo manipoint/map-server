@@ -28,7 +28,12 @@ def service_and_request(monkeypatch):
     service.repository = AsyncMock()
     service.repository.acquire.return_value = ({}, None)
     service.trips = AsyncMock()
-    accepted = SimpleNamespace(conversation=SimpleNamespace(id=uuid4()), trip=None)
+    accepted = SimpleNamespace(
+        conversation=SimpleNamespace(id=uuid4()),
+        trip=None,
+        trip_id=None,
+        user_message=SimpleNamespace(id=uuid4()),
+    )
     return service, accepted, repository
 
 
@@ -130,3 +135,129 @@ def test_clarification_only_stages_requirements(monkeypatch):
     service.trips.create.assert_not_awaited()
     assert service.repository.stage.await_args.kwargs["trip_id"] is None
     service.session.commit.assert_not_awaited()
+
+
+def requirements_turn():
+    return PlanningTurn(
+        token=uuid4(),
+        conversation_id=uuid4(),
+        user_id=uuid4(),
+        state=PlanningState(),
+        trip_id=uuid4(),
+    )
+
+
+@pytest.mark.parametrize("phase", ["collecting", "ready"])
+@pytest.mark.parametrize("reset_trip", [False, True])
+def test_save_requirements_commits_without_releasing_lease_or_creating_trip(
+    monkeypatch, phase, reset_trip
+):
+    service, _, _ = service_and_request(monkeypatch)
+    turn = requirements_turn()
+    state = PlanningState(
+        phase=phase, revision=1, requirements=TripRequirements(destination="Japan")
+    )
+    user_message_id = uuid4()
+    persisted_state = state.model_copy(
+        update={"requirements_message_id": user_message_id}
+    )
+    operations = []
+
+    async def stage(**kwargs):
+        operations.append("stage")
+
+    async def commit():
+        operations.append("commit")
+
+    service.repository.stage.side_effect = stage
+    service.session.commit.side_effect = commit
+    saved = asyncio.run(
+        service.save_requirements(
+            turn=turn,
+            state=state,
+            reset_trip=reset_trip,
+            user_message_id=user_message_id,
+        )
+    )
+    service.repository.stage.assert_awaited_once_with(
+        conversation_id=turn.conversation_id,
+        user_id=turn.user_id,
+        token=turn.token,
+        state=persisted_state.model_dump(mode="json"),
+        trip_id=None if reset_trip else turn.trip_id,
+        release_lease=False,
+    )
+    assert operations == ["stage", "commit"]
+    assert saved.state == persisted_state
+    assert state.requirements_message_id is None
+    assert saved.trip_id == (None if reset_trip else turn.trip_id)
+    assert saved.token == turn.token
+    assert saved.user_id == turn.user_id
+    assert saved.conversation_id == turn.conversation_id
+    assert saved is not turn and turn.state == PlanningState()
+    assert turn.trip_id is not None
+    service.repository.release.assert_not_awaited()
+    service.trips.create.assert_not_awaited()
+    service.session.rollback.assert_not_awaited()
+
+
+@pytest.mark.parametrize("phase", ["idle", "generated"])
+def test_invalid_save_phase_does_not_touch_database(monkeypatch, phase):
+    service, _, _ = service_and_request(monkeypatch)
+    with pytest.raises(ValueError, match="collecting or ready"):
+        asyncio.run(
+            service.save_requirements(
+                turn=requirements_turn(),
+                state=PlanningState(phase=phase),
+                user_message_id=uuid4(),
+            )
+        )
+    service.repository.stage.assert_not_awaited()
+    service.session.commit.assert_not_awaited()
+    service.session.rollback.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure_stage", ["stage", "commit"])
+@pytest.mark.parametrize(
+    "error", [RuntimeError("lease or database failure"), asyncio.CancelledError()]
+)
+def test_save_failure_rolls_back_and_propagates(monkeypatch, failure_stage, error):
+    service, _, _ = service_and_request(monkeypatch)
+    target = (
+        service.repository.stage if failure_stage == "stage" else service.session.commit
+    )
+    target.side_effect = error
+    with pytest.raises(type(error)) as raised:
+        asyncio.run(
+            service.save_requirements(
+                turn=requirements_turn(),
+                state=PlanningState(phase="collecting"),
+                user_message_id=uuid4(),
+            )
+        )
+    assert raised.value is error
+    service.session.rollback.assert_awaited_once()
+    if failure_stage == "stage":
+        service.session.commit.assert_not_awaited()
+    service.repository.release.assert_not_awaited()
+
+
+def test_replay_does_not_restore_old_trip_after_saved_reset(monkeypatch):
+    service, accepted, _ = service_and_request(monkeypatch)
+    state = PlanningState(
+        phase="collecting",
+        requirements_message_id=accepted.user_message.id,
+        requirements=TripRequirements(destination="Hunza"),
+    )
+    service.repository.acquire.return_value = (state.model_dump(mode="json"), None)
+    accepted.trip = SimpleNamespace(id=uuid4())
+    accepted.trip_id = accepted.trip.id
+
+    async def scenario():
+        async with service.turn(
+            user_id=uuid4(), accepted=accepted, lease_seconds=120, wait_seconds=1
+        ) as turn:
+            assert turn.state == state
+            assert turn.trip_id is None
+
+    asyncio.run(scenario())

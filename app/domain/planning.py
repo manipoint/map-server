@@ -1,6 +1,7 @@
 """Versioned business state for conversational planning, independent of graphs."""
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +16,7 @@ class PlanningState(BaseModel):
     phase: Literal["idle", "collecting", "ready", "generated"] = "idle"
     language: Literal["en", "ur-Latn"] = "en"
     revision: int = Field(default=0, ge=0)
+    requirements_message_id: UUID | None = None
     pending_fields: tuple[str, ...] = Field(default=(), max_length=20)
     # Compact, validated result retained for revisions; not raw tool transcripts.
     itinerary: dict[str, object] | None = None

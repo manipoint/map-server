@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from json import dumps
+from threading import Event
 from time import sleep
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -921,3 +922,254 @@ def test_travel_websocket_rejects_an_invalid_client_event(
     assert raised.value.code == WS_POLICY_VIOLATION_CODE
     assert raised.value.reason == WS_POLICY_VIOLATION_REASON
     assert connection_manager.active_connection_count == 0
+
+
+def test_reconnect_resends_same_request_and_receives_completed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+
+    generation_started = Event()
+    generation_cancelled = Event()
+    connection_cleaned_up = Event()
+    manager = application.state.connection_manager
+    original_unregister = manager.unregister
+
+    async def unregister_connection(*, connection_id):
+        await original_unregister(connection_id=connection_id)
+        connection_cleaned_up.set()
+
+    monkeypatch.setattr(
+        manager,
+        "unregister",
+        unregister_connection,
+    )
+
+    assistant_message = MagicMock(spec=Message)
+    assistant_message.id = uuid4()
+    assistant_message.content = "Your recovered itinerary"
+
+    persist_request = AsyncMock(
+        side_effect=[
+            create_accepted_request(
+                conversation_id=conversation_id,
+            ),
+            create_accepted_request(
+                conversation_id=conversation_id,
+                is_duplicate=True,
+            ),
+        ]
+    )
+
+    attempts = 0
+
+    async def generate_response(**_kwargs) -> TravelResponseResult:
+        nonlocal attempts
+        attempts += 1
+
+        if attempts == 1:
+            generation_started.set()
+
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                generation_cancelled.set()
+                raise
+
+        return TravelResponseResult(
+            message=assistant_message,
+            is_cached=False,
+            is_processing=False,
+            error_code=None,
+        )
+
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        persist_request,
+    )
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        generate_response,
+    )
+
+    request = create_travel_request_event(
+        client_message_id=client_message_id,
+        conversation_id=conversation_id,
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as first_socket:
+            first_ready = ConnectionReadyEvent.model_validate(
+                first_socket.receive_json()
+            )
+
+            first_socket.send_json(request)
+
+            accepted = TravelRequestAcceptedEvent.model_validate(
+                first_socket.receive_json()
+            )
+            assert accepted.payload.client_message_id == client_message_id
+            assert accepted.payload.conversation_id == conversation_id
+
+            assert generation_started.wait(timeout=5)
+            # Finish endpoint cleanup before TestClient exits its scope.
+            first_socket.close(code=1000)
+
+            assert generation_cancelled.wait(timeout=5)
+            assert connection_cleaned_up.wait(timeout=5)
+
+        # Closing the first connection must cancel its pending task.
+        assert generation_cancelled.wait(timeout=5)
+
+        with client.websocket_connect("/ws/travel") as second_socket:
+            second_ready = ConnectionReadyEvent.model_validate(
+                second_socket.receive_json()
+            )
+
+            assert (
+                second_ready.payload.connection_id != first_ready.payload.connection_id
+            )
+
+            # Replay exactly the same request identifiers and content.
+            second_socket.send_json(request)
+
+            accepted_again = TravelRequestAcceptedEvent.model_validate(
+                second_socket.receive_json()
+            )
+            completed = TravelResponseCompletedEvent.model_validate(
+                second_socket.receive_json()
+            )
+
+            assert accepted_again.payload.client_message_id == client_message_id
+            assert accepted_again.payload.conversation_id == conversation_id
+
+            assert completed.payload.client_message_id == client_message_id
+            assert completed.payload.conversation_id == conversation_id
+            assert completed.payload.assistant_message_id == assistant_message.id
+            assert completed.payload.content == assistant_message.content
+
+    assert attempts == 2
+    assert persist_request.await_count == 2
+
+
+def test_reconnect_delivers_cached_reply_after_delivery_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = create_travel_websocket_app()
+    client_message_id = uuid4()
+    conversation_id = uuid4()
+    itinerary_id = uuid4()
+
+    reply_saved = Event()
+    connection_cleaned_up = Event()
+
+    assistant_message = MagicMock(spec=Message)
+    assistant_message.id = uuid4()
+    assistant_message.content = "Your saved itinerary"
+
+    manager = application.state.connection_manager
+    original_unregister = manager.unregister
+
+    async def unregister_connection(*, connection_id):
+        await original_unregister(connection_id=connection_id)
+        connection_cleaned_up.set()
+
+    monkeypatch.setattr(
+        manager,
+        "unregister",
+        unregister_connection,
+    )
+
+    persist_request = AsyncMock(
+        side_effect=[
+            create_accepted_request(
+                conversation_id=conversation_id,
+            ),
+            create_accepted_request(
+                conversation_id=conversation_id,
+                is_duplicate=True,
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        persist_request,
+    )
+
+    attempts = 0
+
+    async def generate_response(**_kwargs) -> TravelResponseResult:
+        nonlocal attempts
+        attempts += 1
+
+        if attempts == 1:
+            # Simulate a committed reply before delivery to the client.
+            reply_saved.set()
+            await asyncio.Future()
+
+        return TravelResponseResult(
+            message=assistant_message,
+            is_cached=True,
+            is_processing=False,
+            error_code=None,
+            itinerary_id=itinerary_id,
+        )
+
+    monkeypatch.setattr(
+        travel,
+        "generate_travel_response",
+        generate_response,
+    )
+
+    request = create_travel_request_event(
+        client_message_id=client_message_id,
+        conversation_id=conversation_id,
+    )
+
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as first_socket:
+            first_socket.receive_json()
+            first_socket.send_json(request)
+
+            accepted = TravelRequestAcceptedEvent.model_validate(
+                first_socket.receive_json()
+            )
+            assert accepted.payload.client_message_id == client_message_id
+            assert reply_saved.wait(timeout=5)
+
+            first_socket.close(code=1000)
+            assert connection_cleaned_up.wait(timeout=5)
+
+        connection_cleaned_up.clear()
+
+        with client.websocket_connect("/ws/travel") as second_socket:
+            second_socket.receive_json()
+            second_socket.send_json(request)
+
+            accepted_again = TravelRequestAcceptedEvent.model_validate(
+                second_socket.receive_json()
+            )
+            completed = TravelResponseCompletedEvent.model_validate(
+                second_socket.receive_json()
+            )
+
+            assert accepted_again.payload.client_message_id == client_message_id
+            assert accepted_again.payload.conversation_id == conversation_id
+
+            assert completed.payload.client_message_id == client_message_id
+            assert completed.payload.conversation_id == conversation_id
+            assert completed.payload.assistant_message_id == assistant_message.id
+            assert completed.payload.content == assistant_message.content
+            assert completed.payload.itinerary_id == itinerary_id
+            assert completed.payload.is_duplicate is True
+
+            second_socket.close(code=1000)
+            assert connection_cleaned_up.wait(timeout=5)
+
+    assert attempts == 2
+    assert persist_request.await_count == 2

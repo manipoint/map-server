@@ -11,8 +11,10 @@ from app.database.models.message import Message
 from app.domain.assistant_content import AssistantRichContent
 from app.domain.clarifications import TravelClarification
 from app.domain.enums import TravelResponseErrorCode
+from app.domain.planning import PlanningState
 from app.graph.clarifications import extract_travel_clarification
 from app.graph.nodes.input import build_travel_graph_input
+from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.schemas.itineraries import to_itinerary_item_drafts
 from app.graph.subgraphs.model_gateway import ModelGatewayError
 from app.observability.langsmith import LangSmithTracerFactory
@@ -146,6 +148,7 @@ class TravelResponseService:
         accepted_request: AcceptedTravelRequest,
         planning_turn: PlanningTurn | None = None,
     ) -> TravelResponseResult:
+        graph_context: dict[str, object] = {}
         start = await self.processing.start_processing(
             user_id=user_id,
             accepted_request=accepted_request,
@@ -212,12 +215,40 @@ class TravelResponseService:
                 locale=accepted_request.conversation.locale,
                 trip=accepted_request.trip,
             )
+            runtime_context: PlanningRuntimeContext | None = None
             if planning_turn is not None:
+                planning_service = self.planning
+                if planning_service is None:
+                    raise RuntimeError(
+                        "Planning service is required for a planning turn"
+                    )
+
+                async def persist_requirements(
+                    state: PlanningState, reset_trip: bool
+                ) -> PlanningState:
+                    nonlocal planning_turn
+                    if planning_turn is None:
+                        raise RuntimeError("Planning turn is unavailable")
+                    planning_turn = await planning_service.save_requirements(
+                        turn=planning_turn,
+                        state=state,
+                        user_message_id=accepted_request.user_message.id,
+                        reset_trip=reset_trip,
+                    )
+                    return planning_turn.state
+
+                runtime_context = PlanningRuntimeContext(
+                    persist_requirements=persist_requirements
+                )
                 # Durable requirements replace history replay for planning turns.
+
                 graph_input["messages"] = []
                 graph_input.update(
                     planning=planning_turn.state,
                     latest_message=accepted_request.user_message.content,
+                    user_message_id=accepted_request.user_message.id,
+                    requirements_changed=False,
+                    reset_trip=False,
                 )
             graph_config: dict[str, object] = {
                 "run_id": trace_id,
@@ -231,13 +262,15 @@ class TravelResponseService:
             }
             if self.langsmith_tracer_factory is not None:
                 graph_config["callbacks"] = [self.langsmith_tracer_factory()]
+            if runtime_context is not None:
+                graph_context["context"] = runtime_context
+
             graph_started_at = perf_counter()
             graph_outcome = "error"
             async with response_timeout:
                 try:
                     graph_result = await self.graph.ainvoke(
-                        graph_input,
-                        config=graph_config,
+                        graph_input, config=graph_config, **graph_context
                     )
                     graph_outcome = "success"
                 except asyncio.CancelledError:
@@ -302,9 +335,11 @@ class TravelResponseService:
                         trip=trip,
                         generated=generated_itinerary,
                         research=graph_result.get("research"),
-                        requirements=graph_result["planning"].requirements
-                        if planning_turn is not None
-                        else None,
+                        requirements=(
+                            graph_result["planning"].requirements
+                            if planning_turn is not None
+                            else None
+                        ),
                     )
                 save_arguments: dict[str, object] = {
                     "user_id": user_id,
