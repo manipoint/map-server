@@ -12,7 +12,6 @@ from pydantic import SecretStr
 from app.common.exceptions import (
     ProviderConfigurationError,
     ProviderUnavailableError,
-    UnsupportedFlightRequestError,
 )
 from app.config import Settings
 from app.providers.flights.metadata_provider import FlightMetadataProvider
@@ -171,23 +170,17 @@ def test_other_http_errors_do_not_retry_or_follow_redirects(status):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("mode", ["group", "return"])
-def test_unsupported_searches_do_not_authenticate_or_call_http(mode):
+def test_group_search_does_not_authenticate_or_call_http():
     async def run():
         auth = MagicMock(spec=TravelportAuthClient)
         auth.get_access_token = AsyncMock()
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: pytest.fail("Unexpected HTTP call"))
         ) as http:
-            provider = client(http, auth=auth)
-            if mode == "group":
-                result = await provider.search_flights(request=request(adults=10))
-                assert result.status.value == "group_booking_required"
-            else:
-                with pytest.raises(UnsupportedFlightRequestError, match="one-way"):
-                    await provider.search_flights(
-                        request=request(return_date="2027-11-10")
-                    )
+            result = await client(http, auth=auth).search_flights(
+                request=request(adults=10)
+            )
+            assert result.status.value == "group_booking_required"
         auth.get_access_token.assert_not_awaited()
 
     asyncio.run(run())

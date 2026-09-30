@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import date
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -15,6 +16,8 @@ from app.database.models.trip import Trip
 from app.database.repositories.assistant_runs import AssistantRunClaim
 from app.domain.assistant_content import AssistantRichContent
 from app.domain.enums import TravelResponseErrorCode
+from app.domain.planning import PlanningState
+from app.domain.trip_requirements import TripRequirements
 from app.graph.schemas.itineraries import GeneratedItinerary
 from app.graph.subgraphs.model_gateway import (
     FallbackModelGateway,
@@ -23,6 +26,7 @@ from app.graph.subgraphs.model_gateway import (
 )
 from app.observability.langsmith import LangSmithTracerFactory
 from app.observability.request_context import get_trace_context
+from app.services.conversation_planning_service import PlanningTurn
 from app.services.conversation_processing_service import (
     ConversationProcessingContext,
     ProcessingStart,
@@ -129,6 +133,95 @@ def generated_itinerary() -> GeneratedItinerary:
                 },
             ],
         }
+    )
+
+
+def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
+    request = create_accepted_request()
+    state = PlanningState(
+        requirements=TripRequirements(
+            destination="Lahore", start_date="2099-11-07", duration_days=2
+        ),
+        phase="generated",
+    )
+    turn = PlanningTurn(
+        token=uuid4(),
+        user_id=request.conversation.user_id,
+        conversation_id=request.conversation.id,
+        state=PlanningState(),
+        trip_id=None,
+    )
+    events = []
+    planning = Mock()
+
+    @asynccontextmanager
+    async def open_turn(**kwargs):
+        events.append("lease")
+        yield turn
+        events.append("release")
+
+    planning.turn = open_turn
+    trip = Trip(
+        id=uuid4(),
+        user_id=turn.user_id,
+        destination="Lahore",
+        start_date=date(2099, 11, 7),
+        end_date=date(2099, 11, 8),
+        status="draft",
+    )
+
+    async def stage(**kwargs):
+        events.append("state")
+        return trip
+
+    planning.stage = AsyncMock(side_effect=stage)
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request, history=(request.user_message,), cached_reply=None
+        ),
+        claim=create_claim(acquired=True),
+    )
+    service, processing, graph = create_service(
+        start=start,
+        graph_result={
+            "assistant_response": "Draft",
+            "planning": state,
+            "generated_itinerary": generated_itinerary(),
+        },
+    )
+    service.planning = planning
+    itinerary_id = uuid4()
+
+    async def save_draft(**kwargs):
+        events.append("itinerary")
+        assert kwargs["trip_id"] == trip.id and kwargs["commit"] is False
+        return Mock(itinerary=Mock(id=itinerary_id))
+
+    service.itineraries.create_generated_draft.side_effect = save_draft
+
+    async def save_reply(**kwargs):
+        events.append("reply")
+        return SaveAssistantReply(
+            message=Message(
+                id=uuid4(),
+                role="assistant",
+                content="Draft",
+                structured_content=kwargs["structured_content"],
+            ),
+            is_duplicate=False,
+        )
+
+    processing.save_reply.side_effect = save_reply
+    result = asyncio.run(
+        service.generate_reply(user_id=turn.user_id, accepted_request=request)
+    )
+    assert events == ["lease", "state", "itinerary", "reply", "release"]
+    assert result.itinerary_id == itinerary_id
+    assert result.rich_content.sections[0].itinerary_id == itinerary_id
+    assert graph.ainvoke.await_args.args[0]["messages"] == []
+    assert (
+        graph.ainvoke.await_args.args[0]["latest_message"]
+        == request.user_message.content
     )
 
 
@@ -768,8 +861,11 @@ def test_generate_reply_deadline_also_bounds_reply_persistence() -> None:
     )
 
 
-def test_generate_reply_does_not_fail_a_claim_when_cancelled() -> None:
-    """Cancellation leaves the lease intact for safe expiry and later reclaim."""
+@pytest.mark.parametrize(
+    "cleanup_error", [None, RuntimeError("cleanup failed"), asyncio.CancelledError()]
+)
+def test_generate_reply_releases_owned_claim_when_cancelled(cleanup_error) -> None:
+    """Cancellation releases the owned claim while preserving cancellation."""
 
     request = create_accepted_request()
     claim = create_claim(acquired=True)
@@ -783,6 +879,7 @@ def test_generate_reply_does_not_fail_a_claim_when_cancelled() -> None:
     )
     service, processing, graph = create_service(start=start)
     graph.ainvoke.side_effect = asyncio.CancelledError()
+    processing.fail_processing.side_effect = cleanup_error
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
@@ -792,7 +889,9 @@ def test_generate_reply_does_not_fail_a_claim_when_cancelled() -> None:
             )
         )
 
-    processing.fail_processing.assert_not_awaited()
+    processing.fail_processing.assert_awaited_once_with(
+        claim=claim, error_code=TravelResponseErrorCode.GENERATION_FAILED
+    )
     processing.save_reply.assert_not_awaited()
 
 
@@ -884,10 +983,7 @@ def test_graph_and_provider_record_deadline_and_cancellation(outcome, caplog) ->
     assert metrics["model_provider_duration_ms"].metric_value >= 0
     assert metrics["travel_graph_duration_ms"].metric_value >= 0
     fallback.ainvoke.assert_not_awaited()
-    if outcome == "cancelled":
-        processing.fail_processing.assert_not_awaited()
-    else:
-        processing.fail_processing.assert_awaited_once()
+    processing.fail_processing.assert_awaited_once()
 
 
 def test_generate_reply_restores_cached_rich_content() -> None:
@@ -997,3 +1093,35 @@ def test_generate_reply_ignores_invalid_cached_rich_content(
     assert result.clarification is None
     assert result.rich_content is None
     assert "structured content is invalid" in caplog.text
+
+
+def test_cancellation_cleanup_timeout_preserves_original_cancellation(monkeypatch):
+    import app.services.travel_response_service as module
+
+    monkeypatch.setattr(module, "CANCELLED_RUN_CLEANUP_TIMEOUT_SECONDS", 0.001)
+    request = create_accepted_request()
+    claim = create_claim(acquired=True)
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=request,
+            history=(request.user_message,),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    service, processing, graph = create_service(start=start)
+    graph.ainvoke.side_effect = asyncio.CancelledError()
+
+    async def blocked_cleanup(**kwargs):
+        await asyncio.Event().wait()
+
+    processing.fail_processing.side_effect = blocked_cleanup
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            service.generate_reply(
+                user_id=request.conversation.user_id,
+                accepted_request=request,
+            )
+        )
+    processing.fail_processing.assert_awaited_once()
+    processing.save_reply.assert_not_awaited()

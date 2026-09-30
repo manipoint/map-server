@@ -8,6 +8,7 @@ aiohttp==3.14.3
     # via cloud-sql-python-connector
 aiosignal==1.4.0
     # via aiohttp
+airportsdata==20260905
 alembic==1.19.1
     # via map-server
 annotated-doc==0.0.5
@@ -57,6 +58,7 @@ certifi==2026.7.22
     #   httpcore
     #   httpx
     #   langchain-openai
+    #   map-server
     #   requests
 cffi==2.1.1
     # via
@@ -244,7 +246,9 @@ langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.2
     # via langgraph
 langsmith==0.10.17
-    # via langchain-core
+    # via
+    #   langchain-core
+    #   map-server
 mako==1.4.1
     # via alembic
 markdown-it-py==4.2.0

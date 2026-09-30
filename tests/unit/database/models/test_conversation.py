@@ -23,6 +23,10 @@ def test_conversation_contains_required_columns() -> None:
         "locale",
         "created_at",
         "updated_at",
+        "planning_state",
+        "planning_trip_id",
+        "planning_lease_token",
+        "planning_lease_expires_at",
     }
     assert Conversation.__table__.c.id.primary_key is True
     assert Conversation.__table__.c.user_id.nullable is False

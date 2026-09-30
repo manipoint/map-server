@@ -8,6 +8,14 @@ The design targets third normal form for durable business data. Provider payload
 
 ## Current migration status
 
+Revision `ab72c4e91035` adds conversation `planning_state` (versioned JSONB),
+`planning_trip_id` (nullable FK with SET NULL), `planning_lease_token` and
+`planning_lease_expires_at`. State writes use owner/token/expiry predicates and
+commit with the generated itinerary and assistant reply. This revision must be
+applied before starting the new planner; it has not been applied to a deployed
+database by this change. Downgrade discards planning state and trip associations.
+
+
 Revision `b7e2f9a41063` adds partial indexes for published Popular/Featured
 seek ordering and published country filtering. It is prepared for the next
 database migration rollout. These indexes are verified in an isolated test

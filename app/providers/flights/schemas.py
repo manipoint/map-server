@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Self
+from typing import Self
 
 from pydantic import (
     BaseModel,
@@ -14,10 +14,14 @@ from pydantic import (
 )
 
 from app.domain.flights import FlightCabinClass, FlightSearchStatus
+from app.domain.trip_rules import (
+    validate_distinct_locations,
+    validate_flight_dates,
+    validate_lap_infants,
+)
+from app.domain.value_objects import ChildAge as ChildAge
 from app.domain.value_objects import CurrencyCode
-
-ChildAge = Annotated[int, Field(ge=2, le=17)]
-InfantAge = Annotated[int, Field(ge=0, le=1)]
+from app.domain.value_objects import InfantAge as InfantAge
 
 
 class FlightSearchInput(BaseModel):
@@ -56,17 +60,11 @@ class FlightSearchInput(BaseModel):
     def validate_search(self) -> Self:
         """Validate route, dates, and passenger relationships."""
 
-        if self.origin == self.destination:
-            raise ValueError("origin and destination must be different")
+        validate_distinct_locations(self.origin, self.destination)
 
-        if self.return_date is not None and self.return_date < self.departure_date:
-            raise ValueError("return_date must be on or after departure_date")
+        validate_flight_dates(self.departure_date, self.return_date)
 
-        if len(self.infants_on_lap_ages) > self.adults:
-            raise ValueError(
-                "each lap infant must be accompanied by one adult; "
-                "book additional infants with their own seat"
-            )
+        validate_lap_infants(self.adults, len(self.infants_on_lap_ages))
         return self
 
     @property

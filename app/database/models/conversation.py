@@ -13,6 +13,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -69,4 +70,14 @@ class Conversation(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+    planning_state: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    planning_trip_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app.trips.id", ondelete="SET NULL")
+    )
+    planning_lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    planning_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )

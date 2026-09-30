@@ -18,6 +18,7 @@ from app.domain.errors import (
     InvalidTripStatusTransitionError,
     TripNotFoundError,
 )
+from app.domain.trip_rules import validate_distinct_locations, validate_trip_dates
 from app.domain.trips import CanonicalLocation, TripStatus, TripUpdate
 
 
@@ -188,13 +189,11 @@ class TripService:
             )
             if destination is None or start_date is None or end_date is None:
                 raise InvalidTripDetailsError("Required trip details cannot be null")
-            if end_date <= start_date:
-                raise InvalidTripDetailsError("end_date must be after start_date")
-
-            if origin is not None and origin.casefold() == destination.casefold():
-                raise InvalidTripDetailsError(
-                    "origin and destination must be different"
-                )
+            try:
+                validate_trip_dates(start_date, end_date)
+                validate_distinct_locations(origin, destination)
+            except ValueError as error:
+                raise InvalidTripDetailsError(str(error)) from error
             if origin is None and origin_location is not None:
                 raise InvalidTripDetailsError("origin_location requires origin")
 

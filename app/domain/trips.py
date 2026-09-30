@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Self
 
 from pydantic import (
     BaseModel,
@@ -14,13 +14,30 @@ from pydantic import (
 )
 
 from app.domain.flights import FlightCabinClass
-from app.domain.value_objects import CountryCode, CurrencyCode
-
-MAX_TRAVELERS_PER_REQUEST = 100
-
-ChildAge = Annotated[int, Field(ge=2, le=17)]
-InfantAge = Annotated[int, Field(ge=0, le=1)]
-Interest = Annotated[str, Field(min_length=1, max_length=60)]
+from app.domain.trip_rules import (
+    MAX_TRAVELERS_PER_REQUEST as MAX_TRAVELERS_PER_REQUEST,
+)
+from app.domain.trip_rules import (
+    normalize_interests,
+    validate_distinct_locations,
+    validate_lap_infants,
+    validate_room_allocation,
+    validate_traveler_count,
+    validate_trip_dates,
+)
+from app.domain.value_objects import (
+    ChildAge as ChildAge,
+)
+from app.domain.value_objects import (
+    CountryCode,
+    CurrencyCode,
+)
+from app.domain.value_objects import (
+    InfantAge as InfantAge,
+)
+from app.domain.value_objects import (
+    Interest as Interest,
+)
 
 
 class CanonicalLocation(BaseModel):
@@ -86,16 +103,8 @@ class TravelerParty(BaseModel):
     def validate_party(self) -> Self:
         """Validate traveler relationships and request size."""
 
-        if len(self.infants_on_lap_ages) > self.adults:
-            raise ValueError(
-                "each lap infant must be accompanied by one adult; "
-                "book additional infants with their own seat"
-            )
-
-        if self.total_travelers > MAX_TRAVELERS_PER_REQUEST:
-            raise ValueError(
-                f"traveler count cannot exceed {MAX_TRAVELERS_PER_REQUEST}"
-            )
+        validate_lap_infants(self.adults, len(self.infants_on_lap_ages))
+        validate_traveler_count(self.total_travelers)
 
         return self
 
@@ -144,36 +153,15 @@ class TripRequest(BaseModel):
     def normalize_interests(cls, values: list[str]) -> list[str]:
         """Deduplicate interests while preserving their original order."""
 
-        normalized: list[str] = []
-        seen: set[str] = set()
-
-        for value in values:
-            interest = value.strip()
-            key = interest.casefold()
-
-            if key in seen:
-                continue
-
-            normalized.append(interest)
-            seen.add(key)
-
-        return normalized
+        return normalize_interests(values)
 
     @model_validator(mode="after")
     def validate_trip(self) -> Self:
         """Validate trip dates, route, and room allocation."""
 
-        if self.end_date <= self.start_date:
-            raise ValueError("end_date must be after start_date")
-
-        if (
-            self.origin is not None
-            and self.origin.casefold() == self.destination.casefold()
-        ):
-            raise ValueError("origin and destination must be different")
-
-        if self.rooms > self.travelers.adults:
-            raise ValueError("each room requires at least one adult")
+        validate_trip_dates(self.start_date, self.end_date)
+        validate_distinct_locations(self.origin, self.destination)
+        validate_room_allocation(self.travelers.adults, self.rooms)
 
         return self
 
@@ -228,12 +216,7 @@ class TripUpdate(BaseModel):
             ):
                 raise ValueError(f"{field_name} cannot be null")
 
-        if (
-            self.start_date is not None
-            and self.end_date is not None
-            and self.end_date <= self.start_date
-        ):
-            raise ValueError("end_date must be after start_date")
+        validate_trip_dates(self.start_date, self.end_date)
 
         if (
             "origin" in self.model_fields_set

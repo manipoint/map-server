@@ -11,6 +11,7 @@ from app.auth.exceptions import AuthenticationError, InvalidAccessTokenError
 from app.auth.service import AuthenticatedPrincipal, AuthService
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
+from app.services.conversation_planning_service import ConversationPlanningService
 from app.services.conversation_processing_service import ConversationProcessingService
 from app.services.itinerary_service import ItineraryService
 from app.services.travel_response_service import TravelResponseService
@@ -83,6 +84,9 @@ def create_travel_response_service(
     )
 
     return TravelResponseService(
+        planning_service=ConversationPlanningService(session=database_session)
+        if getattr(websocket.app.state, "planning_graph_enabled", False)
+        else None,
         processing_service=processing_service,
         itinerary_service=ItineraryService(session=database_session),
         graph=websocket.app.state.travel_graph,

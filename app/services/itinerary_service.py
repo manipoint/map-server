@@ -16,6 +16,7 @@ from app.domain.errors import (
     TripNotFoundError,
 )
 from app.domain.itineraries import ItineraryItemDraft, ItineraryStatus
+from app.domain.trip_rules import inclusive_day_count
 
 
 class ItineraryService:
@@ -49,7 +50,7 @@ class ItineraryService:
             if trip is None:
                 raise TripNotFoundError("Trip was not found")
 
-            trip_day_count = (trip.end_date - trip.start_date).days + 1
+            trip_day_count = inclusive_day_count(trip.start_date, trip.end_date)
             if any(item.day_number > trip_day_count for item in items):
                 raise InvalidItineraryDetailsError(
                     "An itinerary item falls outside the trip date range"
@@ -208,7 +209,7 @@ class ItineraryService:
             if existing is not None:
                 await self.session.rollback()
                 return existing
-            trip_day_count = (trip.end_date - trip.start_date).days + 1
+            trip_day_count = inclusive_day_count(trip.start_date, trip.end_date)
             if any(item.day_number > trip_day_count for item in items):
                 raise InvalidItineraryDetailsError(
                     "An itinerary item falls outside the trip date range"

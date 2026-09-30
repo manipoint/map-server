@@ -20,14 +20,6 @@ from app.database.session import (
 )
 from app.graph.builder import build_travel_graph
 from app.graph.subgraphs.model_gateway import build_model_gateway
-from app.graph.tools import (
-    create_currency_conversion_tool,
-    create_current_weather_tool,
-    create_flight_search_tool,
-    create_hotel_search_tool,
-    create_itinerary_submission_tool,
-    create_place_search_tool,
-)
 from app.mcp.client import TravelMcpClient
 from app.mcp.server import create_mcp_server
 from app.observability.langsmith import create_langsmith_tracer_factory
@@ -53,6 +45,7 @@ from app.services.flight_search_service import FlightSearchService
 from app.services.hotel_search_service import HotelSearchService
 from app.services.location_resolution_service import LocationResolutionService
 from app.services.place_search_service import PlaceSearchService
+from app.services.planning_research_service import PlanningResearchService
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +138,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             flight_search_service = FlightSearchService(
                 flight_provider=flight_provider,
                 self_service_traveler_limit=TRAVELPORT_MAX_SEARCH_TRAVELERS,
-                supports_round_trip=False,
+                supports_round_trip=True,
             )
             airport_resolution_service = AirportResolutionService(
                 airport_provider=airport_provider,
@@ -165,35 +158,27 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         )
         mcp_client = TravelMcpClient(mcp_server=mcp_server)
 
-        tools = [
-            create_current_weather_tool(
-                mcp_client=mcp_client,
-            ),
-        ]
-        if flight_search_preparation_service is not None:
-            tools.append(create_flight_search_tool(mcp_client=mcp_client))
-        if hotel_search_service is not None:
-            tools.append(create_hotel_search_tool(mcp_client=mcp_client))
-        if place_search_service is not None:
-            tools.append(
-                create_place_search_tool(
-                    mcp_client=mcp_client,
-                )
-            )
-        if currency_provider is not None:
-            tools.append(create_currency_conversion_tool(mcp_client=mcp_client))
-        tools.append(create_itinerary_submission_tool())
-        model_gateway = build_model_gateway(settings=settings, tools=tools)
+        model_gateway = build_model_gateway(settings=settings)
         travel_graph = build_travel_graph(
             model_gateway=model_gateway,
-            tools=tools,
+            tools=(),
             max_tool_rounds=settings.max_tool_rounds,
+            research_service=PlanningResearchService(
+                client=mcp_client,
+                places_available=place_search_service is not None,
+                hotels_available=hotel_search_service is not None,
+                round_trip_flights_available=(
+                    flight_search_service is not None
+                    and flight_search_service.supports_round_trip
+                ),
+            ),
         )
 
         application.state.database_engine = database_engine
         application.state.session_factory = session_factory
         application.state.connection_manager = connection_manager
         application.state.travel_graph = travel_graph
+        application.state.planning_graph_enabled = True
         application.state.http_client = http_client
         application.state.weather_provider = weather_provider
         application.state.airport_provider = airport_provider

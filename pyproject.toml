@@ -30,6 +30,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "airportsdata==20260905",
     "httpx2>=2.10.0",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",

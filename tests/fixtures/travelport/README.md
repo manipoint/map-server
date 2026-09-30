@@ -19,3 +19,7 @@ Run with:
 ```bash
 uv run pytest tests/integration/test_travelport_one_way_flow.py -q
 ```
+
+`round_trip_response.json` is synthetic journey-based NDC data. Both legs share
+`j1` and a total of USD 486.44; it must be counted once, not summed. It is based
+on the documented combinability contract, not a captured live quote.

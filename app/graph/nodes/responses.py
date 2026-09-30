@@ -2,6 +2,7 @@
 
 from langchain_core.messages import AIMessage
 
+from app.graph.model_response import model_response_text
 from app.graph.state import TravelGraphState
 
 
@@ -18,10 +19,7 @@ def build_assistant_response(state: TravelGraphState) -> dict[str, str]:
     if not isinstance(final_message, AIMessage):
         raise ValueError("Travel graph did not finish with an AI message")
 
-    if not isinstance(final_message.content, str):
-        raise ValueError("Travel graph response must be plain text")
-
-    response = final_message.content.strip()
+    response = model_response_text(final_message).strip()
 
     if not response:
         raise ValueError("Travel graph response must not be blank")

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,7 +65,14 @@ class ProcessingStart:
 
         return (
             not self.claim.acquired
-            and self.claim.run.status == AssistantRunStatus.FAILED
+            and (
+                self.claim.run.status == AssistantRunStatus.FAILED
+                or (
+                    self.claim.run.status == AssistantRunStatus.PROCESSING
+                    and self.claim.run.lease_expires_at is not None
+                    and self.claim.run.lease_expires_at <= self.claim.observed_at
+                )
+            )
             and self.claim.run.attempt_count >= max_attempts
         )
 
@@ -134,6 +142,7 @@ class ConversationProcessingService:
         if not normalized_content:
             raise ValueError("assistant reply content must not be blank")
         reply_to_message_id = accepted_request.user_message.id
+        run_id = _claim_run_id(claim)
 
         try:
             existing_reply = await self.messages.get_assistant_reply(
@@ -165,7 +174,7 @@ class ConversationProcessingService:
             else:
                 assistant_message = existing_reply
             completed_run = await self.runs.complete_run(
-                run_id=claim.run.id,
+                run_id=run_id,
                 claim_token=claim.claim_token,
                 assistant_message_id=assistant_message.id,
             )
@@ -241,11 +250,12 @@ class ConversationProcessingService:
 
         # Discard any work staged after the processing lease was acquired. The
         # failure marker must never commit a partially generated response.
+        run_id = _claim_run_id(claim)
         await self.session.rollback()
 
         try:
             failed_run = await self.runs.fail_run(
-                run_id=claim.run.id,
+                run_id=run_id,
                 claim_token=claim.claim_token,
                 error_code=error_code,
             )
@@ -256,3 +266,11 @@ class ConversationProcessingService:
         except BaseException:
             await self.session.rollback()
             raise
+
+
+def _claim_run_id(claim: AssistantRunClaim) -> UUID:
+    """Read identity without lazy I/O after a collaborating service rolled back."""
+    state = inspect(claim.run, raiseerr=False)
+    if state is not None and state.identity is not None:
+        return state.identity[0]
+    return claim.run.id

@@ -13,10 +13,11 @@ from pydantic import (
 )
 
 from app.domain.hotels import HotelSearchStatus
+from app.domain.trip_rules import validate_room_allocation
 from app.domain.value_objects import CountryCode, CurrencyCode
+from app.domain.value_objects import MinorAge as HotelChildAge
 from app.providers.locations.schemas import ResolvedLocation
 
-HotelChildAge = Annotated[int, Field(ge=0, le=17)]
 AmenityText = Annotated[
     str,
     Field(min_length=1, max_length=120),
@@ -54,8 +55,7 @@ class HotelSearchInput(BaseModel):
         if self.nights > 99:
             raise ValueError("hotel stay cannot exceed 99 nights")
 
-        if self.adults < self.rooms:
-            raise ValueError("each room requires at least one adult")
+        validate_room_allocation(self.adults, self.rooms)
 
         return self
 

@@ -1,0 +1,12 @@
+{
+  "airline_count": 0,
+  "airline_source": "not_configured",
+  "airport_count": 7884,
+  "sha256": {
+    "LICENSE-airportsdata.txt": "1ab6bf365e1f6a1883ab6a2f797e761b221081b52a33273d86c157fd562106be",
+    "airport_directory.json": "0d0fe2f5289f7706142757e8596545db1541ad7df4301e59c43a9d1c5dfedbde",
+    "flight_metadata.json": "a0a1dcf3626df5db63f755d2d558279a42c9ba948ae0497b36e26db2b8d1c465"
+  },
+  "source": "https://github.com/mborsetti/airportsdata",
+  "source_version": "20260905"
+}

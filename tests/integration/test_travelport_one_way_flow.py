@@ -29,8 +29,9 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "travelport"
 NOW = datetime(2027, 1, 1, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("round_trip", [False, True])
 @pytest.mark.parametrize("scenario", ["offers", "empty", "ambiguous", "unknown"])
-def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
+def test_search_flow_with_only_http_mocked(scenario: str, round_trip: bool) -> None:
     async def run():
         metadata = await LocalFlightMetadataProvider.from_file(
             path=FIXTURES / "flight_metadata.json",
@@ -65,7 +66,13 @@ def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
                 )
                 assert request.headers["Authorization"] == "Bearer fixture-token"
                 payload = json.loads(request.content)["CatalogProductOfferingsRequest"]
-                (route,) = payload["SearchCriteriaFlight"]
+                routes = payload["SearchCriteriaFlight"]
+                assert len(routes) == (2 if round_trip else 1)
+                route = routes[0]
+                if round_trip:
+                    assert routes[1]["From"]["value"] == "LAX"
+                    assert routes[1]["To"]["value"] == "JFK"
+                    assert routes[1]["departureDate"] == "2027-11-15"
                 assert route["From"]["value"] == "JFK"
                 assert route["To"]["value"] == "LAX"
                 assert route["departureDate"] == "2027-11-08"
@@ -83,7 +90,14 @@ def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
                 else:
                     response = httpx.Response(
                         200,
-                        content=(FIXTURES / "one_way_response.json").read_bytes(),
+                        content=(
+                            FIXTURES
+                            / (
+                                "round_trip_response.json"
+                                if round_trip
+                                else "one_way_response.json"
+                            )
+                        ).read_bytes(),
                         headers={"Content-Type": "application/json"},
                     )
             responses.append(response)
@@ -103,7 +117,7 @@ def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
                 ),
                 flight_search_service=FlightSearchService(
                     flight_provider=provider,
-                    supports_round_trip=False,
+                    supports_round_trip=True,
                     clock=lambda: NOW,
                 ),
             )
@@ -120,6 +134,8 @@ def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
                 }.get(scenario, "lax"),
                 "departure_date": "2027-11-08",
             }
+            if round_trip:
+                arguments["return_date"] = "2027-11-15"
             result = await tool.ainvoke(arguments)
             if scenario in {"ambiguous", "unknown"}:
                 assert result["status"] == "airport_resolution_required"
@@ -141,10 +157,18 @@ def test_one_way_flow_with_only_http_mocked(scenario: str) -> None:
                 else:
                     assert mapped.status.value == "offers_available"
                     (offer,) = mapped.offers
-                    assert offer.total_price == Decimal("243.22")
+                    assert offer.total_price == Decimal(
+                        "486.44" if round_trip else "243.22"
+                    )
                     assert offer.currency == "USD"
                     assert offer.traveler_count == 1
-                    assert offer.return_itinerary is None
+                    assert (offer.return_itinerary is not None) is round_trip
+                    if round_trip:
+                        assert (
+                            offer.return_itinerary.segments[0].departure_airport
+                            == "LAX"
+                        )
+                        assert offer.return_itinerary.duration_minutes == 300
                     assert offer.outbound.duration_minutes == 371
                     assert offer.outbound.stops == 0
                     (segment,) = offer.outbound.segments

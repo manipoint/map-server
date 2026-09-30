@@ -1,5 +1,11 @@
 # Testing Strategy
 
+Partial requirements are covered in
+`tests/unit/services/test_trip_requirements_policy.py`; cross-model compatibility
+is covered in `tests/unit/domain/test_trip_rules.py`. These verify contracts and
+completeness. Planning graph and orchestration tests now cover the conversational
+workflow; real transaction/lease checks require the opt-in PostgreSQL fixture.
+
 ## Goal
 
 Testing must protect deterministic business rules, provider contracts, graph transitions, security boundaries, and travel-answer quality. Live provider calls are excluded from the default test suite because they are slow, costly, and nondeterministic.

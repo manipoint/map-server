@@ -8,7 +8,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session, make_transient_to_detached
 
+from app.database.models.assistant_run import AssistantRun
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
 from app.database.repositories.assistant_runs import (
@@ -21,8 +23,20 @@ from app.services.conversation_processing_service import (
     ConversationProcessingContext,
     ConversationProcessingService,
     ProcessingStart,
+    _claim_run_id,
 )
 from app.services.conversation_service import AcceptedTravelRequest
+
+
+def test_processing_claim_identity_survives_orm_expiration():
+    run_id = uuid4()
+    run = AssistantRun(id=run_id)
+    make_transient_to_detached(run)
+    with Session() as session:
+        session.add(run)
+        session.expire(run, ["id"])
+        claim = Mock(run=run)
+        assert _claim_run_id(claim) == run_id
 
 
 def create_accepted_request(*, is_duplicate: bool = False) -> AcceptedTravelRequest:
@@ -81,8 +95,7 @@ def create_processing_claim(*, acquired: bool = True) -> Mock:
     claim = Mock(spec=AssistantRunClaim)
     claim.acquired = acquired
     claim.claim_token = uuid4() if acquired else None
-    claim.run = Mock()
-    claim.run.id = uuid4()
+    claim.run = AssistantRun(id=uuid4())
     return claim
 
 
@@ -850,3 +863,29 @@ def test_fail_processing_rolls_back_a_commit_failure() -> None:
 
     session.commit.assert_awaited_once_with()
     assert session.rollback.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "expired,attempts,expected", [(True, 3, True), (True, 2, False), (False, 3, False)]
+)
+def test_expired_final_attempt_is_terminal_but_active_lease_is_not(
+    expired, attempts, expected
+):
+    from datetime import UTC, datetime, timedelta
+
+    claim = create_processing_claim(acquired=False)
+    claim.observed_at = datetime(2026, 9, 30, tzinfo=UTC)
+    claim.run.status = AssistantRunStatus.PROCESSING
+    claim.run.attempt_count = attempts
+    claim.run.lease_expires_at = claim.observed_at + timedelta(
+        seconds=-1 if expired else 1
+    )
+    start = ProcessingStart(
+        context=ConversationProcessingContext(
+            accepted_request=create_accepted_request(),
+            history=(),
+            cached_reply=None,
+        ),
+        claim=claim,
+    )
+    assert start.is_attempts_exhausted(max_attempts=3) is expected

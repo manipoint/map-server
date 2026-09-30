@@ -26,11 +26,16 @@ from app.observability.request_context import (
 from app.services.assistant_rich_content_mapper import (
     build_itinerary_rich_content,
 )
+from app.services.conversation_planning_service import (
+    ConversationPlanningService,
+    PlanningTurn,
+)
 from app.services.conversation_processing_service import ConversationProcessingService
 from app.services.conversation_service import AcceptedTravelRequest
 from app.services.itinerary_service import ItineraryService
 
 logger = logging.getLogger(__name__)
+CANCELLED_RUN_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,7 @@ class TravelResponseService:
         travel_response_timeout_seconds: float,
         max_model_attempts: int,
         langsmith_tracer_factory: LangSmithTracerFactory | None = None,
+        planning_service: ConversationPlanningService | None = None,
     ) -> None:
         self.processing = processing_service
         self.itineraries = itinerary_service
@@ -109,12 +115,36 @@ class TravelResponseService:
         self.travel_response_timeout_seconds = travel_response_timeout_seconds
         self.max_model_attempts = max_model_attempts
         self.langsmith_tracer_factory = langsmith_tracer_factory
+        self.planning = planning_service
 
     async def generate_reply(
         self,
         *,
         user_id: UUID,
         accepted_request: AcceptedTravelRequest,
+    ) -> TravelResponseResult:
+        if self.planning is not None:
+            async with self.planning.turn(
+                user_id=user_id,
+                accepted=accepted_request,
+                lease_seconds=self.assistant_run_lease_seconds,
+                wait_seconds=self.travel_response_timeout_seconds,
+            ) as turn:
+                return await self._generate_reply(
+                    user_id=user_id,
+                    accepted_request=accepted_request,
+                    planning_turn=turn,
+                )
+        return await self._generate_reply(
+            user_id=user_id, accepted_request=accepted_request
+        )
+
+    async def _generate_reply(
+        self,
+        *,
+        user_id: UUID,
+        accepted_request: AcceptedTravelRequest,
+        planning_turn: PlanningTurn | None = None,
     ) -> TravelResponseResult:
         start = await self.processing.start_processing(
             user_id=user_id,
@@ -127,7 +157,10 @@ class TravelResponseService:
             cached_reply = start.context.cached_reply
             parsed_content = parse_persisted_structured_content(cached_reply)
             generated_draft = None
-            if accepted_request.trip_id is not None:
+            if (
+                accepted_request.trip_id is not None
+                or parsed_content.rich_content is not None
+            ):
                 generated_draft = await self.itineraries.find_generated_draft(
                     source_message_id=accepted_request.user_message.id,
                     user_id=user_id,
@@ -179,6 +212,13 @@ class TravelResponseService:
                 locale=accepted_request.conversation.locale,
                 trip=accepted_request.trip,
             )
+            if planning_turn is not None:
+                # Durable requirements replace history replay for planning turns.
+                graph_input["messages"] = []
+                graph_input.update(
+                    planning=planning_turn.state,
+                    latest_message=accepted_request.user_message.content,
+                )
             graph_config: dict[str, object] = {
                 "run_id": trace_id,
                 "run_name": "travel_assistant",
@@ -237,8 +277,16 @@ class TravelResponseService:
                 itinerary_id = None
                 rich_content = None
                 generated_itinerary = graph_result.get("generated_itinerary")
+                planning_trip = None
+                if planning_turn is not None and self.planning is not None:
+                    planning_trip = await self.planning.stage(
+                        turn=planning_turn,
+                        state=graph_result["planning"],
+                        generated=generated_itinerary is not None,
+                        reset_trip=graph_result.get("reset_trip", False),
+                    )
                 if generated_itinerary is not None:
-                    trip = accepted_request.trip
+                    trip = planning_trip or accepted_request.trip
                     if trip is None:
                         raise RuntimeError("Generated itinerary requires trip context")
                     generated_draft = await self.itineraries.create_generated_draft(
@@ -253,6 +301,10 @@ class TravelResponseService:
                         itinerary_id=itinerary_id,
                         trip=trip,
                         generated=generated_itinerary,
+                        research=graph_result.get("research"),
+                        requirements=graph_result["planning"].requirements
+                        if planning_turn is not None
+                        else None,
                     )
                 save_arguments: dict[str, object] = {
                     "user_id": user_id,
@@ -280,6 +332,18 @@ class TravelResponseService:
                 rich_content=parsed_content.rich_content,
             )
         except asyncio.CancelledError:
+            # Roll back staged work and release only this worker's claim. If the
+            # database is unavailable, lease expiry remains the recovery fallback.
+            try:
+                await asyncio.wait_for(
+                    self.processing.fail_processing(
+                        claim=claim,
+                        error_code=TravelResponseErrorCode.GENERATION_FAILED,
+                    ),
+                    timeout=CANCELLED_RUN_CLEANUP_TIMEOUT_SECONDS,
+                )
+            except (Exception, asyncio.CancelledError):
+                logger.warning("Cancelled assistant run cleanup could not complete")
             raise
         except TimeoutError:
             logger.warning(

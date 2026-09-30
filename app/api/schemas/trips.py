@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.trip_rules import validate_distinct_locations, validate_trip_dates
 from app.domain.trips import CanonicalLocation, TripStatus, TripUpdate
 
 
@@ -39,22 +40,16 @@ class TripCreateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_trip_details(self) -> Self:
         """Validate the initial route and date range."""
-        if self.end_date <= self.start_date:
-            raise ValueError("end_date must be after start_date")
-        if (
-            self.origin is not None
-            and (
+        validate_trip_dates(self.start_date, self.end_date)
+        if self.origin is not None:
+            validate_distinct_locations(
                 self.origin_location.canonical_name
                 if self.origin_location is not None
-                else self.origin
-            ).casefold()
-            == (
+                else self.origin,
                 self.destination_location.canonical_name
                 if self.destination_location is not None
-                else self.destination
-            ).casefold()
-        ):
-            raise ValueError("origin and destination must be different")
+                else self.destination,
+            )
 
         if self.origin_location is not None and self.origin is None:
             raise ValueError("origin_location requires origin")

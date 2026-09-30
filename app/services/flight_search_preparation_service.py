@@ -7,6 +7,11 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.flights import FlightCabinClass
+from app.domain.trip_rules import (
+    validate_distinct_locations,
+    validate_flight_dates,
+    validate_lap_infants,
+)
 from app.domain.value_objects import CurrencyCode
 from app.providers.airports.schemas import AirportResolution, AirportSearchInput
 from app.providers.flights.schemas import (
@@ -73,15 +78,9 @@ class FlightSearchPreparationInput(BaseModel):
     def validate_request(self) -> Self:
         """Validate facts available before airport resolution."""
 
-        if self.origin.casefold() == self.destination.casefold():
-            raise ValueError("origin and destination must be different")
-        if self.return_date is not None and self.return_date < self.departure_date:
-            raise ValueError("return_date must be on or after departure_date")
-        if len(self.infants_on_lap_ages) > self.adults:
-            raise ValueError(
-                "each lap infant must be accompanied by one adult; "
-                "book additional infants with their own seat"
-            )
+        validate_distinct_locations(self.origin, self.destination)
+        validate_flight_dates(self.departure_date, self.return_date)
+        validate_lap_infants(self.adults, len(self.infants_on_lap_ages))
         return self
 
     def to_flight_search(

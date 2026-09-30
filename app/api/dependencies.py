@@ -16,6 +16,7 @@ from app.auth.service import (
 from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
 from app.database.session import AsyncSessionFactory
+from app.services.conversation_planning_service import ConversationPlanningService
 from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
@@ -211,6 +212,9 @@ async def get_travel_response_service(
         history_limit=settings.conversation_history_message_limit,
     )
     return TravelResponseService(
+        planning_service=ConversationPlanningService(session=database_session)
+        if getattr(request.app.state, "planning_graph_enabled", False)
+        else None,
         processing_service=processing_service,
         itinerary_service=ItineraryService(session=database_session),
         graph=graph,

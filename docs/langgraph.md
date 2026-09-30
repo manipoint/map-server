@@ -1,259 +1,187 @@
-# LangGraph Design
+# Conversational planning graph
 
-## Goals
+## Runtime architecture
 
-The graph must minimize unnecessary LLM calls, support missing-input pauses, isolate tool errors from model errors, resume safely after failure, and produce stable structured output for Flutter.
-
-Authentication and WebSocket transport remain outside the graph. A request enters only after FastAPI has authenticated the session and validated the outer event envelope.
-
-## Current implemented baseline
-
-The current graph is a small bounded ReAct-style loop:
+The default lifespan graph now uses the deterministic planning workflow from the
+Roamly R&D review. Authentication, ownership, durable state and transactions remain
+in services/repositories. Models cannot create trips, choose tools or commit data.
 
 ```text
-START → invoke_model → route
-                         ├─ final text → build_response → END
-                         └─ tool calls → increment_tool_round → execute_tools → invoke_model
+Persist user message → acquire conversation lease → claim assistant run
+  → restore versioned requirements and previous draft
+  → extract intent and explicit requirement changes (one tool-free model call)
+  → validate merged requirements and determine missing fields
+      → incomplete: deterministic English/Roman Urdu questions → save reply/state
+      → chat: return short reply without changing requirements
+      → complete: parallel bounded research
+          → compact verified evidence
+          → tool-free itinerary synthesis
+          → validate (at most one repair)
+          → atomically save trip, itinerary, planning state and rich reply
+  → deliver existing WebSocket completion contract
 ```
 
-- Persisted bounded conversation history is converted to `HumanMessage` and `AIMessage` values.
-- `FallbackModelGateway` tries configured providers in order: Groq, Google, then OpenAI.
-- A model-provider exception, non-AI response, or response without text/tool calls moves to the next model provider. Task cancellation propagates and never triggers fallback.
-- The final node accepts only a non-empty plain-text `AIMessage` and exposes it as `assistant_response`.
-- The model can call registered `get_current_weather`, `search_flights`, `search_hotels`, `search_places`, and `convert_currency` tools. Only tools whose providers were initialized are registered, except weather, which is currently always initialized. `search_flights` accepts codes, airport names, or cities and resolves both endpoints concurrently in deterministic application code. Ambiguous results require user selection and are never guessed. The lower-level MCP `resolve_airport` tool remains available to deterministic backend workflows, but is not exposed separately to the model because flight search already performs that resolution.
-- The prompt preserves misspelled or transliterated location substrings unchanged in the first tool call. Explicit `X se Y` direction remains origin-to-destination; provider results, rather than model spelling substitution, supply canonical locations. Multiple candidates continue through a normal clarification message in conversation history; durable graph interrupt/resume remains planned.
-- `MAX_TOOL_ROUNDS` bounds tool execution; the default is two rounds. Expected provider errors become safe model-visible tool text.
-- `TRAVEL_RESPONSE_TIMEOUT_SECONDS` applies one end-to-end deadline around graph execution and atomic reply persistence. Its default is 75 seconds, below the 120-second processing lease.
-- The graph does not yet implement deterministic intent routing, fan-out, checkpoint-backed interrupts/resume, search persistence, or general structured Flutter result cards. Airport-selection guidance is extracted deterministically from validated flight tool messages and emitted as `travel.input.required`.
+`app/graph/builder.py` delegates to `planning_builder.py` when a research service
+is supplied. Lifespan supplies it and constructs an **unbound** model gateway.
+The older bounded ReAct builder remains available for existing direct callers and
+tests; it is no longer the default conversational planner.
 
-The implemented state is intentionally narrower than the target state below:
+## State and corrections
 
-```python
-class TravelGraphState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    locale: str
-    assistant_response: NotRequired[str]
-    error_code: NotRequired[str]
-    tool_rounds: NotRequired[int]
+`PlanningState` is stored in `app.conversations.planning_state` as schema version 1.
+It contains partial `TripRequirements`, phase, language, revision, missing fields,
+the last generated draft and its compact research evidence. The conversation's
+`planning_trip_id` is a separate foreign key, never a model-supplied identifier.
+
+Unknown facts remain unknown. Extraction returns a partial patch: omission retains
+a value; explicit null clears it. The whole merged object is validated again.
+Contradictory dates, ages, seating or budget values preserve previous state and ask
+for clarification. A year is not inferred by application code. Mixed Roman Urdu
+and English extraction is prompted; deterministic tests mock extraction and do
+not prove live-model language accuracy.
+
+The model classifies only `chat`, `plan`, `revise` or `new_trip`. Completeness and
+research routing are deterministic. `new_trip` clears the previous association;
+ordinary follow-ups retain it. Explicitly supplied owned REST trips seed dates and
+locations, then collect remaining requirements. Revisions receive the previous
+draft and fresh research. Changing route or dates creates a new draft trip rather
+than rewriting an existing saved trip.
+
+Collection questions use up to three templates per turn. Their missing-field
+codes persist internally; they currently travel to Flutter as ordinary text
+completion messages, not a new structured requirements-form event.
+
+## Research and grounding
+
+`PlanningResearchService` maps complete requirements through `TripRequestMapper`.
+It runs relevant enabled searches concurrently, with a 15-second bound per branch:
+
+- places: up to five compact, deduplicated results;
+- lodging: up to three hotel options when lodging is requested and available;
+- flights: up to three round-trip results only when that capability is available.
+
+Travelport currently supports one-way only, so planner round-trip research is
+explicitly disabled. A one-way search is never silently substituted. No hotel
+provider is currently initialized. Missing providers, empty results and expected
+search failures produce visible warnings while allowing an unverified draft.
+Current weather is not misrepresented as a forecast for future travel dates.
+
+Evidence retains local IDs, provider source IDs, place source URLs, observation
+time and offer expiry where available. Named place/hotel/flight items must refer
+to current matching evidence. Their displayed name, location and description are
+copied from normalized evidence, not model text. Expired references are rejected.
+Generic activities/meals/transfers remain unverified suggestions. This is not
+semantic proof of every natural-language sentence or a verified total budget.
+
+The output must cover every inclusive day in order. Optional scheduled items must
+have both timezone-aware timestamps, match their day and not overlap. Output is
+bounded to 100,000 characters, 200 items and 30 trip days. Invalid synthesis gets
+one repair attempt without re-running research; a second failure terminates.
+Output uses JSON schema instructions plus Pydantic validation, not provider-native
+constrained decoding. Requirement extraction has no automatic repair loop.
+
+## Persistence, concurrency and recovery
+
+A conditional database update acquires a user-scoped conversation lease. Its
+transaction commits before model/tool calls, returning the connection to the pool.
+Other turns wait up to the configured response timeout. Acquisition order is not
+a strict FIFO message queue; clients should wait for each clarification reply.
+Independent conversations can run concurrently.
+
+Before writes, the lease token and database-clock expiry are checked again.
+Stale workers cannot overwrite a newer lease holder. Requirements, trip creation,
+itinerary version, rich assistant message and assistant-run completion commit
+in one transaction. Failure rolls them back. The per-message assistant-run claim
+and existing source-message uniqueness retain idempotent retry behavior. Completed
+natural-language requests restore itinerary IDs even when the original request
+had no `trip_id`. Failure recovery reads ORM identity without triggering lazy I/O
+after rollback.
+
+Conversation lease waiting has its own timeout; the existing 75-second default
+response deadline then covers graph execution and persistence. The default lease
+is 120 seconds. Disconnect/shutdown cancellation releases the conversation lease
+when cleanup can run; process death recovers through expiry. This is retry from
+persisted application state, not mid-node checkpoint resume.
+
+## Flutter delivery and images
+
+`TravelResponseService` creates or resolves the owned trip and persists the draft.
+`AssistantRichContentMapper` builds the existing `rich_response` v1 contract with
+place/hotel carousels where evidence exists, plus itinerary preview and traveler
+count. The saved reply is restored on retry/history fetch through existing paths.
+
+No Flutter contract migration is required for these existing sections. Hotel
+photos are copied only from normalized provider data. The current place schema
+has no photo field, so place cards have no image. This does **not** implement the
+full image-rich mockup, a hotel provider, or live booking.
+
+## Models and observability
+
+Extraction and synthesis reuse the configured Groq → Google → OpenAI gateway,
+without callable tools. A clarification/chat turn normally costs one logical
+model call; generation costs two; repair adds at most one. Provider fallback may
+increase physical calls. Separate economy/quality model settings, measured cost
+budgets and circuit breakers are not added here.
+
+HTTP 400/401/403/404/413/422 model errors terminate instead of falling through to
+another provider. Transient failures retain bounded fallback; cancellation
+propagates. Structured-output validation is separate from transport fallback.
+Existing tracing remains enabled according to configuration. Stage latency and
+provider-reported input/output token counts are recorded without response text.
+
+## Migration and validation
+
+Apply Alembic revision `ab72c4e91035` before starting this backend version:
+
+```bash
+uv run alembic upgrade head
+uv run pytest
+uv run ruff check app tests alembic
 ```
 
-`ConversationProcessingService` remains outside the graph. It owns database leases and atomic message persistence; the graph never receives an `AsyncSession`, a WebSocket, API keys, or raw provider payloads.
+The migration adds four conversation columns and a nullable trip foreign key.
+Its downgrade discards collected requirements, snapshots and sticky associations.
+No deployed database is upgraded by source edits or unit tests.
 
-## Target state contract
+New tests cover Roman Urdu fixture turns, merging/corrections, no tools during
+collection, trip creation without an incoming ID, revisions, bounded repairs,
+evidence and schedule rejection, provider degradation/concurrency, ownership,
+lease fencing and atomic orchestration. Optional real PostgreSQL tests use a
+private disposable cluster (`TEST_POSTGRES_BIN`), never application credentials.
 
-The initial state should be a typed mapping with compact, serializable values:
+## Deliberately deferred
 
-```python
-class TravelGraphState(TypedDict):
-    request_id: str
-    user_id: str
-    conversation_id: str
-    request_type: str
-    raw_input: str | None
-    structured_input: dict
-    intent: str | None
-    missing_fields: list[str]
-    validation_errors: list[str]
-    model_profile: str
-    provider_index: int
-    retry_count: int
-    tool_requests: list[dict]
-    tool_result_ids: list[str]
-    compact_results: dict
-    search_id: str | None
-    itinerary_id: str | None
-    final_response: dict | None
-    error_type: str | None
-    error_message: str | None
-```
+LangGraph checkpoints/interrupts, autonomous sub-agents, Laya/Jev, strict FIFO
+cross-worker job queues, structured requirement forms in Flutter, per-field
+provenance/confidence, separate task model profiles, cross-request research cache,
+verified budget/route feasibility, live-provider evals and booking remain separate
+work. These are not implied by having a compiled graph or passing mocked tests.
 
-Large provider payloads, secrets, HTTP clients, database sessions, and WebSocket objects must never be checkpointed. Persist large results first and keep identifiers plus compact top results in state.
+The graph uses the documented [StateGraph nodes and conditional edges](https://docs.langchain.com/oss/python/langgraph/graph-api).
+[LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+is a distinct checkpoint facility; this implementation deliberately keeps durable
+business state in application tables and does not claim checkpoint resume.
 
-## Target main graph
+## Model response normalization and diagnostics
 
-```mermaid
-flowchart TD
-    start(["Start"]) --> load["Load context"]
-    load --> validate["Validate request"]
-    validate --> valid{"Request valid?"}
-    valid -->|"No"| error["Build error"]
-    error --> finish(["Finish"])
-    valid -->|"Yes"| route{"Request route"}
-    route -->|"Structured"| direct["Direct tool flow"]
-    route -->|"Natural language"| extract["Extract intent"]
-    route -->|"Itinerary"| itinerary["Itinerary flow"]
-    route -->|"Unsupported"| unsupported["Unsupported response"]
-    extract --> slots["Validate slots"]
-    slots --> complete{"Fields complete?"}
-    complete -->|"No"| interrupt["Request user input"]
-    interrupt -.->|"Resume"| slots
-    complete -->|"Yes"| intent{"Intent route"}
-    intent --> direct
-    intent --> itinerary
-    direct --> persist["Persist result"]
-    itinerary --> persist
-    persist --> response["Build response"]
-    response --> finish
-    unsupported --> finish
-```
+`app/graph/model_response.py` is shared by the gateway, structured JSON reader
+and plain-text response node. It accepts strings and visible `text`/`output_text`
+blocks, joins chunks without changing their boundaries, and excludes reasoning,
+images and unknown blocks. Gateway normalization preserves message metadata and
+tool calls without mutating the provider response. Empty, malformed and truncated
+responses cannot be accepted as successful answers. Explicit refusals terminate
+without provider fallback or synthesis repair.
 
-## Node responsibilities
+Failure logs include allowlisted finish reasons, content kind/count, HTTP status
+and provider error codes (including wrapped Google SDK errors). They never include
+raw model content, reasoning, prompts or provider error bodies. A 429 alone does
+not establish context overflow: `insufficient_quota`, `rate_limit_exceeded` and
+`context_length_exceeded` are distinct diagnostics when exposed by the SDK.
+Actual quota/credential remediation remains an account configuration task.
 
-### Input nodes
-
-- `load_context`: loads a compact conversation summary, user preferences, and referenced trip metadata.
-- `validate_request`: checks supported event version, input length, IDs, and request ownership assumptions.
-- `extract_intent`: uses deterministic rules first and an economy model only when natural language remains ambiguous.
-- `validate_slots`: validates travel dates, locations, travelers, rooms, currency, and configured result limits.
-
-### Tool nodes
-
-- `search_flights`
-- `search_hotels`
-- `search_places`
-- `get_weather`
-- `convert_currency`
-
-Every tool node receives a validated domain request. It never receives arbitrary prompt text or user-selected URLs.
-
-### Processing nodes
-
-- `normalize_results`: enforces provider-independent response schemas.
-- `rank_results`: applies deterministic ranking using explicit price, duration, distance, rating, and user filters.
-- `aggregate_results`: joins independent itinerary branches.
-- `compact_for_llm`: removes unused fields and limits each category before synthesis.
-
-### Persistence nodes
-
-- `persist_search`: stores the request and bounded offer snapshots idempotently.
-- `persist_messages`: appends user-visible messages, not internal reasoning.
-- `persist_itinerary`: stores a validated itinerary and items transactionally.
-- `record_usage`: records provider/model, token, latency, fallback, and estimated cost metadata.
-
-### Response nodes
-
-- `request_user_input`: interrupts execution with stable missing-field codes.
-- `build_structured_response`: creates Flutter card/list payloads without an LLM.
-- `build_final_response`: validates synthesized itinerary output before returning it.
-- `build_error`: maps typed internal errors to a public code and safe message.
-
-## Target direct search subgraph
-
-```mermaid
-flowchart LR
-    input[/"Validated search"/] --> call["Call MCP tool"]
-    call --> outcome{"Tool outcome"}
-    outcome -->|"Success"| normalize["Normalize"]
-    outcome -->|"No results"| empty["Empty response"]
-    outcome -->|"Transient"| retry{"Retry available?"}
-    outcome -->|"Permanent"| failure["Provider error"]
-    retry -->|"Yes"| call
-    retry -->|"No"| failure
-    normalize --> rank["Rank and limit"]
-    rank --> save["Persist snapshot"]
-    save --> output[/"Structured result"/]
-    empty --> output
-    failure --> output
-```
-
-No LLM participates in this path.
-
-## Target itinerary subgraph
-
-After validation, flight, hotel, places, and weather searches fan out independently. Required branches are selected from the request; a local trip may not need flights, and a day trip may not need hotels.
-
-```mermaid
-flowchart TD
-    input[/"Validated trip request"/] --> fanout["Select required searches"]
-    fanout --> flights["Search flights"]
-    fanout --> hotels["Search hotels"]
-    fanout --> places["Search places"]
-    fanout --> weather["Get weather"]
-    flights --> aggregate["Aggregate results"]
-    hotels --> aggregate
-    places --> aggregate
-    weather --> aggregate
-    aggregate --> save["Persist search results"]
-    save --> compact["Compact top results"]
-    compact --> model["Synthesize itinerary"]
-    model --> validate{"Output valid?"}
-    validate -->|"Repair once"| model
-    validate -->|"Yes"| persist["Persist itinerary"]
-    validate -->|"No"| error["Return safe error"]
-    persist --> output[/"Itinerary response"/]
-    error --> output
-```
-
-The synthesis node receives only validated preferences and compact normalized evidence. It cannot invent booking availability; each option retains its source, observed time, currency, and offer identifier.
-
-## Target model gateway subgraph
-
-```mermaid
-flowchart TD
-    select["Select profile and provider"] --> invoke["Invoke model"]
-    invoke --> result{"Invocation result"}
-    result -->|"Success"| validate["Validate output"]
-    result -->|"Transient"| retry{"Retry available?"}
-    result -->|"Unavailable"| fallback["Select fallback"]
-    result -->|"Invalid request"| fail["Return model error"]
-    result -->|"Safety refusal"| refusal["Return refusal"]
-    retry -->|"Yes"| invoke
-    retry -->|"No"| fallback
-    fallback --> providers{"Provider remains?"}
-    providers -->|"Yes"| invoke
-    providers -->|"No"| unavailable["Service unavailable"]
-    validate --> done(["Return output"])
-    refusal --> done
-    fail --> done
-    unavailable --> done
-```
-
-Fallback must not run for malformed input, policy refusal, or an MCP/provider error. Each configured fallback model must support the same tool and structured-output contract.
-
-## Interrupt and resume
-
-This section is a target contract. The current compiled graph has no checkpointer or interrupt node.
-
-Missing required fields produce an interrupt payload:
-
-```json
-{
-  "type": "input.required",
-  "request_id": "req_123",
-  "fields": ["departure_date"],
-  "message": "What date would you like to depart?"
-}
-```
-
-FastAPI sends it over WebSocket. Flutter replies with the same `request_id`, and the graph resumes from its PostgreSQL checkpoint. Repeated resume payloads must be idempotent.
-
-## Threading and concurrency
-
-- `conversation_id` is the logical memory key.
-- `request_id` is the invocation and idempotency key.
-- MVP policy allows one active request per conversation.
-- A newer request may explicitly cancel the active search before starting.
-- Multiple conversations for one user may run independently.
-- Checkpoint writes for a conversation must be serialized to prevent lost state.
-
-## Bounded execution
-
-Current bounds include conversation-history length, model attempts, per-provider timeout, one shared graph deadline, search-result count, WebSocket message size, and tool rounds. Token/provider budgets and repair-attempt controls are not implemented.
-
-Every graph run has hard limits:
-
-- maximum model attempts;
-- maximum provider fallbacks;
-- maximum tool calls per request;
-- maximum repair attempts;
-- maximum compact results per domain;
-- maximum wall-clock duration;
-- per-user token and provider-call budget.
-
-When a limit is reached, the graph returns a structured partial or failure result; it does not loop indefinitely.
-
-## Checkpointing
-
-No LangGraph checkpointer is currently configured. The target production design uses `AsyncPostgresSaver` with a separate `langgraph` schema. Checkpoints support interrupts and recovery, but normalized application tables remain the durable business source of truth.
-
-Current WebSocket generation runs in an in-process child task. Disconnect or shutdown cancels that task; the persisted assistant-run lease allows a later retry but does not resume execution from a graph checkpoint.
+Known persistence limitation: requirements from a turn are staged only after the
+whole graph completes. If extraction succeeds but research/synthesis fails or is
+cancelled, that turn's extracted updates are not saved, although its user message
+is already durable. Earlier committed requirements survive. Separately committing
+validated requirements before generation needs a dedicated transaction/idempotency
+change; response normalization does not resolve that limitation.

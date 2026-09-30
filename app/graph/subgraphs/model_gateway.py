@@ -14,6 +14,12 @@ from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+from app.graph.model_response import (
+    ModelResponseRefusedError,
+    model_response_text,
+    provider_error_diagnostics,
+    response_diagnostics,
+)
 from app.observability.metrics import record_metric
 from app.observability.request_context import cancellation_outcome
 
@@ -84,37 +90,64 @@ class FallbackModelGateway:
                 if not isinstance(response, AIMessage):
                     last_error = TypeError("model provider returned a non-AI message")
                     outcome = "invalid_response"
-                elif (
-                    not (isinstance(response.content, str) and response.content.strip())
-                    and not response.tool_calls
-                ):
-                    last_error = ValueError(
-                        "model provider returned neither text nor tool calls"
-                    )
-                    outcome = "invalid_response"
                 else:
-                    outcome = "success"
-                    return response
+                    try:
+                        content = model_response_text(response)
+                        if not content.strip() and not response.tool_calls:
+                            raise ValueError(
+                                "Model response has no visible text or tools"
+                            )
+                    except ModelResponseRefusedError:
+                        raise
+                    except ValueError as error:
+                        last_error = error
+                        outcome = "invalid_response"
+                    else:
+                        outcome = "success"
+                        return (
+                            response
+                            if isinstance(response.content, str)
+                            else response.model_copy(update={"content": content})
+                        )
                 logger.warning(
                     "Model provider returned an invalid response",
                     extra={
                         "model_provider": provider.name,
                         "error_type": type(last_error).__name__,
+                        **response_diagnostics(response),
                     },
                 )
+            except ModelResponseRefusedError as error:
+                outcome = "refused"
+                logger.warning(
+                    "Model response refused",
+                    extra={
+                        "model_provider": provider.name,
+                        **response_diagnostics(response),
+                    },
+                )
+                raise ModelGatewayError("Model response was refused") from error
             except asyncio.CancelledError:
                 outcome = cancellation_outcome()
                 raise
             except Exception as error:
                 last_error = error
+                diagnostics = provider_error_diagnostics(error)
                 outcome = "timeout" if isinstance(error, TimeoutError) else "error"
                 logger.warning(
                     "Model provider attempt failed",
                     extra={
                         "model_provider": provider.name,
                         "error_type": type(error).__name__,
+                        **diagnostics,
                     },
                 )
+                # Invalid credentials, denied access and malformed requests do not
+                # become valid by spending another provider call. Transient rate
+                # limits/timeouts/server failures retain bounded fallback.
+                status = diagnostics.get("http_status")
+                if status in {400, 401, 403, 404, 413, 422}:
+                    raise ModelGatewayError("Model request was rejected") from error
             finally:
                 _record_provider_attempt(
                     provider_name=provider.name,

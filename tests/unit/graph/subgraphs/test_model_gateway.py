@@ -45,6 +45,25 @@ class FakeChatModel:
         return self
 
 
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422, 429, 500, 503])
+def test_gateway_falls_back_only_for_transient_http_failures(status):
+    failure = RuntimeError("safe test error")
+    failure.status_code = status
+    first = FakeChatModel(failure)
+    second = FakeChatModel(AIMessage(content="Recovered"))
+    gateway = FallbackModelGateway(
+        [ModelProvider("first", first), ModelProvider("second", second)]
+    )
+    call = gateway.generate(messages=[HumanMessage(content="Plan a trip")])
+    if status in {429, 500, 503}:
+        assert asyncio.run(call).content == "Recovered"
+        assert len(second.calls) == 1
+    else:
+        with pytest.raises(ModelGatewayError):
+            asyncio.run(call)
+        assert not second.calls
+
+
 class FakeModelConstructor:
     """Record provider client construction without creating network clients."""
 

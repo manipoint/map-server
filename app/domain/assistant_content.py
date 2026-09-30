@@ -14,6 +14,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.domain.trip_rules import inclusive_day_count
+
 
 class AssistantMedia(BaseModel):
     """A remotely hosted image displayed by the client."""
@@ -180,7 +182,7 @@ class AssistantItinerarySummary(BaseModel):
         if self.end_date < self.start_date:
             raise ValueError("Itinerary end_date cannot precede start_date")
 
-        expected_duration = (self.end_date - self.start_date).days + 1
+        expected_duration = inclusive_day_count(self.start_date, self.end_date)
 
         if self.duration_days != expected_duration:
             raise ValueError(

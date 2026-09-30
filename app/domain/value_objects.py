@@ -2,7 +2,13 @@
 
 from typing import Annotated
 
-from pydantic import BeforeValidator, StringConstraints
+from pydantic import BeforeValidator, Field, StringConstraints
+
+ChildAge = Annotated[int, Field(ge=2, le=17)]
+InfantAge = Annotated[int, Field(ge=0, le=1)]
+MinorAge = Annotated[int, Field(ge=0, le=17)]
+StrictMinorAge = Annotated[MinorAge, Field(strict=True)]
+Interest = Annotated[str, Field(min_length=1, max_length=60)]
 
 
 def normalize_upper_code(value: object) -> object:

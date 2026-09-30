@@ -171,6 +171,11 @@ Each provider adapter implements a domain interface. It handles provider authent
 
 Contains framework-independent Pydantic models, enums, value objects, and domain exceptions. It does not import FastAPI, SQLAlchemy, LangChain, or concrete provider clients.
 
+`value_objects.py` owns shared scalar types and `trip_rules.py` owns pure rules
+reused across validation boundaries. Partial requirements and their completeness
+policy are connected to persisted conversation state and graph routing; see
+[trip requirements](trip-requirements.md).
+
 ### `app.services`
 
 Owns business use cases and transaction boundaries: create search, save bounded offer snapshots, build/update trips, append messages, and record usage. Services coordinate repositories but do not know WebSocket event shapes.
@@ -246,3 +251,12 @@ API and graph response nodes map these errors into stable client error codes. Ra
 - SQLAlchemy models remain inside `database` and are not WebSocket response schemas.
 
 These rules should eventually be enforced with architecture tests or a dependency linter.
+
+## Conversational planning runtime
+
+The default graph is now `graph/planning_builder.py`. `domain/planning.py` holds
+versioned requirements state; `services/conversation_planning_service.py` owns
+conversation leases and staged state/trip writes; `services/planning_research_service.py`
+runs bounded deterministic MCP research. `TravelResponseService` commits planning,
+itinerary and rich reply together. See [the current graph contract](langgraph.md)
+for migration, implemented behavior and remaining work.

@@ -1,4 +1,4 @@
-"""Travelport implementation of one-way flight search."""
+"""Travelport implementation of one-way and round-trip flight search."""
 
 import asyncio
 from uuid import uuid4
@@ -8,11 +8,10 @@ import httpx
 from app.common.exceptions import (
     ProviderConfigurationError,
     ProviderUnavailableError,
-    UnsupportedFlightRequestError,
 )
 from app.common.time import UtcClock, utc_now
 from app.config import Settings
-from app.domain.flights import ONE_WAY_ONLY_MESSAGE, FlightSearchStatus
+from app.domain.flights import FlightSearchStatus
 from app.providers.flights.metadata_provider import FlightMetadataProvider
 from app.providers.flights.schemas import FlightSearchInput, FlightSearchResult
 from app.providers.travelport.auth_client import TravelportAuthClient
@@ -31,6 +30,7 @@ from app.providers.travelport.flight_response_mapper import (
     map_travelport_one_way_result,
 )
 from app.providers.travelport.response_reader import read_travelport_json
+from app.providers.travelport.round_trip_mapper import map_travelport_round_trip_result
 
 
 class TravelportFlightClient:
@@ -67,7 +67,7 @@ class TravelportFlightClient:
         *,
         request: FlightSearchInput,
     ) -> FlightSearchResult:
-        """Execute the currently supported one-way search flow."""
+        """Execute a journey search within one bounded provider deadline."""
 
         searched_at = self._clock()
 
@@ -77,9 +77,6 @@ class TravelportFlightClient:
                 searched_at=searched_at,
                 message=("This search requires group-booking assistance."),
             )
-
-        if request.return_date is not None:
-            raise UnsupportedFlightRequestError(ONE_WAY_ONLY_MESSAGE)
 
         payload = build_travelport_search_request(request).model_dump(
             mode="json",
@@ -101,7 +98,12 @@ class TravelportFlightClient:
                     provider=self._metadata_provider,
                 )
 
-                return map_travelport_one_way_result(
+                mapper = (
+                    map_travelport_round_trip_result
+                    if request.return_date is not None
+                    else map_travelport_one_way_result
+                )
+                return mapper(
                     request=request,
                     decoded=decoded,
                     metadata=metadata,

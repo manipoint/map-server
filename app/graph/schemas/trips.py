@@ -5,6 +5,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.trip_rules import inclusive_day_count, validate_trip_dates
+
 
 class ActiveTripContext(BaseModel):
     """Trusted trip details required for itinerary generation."""
@@ -23,12 +25,11 @@ class ActiveTripContext(BaseModel):
     def validate_date_order(self) -> Self:
         """Require the trip to end after it starts."""
 
-        if self.end_date <= self.start_date:
-            raise ValueError("end_date must be after start_date")
+        validate_trip_dates(self.start_date, self.end_date)
         return self
 
     @property
     def day_count(self) -> int:
         """Return inclusive trip duration."""
 
-        return (self.end_date - self.start_date).days + 1
+        return inclusive_day_count(self.start_date, self.end_date)

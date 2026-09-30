@@ -1,8 +1,9 @@
 # Travelport integration status
 
-Last reviewed: 2026-09-28. This document describes implemented components, not a
-live search capability. Flight, hotel, and airport-resolution tools are still not
-wired into application startup.
+Last reviewed: 2026-09-30. Flight and airport-resolution tools are wired into
+startup when Travelport is configured. One-way and round-trip journey searches
+are implemented; live account inventory has not been certified. Hotel integration
+is not implemented.
 
 ## Architecture
 
@@ -56,32 +57,19 @@ Preparatory settings are `TRAVELPORT_ENVIRONMENT`, `TRAVELPORT_USERNAME`,
 `TRAVELPORT_PCC_CORE`. Credentials are secret values and must not be logged.
 The auth client uses `provider_timeout_seconds`.
 
-These settings do not activate flight search. `app/lifespan.py` still leaves
-flight, airport, and hotel providers/services unconfigured. No live metadata
-provider or Travelport search HTTP adapter has been implemented. Duffel code and
-its live smoke scripts were removed; retired environment variables cannot
-reactivate it.
+With `FLIGHT_PROVIDER=travelport`, startup loads the configured airport directory
+and flight metadata and wires the auth client, search adapter, services and MCP
+tools. Flight and metadata lookup share one bounded deadline. The adapter limits
+response bytes, parses prices as Decimal, and allows one authentication recovery.
+Hotel services remain unconfigured. Retired Duffel settings cannot reactivate it.
 
 ## Remaining integration work
 
-1. Choose and implement an authoritative airport/airline metadata source with a
-   bounded batch lookup, resource ownership, and suitable caching.
-2. Map airport-local schedules safely, including ambiguous/nonexistent local
-   times. Do not assume UTC or infer journey duration by subtracting local times.
-3. Resolve operating-carrier details. Do not assume the operating carrier equals
-   the marketing carrier to satisfy required normalized fields.
-4. Map and validate offers against the original request: route continuity, actual
-   cabin/stops, traveler counts, currencies, offer identity and expiry.
-5. Verify round-trip combinability and price semantics with representative
-   fixtures. Do not blindly add `BestCombinablePrice` values or relabel returned
-   prices with the requested currency. Parse HTTP JSON with `parse_float=Decimal`.
-6. Implement the search HTTP adapter, safe error handling, bounded response size,
-   timeout and restricted authentication recovery. Auth-lock serialization shares
-   successful tokens, but concurrent failures can cause sequential auth attempts.
-7. Translate oversized groups into the shared `GROUP_BOOKING_REQUIRED` result,
-   then wire shared auth/HTTP resources, services and tools in lifespan.
-8. Verify hotel access/integration separately; the flight trial proves neither
-   hotel support nor production readiness.
+- Verify live-account one-way and round-trip inventory using permitted sandbox
+  searches. Mocked tests establish code behavior, not provider entitlement.
+- Verify hotel access and implement a separate hotel adapter.
+- Multi-city, split tickets and airport-transfer itineraries are unsupported.
+- Booking, payment, ticketing, cancellation and refunds are outside this MVP.
 
 ## Verification
 
@@ -104,6 +92,12 @@ synthetic payloads and do not depend on the developer's attachment directory.
 
 ### Startup dataset consistency
 
+The offline airport exporter writes a temporary manifest and renames it to
+`manifest.json` only after all snapshot files and checksums are complete. This
+prevents readers from observing a partially written final manifest. It does not
+guarantee power-loss durability. Export failures attempt to remove only the new
+snapshot; existing snapshots are preserved.
+
 When Travelport is enabled, startup loads the airport directory and flight
 metadata, then requires every directory airport to have validated timezone
 metadata. A mismatch raises `ProviderConfigurationError` before Travelport
@@ -119,29 +113,102 @@ Regression tests cover matching coverage, additional metadata airports, missing
 coverage (including empty metadata), file failures, cleanup and immutable code
 inventories. No live Travelport calls are needed.
 
-### Unsupported round-trip requests
+### Round-trip journey searches
 
-Travelport startup configures `FlightSearchService(supports_round_trip=False)`.
-Other service configurations retain the existing round-trip behavior by default.
-After date and group-booking policy checks, unsupported round trips raise
-`UnsupportedFlightRequestError` before airport resolution or provider search.
-The Travelport adapter also guards direct calls with the same error.
+Startup enables round trips and advertises flight research to the conversational
+planner only when the flight service is configured. A return date produces two
+search legs; it is never silently discarded.
 
-MCP translates this into `FlightSearchGuidance` with status
-`unsupported_request`, which the graph-facing client preserves. The message asks
-for confirmation before an outbound-only search or separate-leg searches; the
-return date is never silently removed. Graph and MCP descriptions explain this
-handling without treating a feature limitation as a transient provider outage.
-Tests exercise the graph-to-MCP-to-service path for one-way and round-trip
-requests with the capability enabled and disabled, plus direct-service and
-direct-adapter guards. Existing invalid-date and group guidance remain unchanged.
+`round_trip_mapper.py` joins fares only within the same content source and shared
+`CombinabilityCode`. Travelport's `BestCombinablePrice` is the full journey price,
+not a per-leg amount: matching prices are checked and counted once. See the
+[Travelport Search API reference](https://support.travelport.com/webhelp/JSONAPIs/Airv11/Content/Air11/Search/APIRef_Search.htm).
 
-### Synthetic complete one-way flow
+Each leg reuses route, local-date, passenger-count, cabin and nonstop validation.
+The return must depart after outbound arrival. Missing codes, unexpected catalog
+routes/sequences, multiple products per leg and contradictory prices/currencies
+fail closed. Unmatched codes or filtered legs produce no offers. Repeated codes
+do not duplicate the same fare pair. Results retain at most `max_results` offers
+and sort by combined price. All fares in a combinability group have one validated
+price, so expansion stops after enough valid combinations for that group.
+
+No independent one-way fares are added to manufacture a round-trip quote. No
+split-payment or multi-city search is requested. Returned prices are search-time
+observations for planning, not booking guarantees.
+
+### Synthetic complete search flow
 
 `tests/integration/test_travelport_one_way_flow.py` exercises the graph tool,
 MCP client/server, airport resolution, flight service, authentication client,
 response decoder and mapper together. Dataset loaders read the JSON fixtures
 under `tests/fixtures/travelport`; only external HTTP is mocked. Coverage includes
-an actual offer with exact decimal pricing and cross-timezone UTC conversion,
+one-way and round-trip offers with exact decimal pricing and cross-timezone UTC conversion,
 empty inventory, ambiguous and unknown locations, token reuse and response
 closure. These fixtures are not production datasets or live-provider evidence.
+
+## Integration completeness
+
+Implemented: OAuth/token handling, PCC configuration, one-way/round-trip search, normalized
+flight mapping and metadata validation, MCP integration and mocked end-to-end
+tests. This does not establish live-account inventory availability.
+
+Not implemented: multi-city search, a Travelport hotel provider, offer
+revalidation/booking, payment, ticketing, cancellation and refunds. The default
+conversational planner does not replace round trips with one-way searches. It
+reports missing flight/hotel evidence and can still generate an unverified draft.
+
+### Opt-in live sandbox smoke test
+
+Run from the repository root, with your existing `.env` configured for
+`TRAVELPORT_ENVIRONMENT=preproduction`, `FLIGHT_PROVIDER=travelport`, Travelport
+credentials/PCC and valid metadata paths. Use future departure/return dates:
+
+```bash
+uv run python -m scripts.smoke_travelport_round_trip \
+  --run-sandbox \
+  --origin JFK --destination LAX \
+  --departure 2027-01-12 --return-date 2027-01-19 \
+  --adults 1 --currency USD
+```
+
+This directly exercises the flight service, real auth/search clients, decoder,
+metadata resolver and round-trip mapper. It does not start FastAPI or call an LLM,
+MCP, or database. It does not book anything. Without `--run-sandbox`, it exits
+before reading settings or calling the network. Production configuration is
+rejected before HTTP client creation. Output is a small normalized price/count
+summary; credentials, tokens, offer IDs and raw payloads are not printed or saved.
+
+Exit codes: `0` means matching round-trip offers were mapped; `1` means provider,
+response or execution failure; `2` means missing opt-in or invalid configuration/
+input; `3` means inconclusive (no matching inventory or group guidance). An empty
+sandbox catalog is not evidence that round-trip pricing works. Normal pytest runs
+only mocked smoke-runner tests and never execute this live command.
+
+Sandbox diagnostics write safe JSON events to stderr: `settings_load`,
+`sandbox_configuration`, `metadata_load`, `flight_service`, `authentication`,
+`flight_search`, and `response_validation`. HTTP events report only a locally
+chosen stage, outcome and numeric status. `response_received` does not mean the
+payload passed validation. A started request without a response status can mean
+a transport failure or timeout. Authentication recovery appears as separate HTTP
+attempts. No request URL, headers, response body or raw exception is logged.
+
+For example, `authentication` with 401 indicates OAuth rejection;
+`flight_search` with 403 indicates search access rejection. A 200 response followed
+by failure still requires investigation of token/response validation or metadata
+resolution; the script does not claim that every 200 is a successful search.
+
+### Supplied AA/NDC baseline
+
+To reproduce the supplied one-way request independently of the normalized mapper:
+
+```bash
+uv run python -m scripts.smoke_travelport_baseline --run-sandbox --departure 2026-10-30
+```
+
+Use a future date. This diagnostic deliberately targets the supplied sandbox PCC
+`UM2_1G`, JFK to LAX, one adult, NDC, AA preferred, and four upsells. It does not
+change `.env` or the production adapter. It validates the provider response with
+the existing decoder, but does not certify normalized offers or round-trip pricing.
+HTTP failures are not retried and raw payloads/tokens are not printed. Production
+configuration is rejected. A successful baseline isolates access for this request;
+it does not prove access to other content, PCCs, routes or workflows.

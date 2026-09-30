@@ -1,7 +1,7 @@
 """Integration tests for application lifespan."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,8 +12,6 @@ import app.main as main_module
 from app.api.websocket.connection_manager import ConnectionManager
 from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
-
-FAKE_ITINERARY_TOOL = object()
 
 
 @pytest.mark.parametrize("flush_error", [None, RuntimeError("telemetry unavailable")])
@@ -55,11 +53,6 @@ def mock_travel_graph_construction(monkeypatch):
 
     monkeypatch.setattr(lifespan_module, "build_model_gateway", MagicMock())
     monkeypatch.setattr(lifespan_module, "build_travel_graph", MagicMock())
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_itinerary_submission_tool",
-        MagicMock(return_value=FAKE_ITINERARY_TOOL),
-    )
 
 
 def create_url_settings(**overrides: object) -> Settings:
@@ -155,8 +148,6 @@ def test_lifespan_builds_one_shared_travel_graph(
     fake_engine = AsyncMock()
     fake_gateway = object()
     fake_graph = object()
-    fake_weather_tool = object()
-    create_weather_tool = MagicMock(return_value=fake_weather_tool)
     build_gateway = MagicMock(return_value=fake_gateway)
     build_graph = MagicMock(return_value=fake_graph)
 
@@ -170,11 +161,6 @@ def test_lifespan_builds_one_shared_travel_graph(
         "create_session_factory",
         lambda engine: object(),
     )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_current_weather_tool",
-        create_weather_tool,
-    )
     monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
     monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
     settings = create_url_settings()
@@ -183,19 +169,13 @@ def test_lifespan_builds_one_shared_travel_graph(
     with TestClient(application):
         assert application.state.travel_graph is fake_graph
 
-    create_weather_tool.assert_called_once_with(
-        mcp_client=application.state.mcp_client,
-    )
-    build_gateway.assert_called_once_with(
-        settings=settings,
-        tools=[fake_weather_tool, FAKE_ITINERARY_TOOL],
-    )
+    build_gateway.assert_called_once_with(settings=settings)
     build_graph.assert_called_once_with(
         model_gateway=fake_gateway,
-        tools=[fake_weather_tool, FAKE_ITINERARY_TOOL],
+        tools=(),
+        research_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
     )
-    lifespan_module.create_itinerary_submission_tool.assert_called_once_with()
 
 
 def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
@@ -279,16 +259,12 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
     fake_place_provider = object()
     fake_place_service = object()
     fake_mcp_server = object()
-    fake_weather_tool = object()
-    fake_place_tool = object()
     fake_gateway = object()
     fake_graph = object()
     create_location_provider = MagicMock(return_value=fake_location_provider)
     create_place_provider = MagicMock(return_value=fake_place_provider)
     create_place_service = MagicMock(return_value=fake_place_service)
     create_server = MagicMock(return_value=fake_mcp_server)
-    create_weather_tool = MagicMock(return_value=fake_weather_tool)
-    create_place_tool = MagicMock(return_value=fake_place_tool)
     build_gateway = MagicMock(return_value=fake_gateway)
     build_graph = MagicMock(return_value=fake_graph)
 
@@ -328,16 +304,6 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         create_place_service,
     )
     monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_current_weather_tool",
-        create_weather_tool,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_place_search_tool",
-        create_place_tool,
-    )
     monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
     monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
     settings = create_url_settings(
@@ -374,20 +340,11 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         place_search_service=fake_place_service,
         currency_provider=None,
     )
-    create_weather_tool.assert_called_once_with(
-        mcp_client=application.state.mcp_client,
-    )
-    create_place_tool.assert_called_once_with(
-        mcp_client=application.state.mcp_client,
-    )
-    expected_tools = [fake_weather_tool, fake_place_tool, FAKE_ITINERARY_TOOL]
-    build_gateway.assert_called_once_with(
-        settings=settings,
-        tools=expected_tools,
-    )
+    build_gateway.assert_called_once_with(settings=settings)
     build_graph.assert_called_once_with(
         model_gateway=fake_gateway,
-        tools=expected_tools,
+        tools=(),
+        research_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
     )
     fake_http_client.aclose.assert_awaited_once_with()
@@ -402,14 +359,10 @@ def test_lifespan_wires_enabled_currency_provider_into_mcp(monkeypatch) -> None:
     fake_weather_provider = object()
     fake_currency_provider = object()
     fake_mcp_server = object()
-    fake_weather_tool = object()
-    fake_currency_tool = object()
     fake_gateway = object()
     fake_graph = object()
     create_currency_provider = MagicMock(return_value=fake_currency_provider)
     create_server = MagicMock(return_value=fake_mcp_server)
-    create_weather_tool = MagicMock(return_value=fake_weather_tool)
-    create_currency_tool = MagicMock(return_value=fake_currency_tool)
     build_gateway = MagicMock(return_value=fake_gateway)
     build_graph = MagicMock(return_value=fake_graph)
 
@@ -439,16 +392,6 @@ def test_lifespan_wires_enabled_currency_provider_into_mcp(monkeypatch) -> None:
         create_currency_provider,
     )
     monkeypatch.setattr(lifespan_module, "create_mcp_server", create_server)
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_current_weather_tool",
-        create_weather_tool,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_currency_conversion_tool",
-        create_currency_tool,
-    )
     monkeypatch.setattr(lifespan_module, "build_model_gateway", build_gateway)
     monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
     settings = create_url_settings(currency_provider="frankfurter")
@@ -470,16 +413,7 @@ def test_lifespan_wires_enabled_currency_provider_into_mcp(monkeypatch) -> None:
         place_search_service=None,
         currency_provider=fake_currency_provider,
     )
-    create_currency_tool.assert_called_once_with(
-        mcp_client=application.state.mcp_client,
-    )
-    expected_tools = [fake_weather_tool, fake_currency_tool, FAKE_ITINERARY_TOOL]
-    build_gateway.assert_called_once_with(settings=settings, tools=expected_tools)
-    build_graph.assert_called_once_with(
-        model_gateway=fake_gateway,
-        tools=expected_tools,
-        max_tool_rounds=settings.max_tool_rounds,
-    )
+    build_gateway.assert_called_once_with(settings=settings)
     fake_http_client.aclose.assert_awaited_once_with()
 
 
@@ -862,7 +796,7 @@ def test_travelport_startup_wires_flight_services(
         assert state.flight_provider is flight_provider
         assert state.airport_resolution_service.airport_provider is airport_provider
         assert state.flight_search_service.flight_provider is flight_provider
-        assert state.flight_search_service.supports_round_trip is False
+        assert state.flight_search_service.supports_round_trip is True
         assert (
             preparation.airport_resolution_service is state.airport_resolution_service
         )

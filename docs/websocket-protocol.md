@@ -114,7 +114,7 @@ the selected code as a new idempotent `travel.request`; durable graph
 }
 ```
 
-Response generation runs in a background task per accepted request. Each connection serializes outbound events with a per-connection send lock, so a slow model invocation does not block heartbeats or another inbound request. On disconnect, pending response tasks are cancelled and awaited; their assistant-run lease can later expire and be reclaimed safely.
+Response generation runs in a background task per accepted request. Each connection serializes outbound events with a per-connection send lock, so a slow model invocation does not block heartbeats or another inbound request. On disconnect, pending response tasks are cancelled and awaited; owned assistant-run claims are marked failed with rollback and a five-second cleanup deadline, allowing bounded retry. If cleanup fails or the process crashes, lease expiry remains the recovery fallback. Expired processing claims at the attempt limit report `attempts_exhausted`, not indefinite processing.
 
 The broader event names and request-ID contract documented below remain the target protocol for MCP search, interrupts, cancellation, and itineraries. Current idempotency uses `client_message_id`, not the target `request_id` envelope.
 
