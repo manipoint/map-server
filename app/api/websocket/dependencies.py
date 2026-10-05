@@ -13,6 +13,7 @@ from app.config import Settings
 from app.database.session import AsyncSessionFactory
 from app.services.conversation_planning_service import ConversationPlanningService
 from app.services.conversation_processing_service import ConversationProcessingService
+from app.services.generation_admission import GenerationAdmission
 from app.services.itinerary_service import ItineraryService
 from app.services.travel_response_service import TravelResponseService
 
@@ -84,6 +85,9 @@ def create_travel_response_service(
     )
 
     return TravelResponseService(
+        admission=GenerationAdmission(
+            session_factory=websocket.app.state.session_factory, settings=settings
+        ),
         planning_service=ConversationPlanningService(session=database_session)
         if getattr(websocket.app.state, "planning_graph_enabled", False)
         else None,

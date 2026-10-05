@@ -14,6 +14,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -104,6 +105,9 @@ class ItineraryItem(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    image: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    start_time_zone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    end_time_zone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

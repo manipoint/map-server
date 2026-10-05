@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, literal, select, tuple_
+from sqlalchemy import and_, case, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 from sqlalchemy.sql.selectable import Subquery
@@ -169,6 +169,24 @@ class DestinationRepository:
 
         candidates = await self._load_candidates(limit=1, slug=slug)
         return candidates[0] if candidates else None
+
+    async def find_for_planning(self, *, query: str) -> DestinationCandidate | None:
+        """Use only an unambiguous exact catalogue name or slug, never fuzzy media matching."""
+        key = query.strip().lower()
+        matches = await self.session.scalars(
+            select(Destination.id)
+            .where(
+                Destination.is_published.is_(True),
+                or_(func.lower(Destination.name) == key, Destination.slug == key),
+            )
+            .limit(2)
+        )
+        ids = list(matches)
+        if len(ids) != 1:
+            return None
+        page = select(Destination.id).where(Destination.id == ids[0]).subquery()
+        candidates = await self._hydrate(page)
+        return candidates[0].destination if candidates else None
 
     async def list_destination_media(
         self,

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.models.trip import Trip
 from app.database.repositories.itineraries import (
     ItineraryDetails,
     ItineraryRepository,
@@ -50,28 +51,13 @@ class ItineraryService:
             if trip is None:
                 raise TripNotFoundError("Trip was not found")
 
-            trip_day_count = inclusive_day_count(trip.start_date, trip.end_date)
-            if any(item.day_number > trip_day_count for item in items):
-                raise InvalidItineraryDetailsError(
-                    "An itinerary item falls outside the trip date range"
-                )
-
-            itinerary = await self.itineraries.create_next_draft_for_locked_trip(
-                trip=trip
-            )
-            created_items = await self.itineraries.add_items(
-                itinerary=itinerary,
-                items=items,
-            )
+            details = await self._create_for_locked_trip(trip=trip, items=items)
             await self.session.commit()
         except BaseException:
             await self.session.rollback()
             raise
 
-        return ItineraryDetails(
-            itinerary=itinerary,
-            items=created_items,
-        )
+        return details
 
     async def get_itinerary(
         self,
@@ -209,17 +195,8 @@ class ItineraryService:
             if existing is not None:
                 await self.session.rollback()
                 return existing
-            trip_day_count = inclusive_day_count(trip.start_date, trip.end_date)
-            if any(item.day_number > trip_day_count for item in items):
-                raise InvalidItineraryDetailsError(
-                    "An itinerary item falls outside the trip date range"
-                )
-            itinerary = await self.itineraries.create_next_draft_for_locked_trip(
-                trip=trip, source_message_id=source_message_id
-            )
-            created_items = await self.itineraries.add_items(
-                itinerary=itinerary,
-                items=items,
+            details = await self._create_for_locked_trip(
+                trip=trip, items=items, source_message_id=source_message_id
             )
             if commit:
                 await self.session.commit()
@@ -228,4 +205,27 @@ class ItineraryService:
             await self.session.rollback()
             raise
 
+        return details
+
+    async def _create_for_locked_trip(
+        self,
+        *,
+        trip: Trip,
+        items: Sequence[ItineraryItemDraft],
+        source_message_id: UUID | None = None,
+    ) -> ItineraryDetails:
+        trip_day_count = inclusive_day_count(trip.start_date, trip.end_date)
+        if any(item.day_number > trip_day_count for item in items):
+            raise InvalidItineraryDetailsError(
+                "An itinerary item falls outside the trip date range"
+            )
+        arguments = {"trip": trip}
+        if source_message_id is not None:
+            arguments["source_message_id"] = source_message_id
+        itinerary = await self.itineraries.create_next_draft_for_locked_trip(
+            **arguments
+        )
+        created_items = await self.itineraries.add_items(
+            itinerary=itinerary, items=items
+        )
         return ItineraryDetails(itinerary=itinerary, items=created_items)

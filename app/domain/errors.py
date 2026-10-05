@@ -9,6 +9,10 @@ class ConversationNotFoundError(ConversationError):
     """Raised when a conversation is missing or owned by another user."""
 
 
+class ConversationInProgressError(ConversationError):
+    """Raised when an active planning turn prevents conversation deletion."""
+
+
 class ClientMessageConflictError(ConversationError):
     """Raised when a client message ID is reused with different content."""
 

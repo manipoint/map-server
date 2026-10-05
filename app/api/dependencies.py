@@ -20,6 +20,7 @@ from app.services.conversation_planning_service import ConversationPlanningServi
 from app.services.conversation_processing_service import (
     ConversationProcessingService,
 )
+from app.services.conversation_service import ConversationService
 from app.services.destination_catalogue_service import DestinationCatalogueService
 from app.services.home_discovery_service import HomeDiscoveryService
 from app.services.itinerary_service import ItineraryService
@@ -83,6 +84,20 @@ def get_trip_service(
 TripServiceDependency = Annotated[
     TripService,
     Depends(get_trip_service),
+]
+
+
+def get_conversation_service(
+    database_session: DatabaseSession,
+) -> ConversationService:
+    """Create one database-bound conversation service per HTTP request."""
+
+    return ConversationService(session=database_session)
+
+
+ConversationServiceDependency = Annotated[
+    ConversationService,
+    Depends(get_conversation_service),
 ]
 
 

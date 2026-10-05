@@ -16,6 +16,7 @@ from app.graph.routing import route_after_model
 from app.graph.state import TravelGraphState
 from app.graph.subgraphs.model_gateway import ModelGateway
 from app.services.planning_research_service import PlanningResearchService
+from app.services.standalone_search_service import StandaloneSearchService
 
 
 def build_travel_graph(
@@ -24,6 +25,7 @@ def build_travel_graph(
     tools: Sequence[BaseTool],
     max_tool_rounds: int,
     research_service: PlanningResearchService | None = None,
+    standalone_service: StandaloneSearchService | None = None,
 ):
     """Build the minimal travel response graph with injected model access."""
 
@@ -31,7 +33,9 @@ def build_travel_graph(
         from app.graph.planning_builder import build_planning_graph
 
         return build_planning_graph(
-            model_gateway=model_gateway, research_service=research_service
+            model_gateway=model_gateway,
+            research_service=research_service,
+            standalone_service=standalone_service,
         )
 
     graph = StateGraph(TravelGraphState)

@@ -12,6 +12,7 @@ from app.database.models.destination import (
     DestinationStyle,
     MediaAsset,
 )
+from app.database.models.generation_limits import GenerationLease, GenerationUsage
 from app.database.models.itineraries import Itinerary
 from app.database.models.itinerary_item import ItineraryItem
 from app.database.models.message import Message
@@ -36,6 +37,8 @@ __all__ = [
     "Itinerary",
     "ItineraryItem",
     "Message",
+    "GenerationLease",
+    "GenerationUsage",
     "MediaAsset",
     "Trip",
     "User",

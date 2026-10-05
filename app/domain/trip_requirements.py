@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import (
     BaseModel,
@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from app.domain.flights import FlightCabinClass
+from app.domain.preferences import TripPace
 from app.domain.trip_rules import (
     MAX_TRAVELERS_PER_REQUEST,
     end_date_from_duration,
@@ -117,6 +118,14 @@ class TripRequirements(BaseModel):
     interests: tuple[Interest, ...] = Field(
         default_factory=tuple,
         max_length=10,
+    )
+    trip_pace: TripPace | None = None
+    constraints: tuple[Annotated[str, Field(min_length=1, max_length=300)], ...] = (
+        Field(
+            default=(),
+            max_length=10,
+            description="Explicit accessibility, dietary, exclusion and other trip requirements.",
+        )
     )
 
     @field_validator("interests")

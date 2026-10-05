@@ -10,34 +10,16 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    HttpUrl,
     model_validator,
 )
 
+from app.domain.itineraries import (
+    MAX_ITINERARY_DAYS,
+    MAX_ITINERARY_ITEMS,
+    ItineraryItemDraft,
+)
+from app.domain.media import AssistantMedia as AssistantMedia
 from app.domain.trip_rules import inclusive_day_count
-
-
-class AssistantMedia(BaseModel):
-    """A remotely hosted image displayed by the client."""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        str_strip_whitespace=True,
-    )
-
-    url: HttpUrl
-    alt_text: str = Field(min_length=1, max_length=300)
-    width: int | None = Field(default=None, ge=1)
-    height: int | None = Field(default=None, ge=1)
-
-    @model_validator(mode="after")
-    def validate_dimensions(self) -> Self:
-        """Require width and height together when dimensions are provided."""
-
-        if (self.width is None) != (self.height is None):
-            raise ValueError("Image width and height must be provided together")
-
-        return self
 
 
 class AssistantMoney(BaseModel):
@@ -203,6 +185,9 @@ class AssistantItineraryDayPreview(BaseModel):
     day_number: int = Field(ge=1)
     date: date
     title: str = Field(min_length=1, max_length=200)
+    activities: list[ItineraryItemDraft] = Field(
+        default_factory=list, max_length=MAX_ITINERARY_ITEMS
+    )
     subtitle: str | None = Field(
         default=None,
         min_length=1,
@@ -224,11 +209,26 @@ class AssistantItineraryPreview(BaseModel):
     itinerary_id: UUID
     summary: AssistantItinerarySummary
 
-    # This is a chat preview, not the complete itinerary timeline.
+    # Existing preview fields stay readable; activities carry the bounded timeline.
     days: list[AssistantItineraryDayPreview] = Field(
         default_factory=list,
-        max_length=7,
+        max_length=MAX_ITINERARY_DAYS,
     )
+
+    @model_validator(mode="after")
+    def validate_activity_days(self) -> Self:
+        if sum(len(day.activities) for day in self.days) > MAX_ITINERARY_ITEMS:
+            raise ValueError("Too many itinerary activities")
+        for day in self.days:
+            for position, activity in enumerate(day.activities, start=1):
+                if (
+                    activity.day_number != day.day_number
+                    or activity.position != position
+                ):
+                    raise ValueError(
+                        "Activity day and position must match its day group"
+                    )
+        return self
 
 
 AssistantContentSection = Annotated[

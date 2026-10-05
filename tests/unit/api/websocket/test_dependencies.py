@@ -103,6 +103,7 @@ def test_create_travel_response_service_shares_the_message_session() -> None:
         state=SimpleNamespace(
             settings=settings,
             travel_graph=graph,
+            session_factory=MagicMock(),
         )
     )
     database_session = AsyncMock(spec=AsyncSession)

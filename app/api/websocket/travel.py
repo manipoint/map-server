@@ -1,12 +1,24 @@
 """Travel WebSocket endpoint."""
 
 import logging
-from asyncio import CancelledError, Lock, Task, create_task, gather, wait_for
+from asyncio import (
+    CancelledError,
+    Lock,
+    Task,
+    create_task,
+    current_task,
+    gather,
+    sleep,
+    wait_for,
+)
 from json import JSONDecodeError, loads
 from uuid import UUID
 
-from fastapi import APIRouter, WebSocket
+from anyio import CancelScope
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.websockets import WebSocketState
 
 from app.api.websocket.constants import (
     WS_IDLE_TIMEOUT_CODE,
@@ -26,6 +38,7 @@ from app.api.websocket.dependencies import (
     WebSocketSessionFactoryDependency,
     WebSocketSettingsDependency,
     create_travel_response_service,
+    get_websocket_principal,
 )
 from app.api.websocket.events import (
     ConnectionPingEvent,
@@ -47,6 +60,7 @@ from app.api.websocket.events import (
     TravelResponseProcessingPayload,
     validate_client_event,
 )
+from app.common.time import utc_now
 from app.database.session import AsyncSessionFactory
 from app.domain.enums import TravelResponseErrorCode
 from app.domain.errors import (
@@ -122,6 +136,67 @@ async def travel_websocket(
     send_lock = Lock()
     response_tasks: set[Task[None]] = set()
 
+    async def close_invalid_session(*, code: int, reason: str) -> None:
+        """Cancel generation and serialize closing with other socket writes."""
+        for task in tuple(response_tasks):
+            if task is not current_task():
+                task.cancel()
+        try:
+            async with send_lock:
+                if (
+                    websocket.application_state == WebSocketState.CONNECTED
+                    and websocket.client_state == WebSocketState.CONNECTED
+                ):
+                    await websocket.close(code=code, reason=reason)
+        except (WebSocketDisconnect, OSError):
+            # The peer can disappear while session validation is running.
+            pass
+
+    async def check_session() -> bool:
+        close_code: int
+        close_reason: str
+        try:
+            current = await get_websocket_principal(websocket)
+            if current.auth_session.id != principal.auth_session.id:
+                raise WebSocketException(code=1008, reason="Session changed")
+            return True
+        except CancelledError:
+            raise
+        except WebSocketException as error:
+            close_code = error.code
+            close_reason = error.reason or "Authentication required"
+        except (TimeoutError, OSError, SQLAlchemyError) as error:
+            logger.warning(
+                "WebSocket session validation unavailable",
+                extra={
+                    "connection_id": str(connection.connection_id),
+                    "error_type": type(error).__name__,
+                },
+            )
+            close_code = 1011
+            close_reason = "Session validation unavailable"
+        await close_invalid_session(code=close_code, reason=close_reason)
+        return False
+
+    async def monitor_session() -> None:
+        try:
+            while True:
+                remaining = (principal.claims.expires_at - utc_now()).total_seconds()
+                await sleep(
+                    max(0, min(settings.websocket_auth_check_seconds, remaining))
+                )
+                if not await check_session():
+                    return
+        except CancelledError:
+            raise
+        except Exception:
+            # Failure to validate a session must not leave paid work running.
+            await close_invalid_session(
+                code=1011, reason="Session validation unavailable"
+            )
+
+    auth_task = create_task(monitor_session())
+
     async def send_event(event_data: dict[str, object]) -> None:
         """Serialize outbound events for this WebSocket connection."""
 
@@ -167,6 +242,8 @@ async def travel_websocket(
 
         try:
             try:
+                if not await check_session():
+                    return
                 response_result = await generate_travel_response(
                     websocket=websocket,
                     user_id=principal.user.id,
@@ -320,6 +397,18 @@ async def travel_websocket(
                 pong_event = ConnectionPongEvent()
                 await send_event(pong_event.model_dump(mode="json"))
                 continue
+            if not await check_session():
+                return
+            if len(response_tasks) >= settings.websocket_max_pending_requests:
+                await send_event(
+                    TravelRequestRejectedEvent(
+                        payload=TravelRequestRejectedPayload(
+                            client_message_id=client_event.payload.client_message_id,
+                            code="capacity_exceeded",
+                        )
+                    ).model_dump(mode="json")
+                )
+                continue
             try:
                 accepted_request = await persist_travel_request(
                     event=client_event,
@@ -370,9 +459,10 @@ async def travel_websocket(
             response_tasks.add(response_task)
             response_task.add_done_callback(response_tasks.discard)
     finally:
-        pending_tasks = tuple(response_tasks)
-        for response_task in pending_tasks:
-            response_task.cancel()
-        if pending_tasks:
+        with CancelScope(shield=True):
+            auth_task.cancel()
+            pending_tasks = (auth_task, *tuple(response_tasks))
+            for response_task in pending_tasks:
+                response_task.cancel()
             await gather(*pending_tasks, return_exceptions=True)
-        await connection_manager.unregister(connection_id=connection.connection_id)
+            await connection_manager.unregister(connection_id=connection.connection_id)

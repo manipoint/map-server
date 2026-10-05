@@ -3,15 +3,23 @@
 import asyncio
 import json
 from datetime import UTC, date, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
 
 from app.domain.planning import PlanningState
+from app.domain.planning_preferences import PlanningPreferences
+from app.domain.preferences import (
+    BudgetTier,
+    TravelInterest,
+    TravelStyle,
+    TripPace,
+)
 from app.domain.trip_requirements import TripRequirements
 from app.graph.planning_builder import (
+    StructuredOutputValidationError,
     build_planning_graph,
     merge_requirements,
     validate_researched_itinerary,
@@ -59,13 +67,22 @@ def run_graph(
     user_message_id=None,
     persist_requirements=None,
     research_service=None,
+    planning_preferences=None,
 ):
+    # Fixture payloads explicitly identify the fields intended to change.
+    outputs = [
+        {**output, "changed_fields": list(output.get("updates", {}))}
+        if "intent" in output and "changed_fields" not in output
+        else output
+        for output in outputs
+    ]
     message_id = user_message_id or uuid4()
     gateway = AsyncMock()
     gateway.generate.side_effect = [
         AIMessage(content=json.dumps(output)) for output in outputs
     ]
     research = research_service or AsyncMock()
+    research.cache_key = Mock(return_value="test-research-key")
     research.research.return_value = PlanningResearch(searched_at=datetime.now(UTC))
 
     async def persist(state, _reset_trip):
@@ -90,6 +107,7 @@ def run_graph(
                 "user_message_id": message_id,
                 "requirements_changed": False,
                 "reset_trip": False,
+                "planning_preferences": (planning_preferences or PlanningPreferences()),
             },
             context=PlanningRuntimeContext(
                 persist_requirements=persistence,
@@ -131,6 +149,241 @@ def test_roman_urdu_collection_preserves_slots_and_never_searches():
     assert following["planning"].revision == 2
 
 
+def test_requirement_extraction_repairs_invalid_structured_output_once():
+    result, gateway, research = run_graph(
+        [
+            {"intent": "invalid-intent"},
+            {
+                "intent": "plan",
+                "language": "en",
+                "updates": {"destination": "Japan", "duration_days": 5},
+            },
+        ],
+        message="Plan a five-day trip to Japan",
+    )
+
+    assert gateway.generate.await_count == 2
+    assert (
+        "previous JSON did not match the schema"
+        in gateway.generate.await_args_list[1].kwargs["messages"][0].content
+    )
+    assert gateway.generate.await_args_list[0].kwargs["schema"] is not None
+    assert (
+        "invalid-intent"
+        not in gateway.generate.await_args_list[1].kwargs["messages"][0].content
+    )
+    assert result["planning"].requirements.destination == "Japan"
+    research.research.assert_not_awaited()
+
+
+def test_second_invalid_requirement_extraction_fails_safely(caplog):
+    with pytest.raises(StructuredOutputValidationError):
+        run_graph(
+            [
+                {"intent": "first-secret-invalid-intent", "updates": {}},
+                {"intent": "second-secret-invalid-intent", "updates": {}},
+            ]
+        )
+    warning = next(
+        record
+        for record in caplog.records
+        if record.message == "Requirement extraction returned invalid structured output"
+    )
+    assert warning.validation_error_fields == ("intent",)
+    assert warning.validation_error_types == ("literal_error",)
+    assert "secret-invalid-intent" not in warning.getMessage()
+
+
+def test_oversized_extraction_reply_fails_after_bounded_repair():
+    with pytest.raises(StructuredOutputValidationError):
+        run_graph(
+            [
+                {"intent": "chat", "updates": {}, "reply": "x" * 301},
+                {"intent": "chat", "updates": {}, "reply": "x" * 301},
+            ]
+        )
+
+
+def test_adults_only_party_sets_zero_minors_without_reasking_adult_count():
+    """A complete adults-only party does not require a minor-count prompt."""
+
+    result, _, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {
+                    "destination": "Turkey",
+                    "start_date": "2099-11-16",
+                    "end_date": "2099-11-19",
+                    "duration_days": 4,
+                    "origin": "Lahore",
+                    "adults": 3,
+                    "minor_count": 0,
+                },
+            }
+        ],
+        message=(
+            "Plan a 4-day trip to Turkey from Lahore, 16 November to "
+            "19 November. We are 3 adults."
+        ),
+    )
+
+    requirements = result["planning"].requirements
+    assert requirements.adults == 3
+    assert requirements.minor_count == 0
+    assert "How many adults" not in result["assistant_response"]
+    assert "under 18" not in result["assistant_response"]
+    research.research.assert_not_awaited()
+
+
+def test_adult_count_correction_preserves_existing_child_details():
+    """Changing adults alone must not turn an existing family into adults only."""
+
+    state = PlanningState(
+        requirements=TripRequirements(
+            destination="Turkey",
+            start_date=date(2099, 11, 16),
+            end_date=date(2099, 11, 19),
+            adults=2,
+            minor_count=1,
+            minor_ages=(7,),
+        )
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"adults": 3}}],
+        planning=state,
+        message="Actually, there will be 3 adults.",
+    )
+
+    requirements = result["planning"].requirements
+    assert requirements.adults == 3
+    assert requirements.minor_count == 1
+    assert requirements.minor_ages == (7,)
+    research.research.assert_not_awaited()
+
+
+def test_complete_adults_only_correction_clears_old_child_details():
+    state = PlanningState(
+        requirements=TripRequirements(
+            destination="Turkey",
+            adults=2,
+            minor_count=1,
+            minor_ages=(1,),
+            infant_on_lap=(True,),
+        )
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"adults": 4, "minor_count": 0}}],
+        planning=state,
+        message="Actually only four adults are travelling.",
+    )
+    party = result["planning"].requirements
+    assert party.adults == 4
+    assert party.minor_count == 0
+    assert party.minor_ages is None
+    assert party.infant_on_lap is None
+    research.research.assert_not_awaited()
+
+
+def test_destination_change_clears_inferred_flight_and_cabin():
+    state = PlanningState(
+        requirements=requirements(
+            destination="Turkey",
+            origin="Lahore",
+            transport="flight",
+            cabin_class="economy",
+        ),
+        transport_inferred=True,
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Hunza"}}],
+        planning=state,
+    )
+    updated = result["planning"]
+    assert updated.requirements.transport is None
+    assert updated.requirements.cabin_class is None
+    assert updated.transport_inferred is False
+    assert "How would you like to travel" in result["assistant_response"]
+    assert "road or rail" not in result["assistant_response"]
+    research.research.assert_not_awaited()
+
+
+def test_destination_change_preserves_explicit_flight_choice():
+    state = PlanningState(
+        requirements=requirements(
+            destination="Turkey",
+            origin="Lahore",
+            transport="flight",
+            cabin_class="economy",
+            needs_lodging=None,
+        )
+    )
+    result, _, _ = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Japan"}}],
+        planning=state,
+    )
+    assert result["planning"].requirements.transport == "flight"
+    assert result["planning"].requirements.cabin_class == "economy"
+
+
+def test_newly_inferred_flight_is_marked_for_route_revision():
+    result, _, _ = run_graph(
+        [
+            {
+                "intent": "plan",
+                "transport_inferred": True,
+                "updates": {"destination": "Turkey", "transport": "flight"},
+            }
+        ]
+    )
+    assert result["planning"].transport_inferred is True
+    restored = PlanningState.model_validate_json(result["planning"].model_dump_json())
+    assert restored.transport_inferred is True
+
+
+def test_explicit_transport_correction_replaces_inferred_flight():
+    state = PlanningState(
+        requirements=requirements(
+            transport="flight", cabin_class="economy", needs_lodging=None
+        ),
+        transport_inferred=True,
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"transport": "own_arrangements"}}],
+        planning=state,
+    )
+    assert result["planning"].requirements.transport == "own_arrangements"
+    assert result["planning"].transport_inferred is False
+    research.research.assert_not_awaited()
+
+
+def test_total_party_size_without_age_split_remains_unset():
+    """A total party count is insufficient to infer adults or minors."""
+
+    result, _, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {
+                    "destination": "Turkey",
+                    "start_date": "2099-11-16",
+                    "end_date": "2099-11-19",
+                    "duration_days": 4,
+                    "origin": "Lahore",
+                },
+            }
+        ],
+        message="Plan a 4-day trip to Turkey from Lahore. We are 4 people.",
+    )
+
+    requirements = result["planning"].requirements
+    assert requirements.adults is None
+    assert requirements.minor_count is None
+    assert "How many adults" in result["assistant_response"]
+    assert "under 18" in result["assistant_response"]
+    research.research.assert_not_awaited()
+
+
 def test_complete_requirements_generate_without_preexisting_trip():
     result, gateway, research = run_graph(
         [
@@ -150,7 +403,7 @@ def test_general_chat_does_not_search_or_mutate_requirements():
     state = PlanningState(requirements=requirements(), phase="generated")
     persist = AsyncMock()
     result, gateway, research = run_graph(
-        [{"intent": "chat", "reply": "You are welcome!"}],
+        [{"intent": "chat", "reply": "You are welcome!", "updates": {}}],
         planning=state,
         persist_requirements=persist,
     )
@@ -167,19 +420,20 @@ def test_general_chat_does_not_search_or_mutate_requirements():
         {"user_id": "attacker"},
         {"adults": 0},
         {"minor_count": 1, "minor_ages": [True]},
-        {"end_date": "2099-11-20"},
     ],
 )
 def test_invalid_patch_preserves_previous_state(updates):
     state = PlanningState(requirements=requirements())
     persist = AsyncMock()
-    result, _, research = run_graph(
-        [{"intent": "plan", "updates": updates}],
-        planning=state,
-        persist_requirements=persist,
-    )
-    assert result["planning"] == state
-    assert "conflict" in result["assistant_response"]
+    research = AsyncMock()
+    with pytest.raises(StructuredOutputValidationError):
+        run_graph(
+            [{"intent": "plan", "updates": updates}] * 2,
+            planning=state,
+            persist_requirements=persist,
+            research_service=research,
+        )
+    assert state.requirements == requirements()
     research.research.assert_not_awaited()
     persist.assert_not_awaited()
 
@@ -303,7 +557,7 @@ def test_wrong_day_or_overlapping_schedule_is_rejected(bad_time):
         validate_researched_itinerary(
             ResearchedItinerary.model_validate(data),
             requirements=requirements(duration_days=2),
-            research=PlanningResearch(searched_at=datetime.now(UTC)),
+            research=PlanningResearch(searched_at=datetime.now(UTC), time_zone="UTC"),
         )
 
 
@@ -356,6 +610,81 @@ def test_new_message_still_extracts_requirements():
     )
     assert gateway.generate.await_count == 1
     assert result["planning"].revision == 4
+
+
+def test_profile_interests_seed_new_trip_and_preferences_reach_extraction():
+    preferences = PlanningPreferences(
+        travel_styles=(TravelStyle.NATURE,),
+        interests=(TravelInterest.HIKING, TravelInterest.WILDLIFE),
+        budget_tier=BudgetTier.BUDGET,
+        trip_pace=TripPace.RELAXED,
+        home_city="Lahore",
+        home_country_code="PK",
+    )
+
+    result, gateway, _ = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Hunza"}}],
+        planning_preferences=preferences,
+    )
+
+    extraction_data = json.loads(
+        gateway.generate.await_args.kwargs["messages"][1].content
+    )
+    assert result["planning"].requirements.interests == (
+        TravelInterest.HIKING.value,
+        TravelInterest.WILDLIFE.value,
+    )
+    assert extraction_data["profile_preferences"] == preferences.model_dump(mode="json")
+    prompt = gateway.generate.await_args.kwargs["messages"][0].content
+    assert "home_country_code" in prompt
+    assert "transport='own_arrangements'" in prompt
+    assert "needs_lodging=false" in prompt
+    assert "minor_count=0" in prompt
+
+
+def test_trip_specific_interests_override_profile_defaults():
+    preferences = PlanningPreferences(interests=(TravelInterest.HIKING,))
+
+    result, _, _ = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {
+                    "destination": "Hunza",
+                    "interests": ["local food"],
+                },
+            }
+        ],
+        planning_preferences=preferences,
+    )
+
+    assert result["planning"].requirements.interests == ("local food",)
+
+
+def test_profile_preferences_are_included_in_itinerary_synthesis_input():
+    preferences = PlanningPreferences(
+        travel_styles=(TravelStyle.CULTURE,),
+        interests=(TravelInterest.HISTORY,),
+        budget_tier=BudgetTier.MID_RANGE,
+        trip_pace=TripPace.BALANCED,
+        home_city="Lahore",
+        home_country_code="PK",
+    )
+
+    _, gateway, _ = run_graph(
+        [
+            {"intent": "plan", "updates": requirements().model_dump(mode="json")},
+            itinerary(),
+        ],
+        planning_preferences=preferences,
+    )
+
+    synthesis_data = json.loads(
+        gateway.generate.await_args_list[1].kwargs["messages"][1].content
+    )
+    assert synthesis_data["profile_preferences"] == preferences.model_dump(
+        mode="json", exclude={"home_city", "home_country_code"}
+    )
 
 
 def test_valid_requirements_are_persisted_before_research():

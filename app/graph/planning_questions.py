@@ -17,8 +17,8 @@ QUESTIONS = {
     ),
     "minor_ages": ("What is each child's age?", "Har bachay ki umar batayein."),
     "transport": (
-        "Will you fly, travel by road or rail, or arrange transport yourself?",
-        "Flight, road, rail ya transport aap khud arrange karein ge?",
+        "How would you like to travel, or will you arrange transport yourself?",
+        "Aap kaise safar karna chahein ge, ya transport khud arrange karein ge?",
     ),
     "origin": ("Where are you travelling from?", "Aap kahan se safar karein ge?"),
     "cabin_class": (

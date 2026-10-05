@@ -242,7 +242,7 @@ def test_recent_messages_query_enforces_owner_conversation_and_limit() -> None:
     assert "messages.conversation_id" in compiled_statement
     assert "conversations.user_id" in compiled_statement
     assert (
-        "ORDER BY app.messages.created_at DESC, app.messages.id DESC"
+        "ORDER BY coalesce(messages_1.turn_number, app.messages.turn_number) DESC, app.messages.role ASC, app.messages.id DESC"
         in compiled_statement
     )
     assert conversation_id in parameter_values

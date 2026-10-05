@@ -8,6 +8,12 @@ The design targets third normal form for durable business data. Provider payload
 
 ## Current migration status
 
+Revision `c8e3a9f21064` adds nullable JSONB `itinerary_items.image` using the shared
+image metadata contract. Existing records remain valid with no image. Downgrade
+removes this metadata and retains the activity schedule. Upgrade and downgrade
+are covered by disposable PostgreSQL tests; application databases are not migrated
+automatically.
+
 Revision `ab72c4e91035` adds conversation `planning_state` (versioned JSONB),
 `planning_trip_id` (nullable FK with SET NULL), `planning_lease_token` and
 `planning_lease_expires_at`. State writes use owner/token/expiry predicates and
@@ -461,3 +467,27 @@ Use an asynchronous PostgreSQL driver through SQLAlchemy, with a bounded applica
 `instances × workers × pool size + operational reserve`
 
 This total must remain below the managed database connection limit. Add a pooler such as PgBouncer when horizontal scaling makes direct connection counts inefficient.
+
+## Generation safety migration (`d92af5b43107`)
+
+Adds `messages.turn_number` (database identity), an admission-deferred flag to
+prevent rejected work from blocking later turns, a conversation/turn index,
+`generation_leases` (expiring global/user admission), `generation_usage`
+(user/UTC-day request counts), and itinerary item `start_time_zone` /
+`end_time_zone` columns. A table-locked backfill orders existing messages by
+creation time and ID; plan downtime for a large messages table. Run through the
+normal Alembic deployment process after draining old workers. No live database is
+changed by the implementation or disposable-database tests.
+
+Downgrade preserves conversations and itineraries but discards turn ordering,
+admission counters and timezone metadata. Cached replies remain idempotent;
+stale unfinished turns cannot overwrite newer planning state.
+
+## Generation deduplication migration (`e71c09ab624f`)
+
+Adds nullable `generation_leases.message_id` and a unique constraint on
+`(user_id, message_id)`. Existing reservations retain null message IDs; updated
+workers supply the persisted message ID and reject active duplicates before
+charging admission usage. Apply the migration before starting updated workers
+and drain older workers, which cannot participate in message deduplication.
+Downgrade removes deduplication metadata but retains conversation messages.

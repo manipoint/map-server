@@ -5,13 +5,17 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     String,
     Text,
     Uuid,
+    false,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,6 +28,7 @@ class Message(Base):
 
     __tablename__ = "messages"
     __table_args__ = (
+        Index("ix_messages_conversation_turn", "conversation_id", "turn_number"),
         CheckConstraint(
             "role IN ('user', 'assistant')",
             name="role",
@@ -64,6 +69,10 @@ class Message(Base):
         Uuid(as_uuid=True),
         primary_key=True,
         default=uuid4,
+    )
+    turn_number: Mapped[int] = mapped_column(BigInteger(), Identity(), nullable=False)
+    generation_deferred: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, server_default=false()
     )
     conversation_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),

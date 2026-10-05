@@ -8,19 +8,19 @@ Structured operations such as flight searches, hotel availability, weather looku
 
 ## Current implemented baseline
 
-`FallbackModelGateway` is configured from server-side settings and uses this fixed cost-aware order when the corresponding API key is present:
+`FallbackModelGateway` is configured from server-side settings and uses this provider priority when the corresponding API key is present:
 
 ```text
-Groq → Google Gemini → OpenAI
+Google Gemini → OpenAI → Groq
 ```
 
 Each provider client receives `MODEL_TIMEOUT_SECONDS`. Provider-local retries are disabled (`0`) because retry/fallback ownership belongs to the gateway; this prevents hidden repeated calls and keeps cost/latency bounded. The gateway returns the first non-empty `AIMessage` response or raises a safe `ModelGatewayError` after every configured provider fails.
 
-Current configured model defaults are `openai/gpt-oss-20b` on Groq, `gemini-2.5-flash` on Google, and `gpt-4.1-mini` on OpenAI.
+Current configured model defaults are `gemini-3.8-flash` on Google, `gpt-6-luna` on OpenAI, and `openai/gpt-oss-20b` on Groq.
 
-The current fallback catches every ordinary provider exception and gives each provider a full per-call timeout. It does not yet classify safety, invalid-input, authentication, quota, or transient errors. `TravelResponseService` now wraps graph execution and atomic reply persistence in a shared 75-second default deadline, so the former theoretical 270-second model path is cancelled before the 120-second assistant lease expires. Configuration also reserves a minimum 15-second margin for timeout/failure handling; see [Reliability and SPOF Review](reliability.md).
+The gateway stops on explicit refusals and HTTP 400/401/403/404/413/422. Transient errors can fall through to another provider; SDK retries are disabled. `TravelResponseService` now wraps graph execution and atomic reply persistence in a shared 75-second default deadline, so the former theoretical 270-second model path is cancelled before the 120-second assistant lease expires. Configuration also reserves a minimum 15-second margin for timeout/failure handling; see [Reliability and SPOF Review](reliability.md).
 
-The current route is a single chat-response route. Provider fallback and correlated LangSmith tracing are implemented; economy/quality profiles and circuit breakers remain planned work.
+The active planner uses tool-free extraction and synthesis routes with a shared provider chain; standalone tool requests use typed deterministic dispatch. Provider fallback and correlated LangSmith tracing are implemented; economy/quality profiles and circuit breakers remain planned work.
 
 ## Routing classes
 
@@ -64,7 +64,7 @@ flowchart TD
 
 ## Fallback eligibility
 
-This table defines the target policy. The current gateway falls back on every caught `Exception`, other than task cancellation/system-level exceptions that are not `Exception` subclasses.
+This table describes future per-provider retry and circuit-breaker behavior. The implemented gateway already stops on refusals and non-transient HTTP errors; it never retries the same SDK client within one gateway call.
 
 | Condition | Retry same provider | Try next model | Notes |
 | --- | ---: | ---: | --- |
@@ -92,7 +92,27 @@ Each route exposes one internal interface:
 
 Every configured fallback must pass the same structured-output and multilingual evaluation set before it is enabled.
 
-## Token and cost controls
+Google receives a simplified generation schema that preserves object structure,
+required fields, references, unions, enums and extra-property restrictions.
+Defaults, titles, string formats/patterns and size/numeric bounds are omitted
+from that provider's generation schema: the full extraction schema was rejected
+by the configured endpoint with HTTP 400. The planning workflow still validates
+returned JSON against the original Pydantic model and retains its bounded repair
+attempt, so these constraints remain enforced by the backend. Other providers
+continue receiving the original model schema. A synthetic live extraction request
+validated this compatibility path; it is not a complete travel-planning evaluation.
+
+## Implemented token and admission bounds
+
+Every response has a 12-attempt provider budget. Model input text is limited to
+120,000 characters and each provider's output cap defaults to 8,192 tokens.
+PostgreSQL admission limits active generations to 16 globally and two per user,
+with 100 admitted requests per user per UTC day. All limits except the fixed
+12-attempt ceiling are configurable; see [planner configuration](langgraph.md).
+These counters bound worst-case work and do not represent measured dollar spend.
+Fresh matching research is reused within the conversation for five minutes.
+
+## Additional token and cost targets
 
 - Perform intent routing and parameter validation with deterministic code when confidence is sufficient.
 - Send only the relevant trip state, not the entire database record or raw provider payload.

@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+from app.domain.preferences import BudgetTier
 from app.domain.trip_requirements import TripRequirements
 from app.domain.trips import TripRequest
 from app.services.trip_requirements_policy import TripRequirementField as Field
@@ -29,8 +30,10 @@ def ready(**overrides):
     )
 
 
-def missing(requirements):
-    return TripRequirementsPolicy.missing_fields(requirements, today=TODAY)
+def missing(requirements, *, budget_tier=None):
+    return TripRequirementsPolicy.missing_fields(
+        requirements, today=TODAY, budget_tier=budget_tier
+    )
 
 
 def test_partial_requirements_do_not_invent_defaults():
@@ -55,6 +58,17 @@ def test_duration_resolves_date_without_mutating_supplied_state():
     assert missing(value) == ()
     restored = TripRequirements.model_validate_json(value.model_dump_json())
     assert restored.resolved_end_date == value.resolved_end_date
+
+
+def test_complete_adults_only_self_arranged_trip_does_not_reask_known_choices():
+    value = ready(
+        adults=4,
+        minor_count=0,
+        transport="own_arrangements",
+        needs_lodging=False,
+    )
+
+    assert missing(value) == ()
 
 
 @pytest.mark.parametrize(
@@ -149,6 +163,23 @@ def test_budget_decision_and_fields_are_distinct():
         )
         == ()
     )
+
+
+@pytest.mark.parametrize("budget_tier", list(BudgetTier))
+def test_profile_budget_tier_satisfies_budget_preference_question(budget_tier):
+    assert missing(ready(budget_decision=None), budget_tier=budget_tier) == ()
+
+
+def test_missing_budget_tier_still_requires_a_budget_preference():
+    assert missing(ready(budget_decision=None), budget_tier=None) == (
+        Field.BUDGET_DECISION,
+    )
+
+
+def test_explicit_trip_budget_requires_amount_and_currency_even_with_profile_tier():
+    assert missing(
+        ready(budget_decision="specified"), budget_tier=BudgetTier.BUDGET
+    ) == (Field.TOTAL_BUDGET, Field.BUDGET_CURRENCY)
 
 
 def test_past_derived_dates_require_correction():

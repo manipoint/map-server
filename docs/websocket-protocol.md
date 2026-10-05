@@ -118,6 +118,29 @@ Response generation runs in a background task per accepted request. Each connect
 
 The broader event names and request-ID contract documented below remain the target protocol for MCP search, interrupts, cancellation, and itineraries. Current idempotency uses `client_message_id`, not the target `request_id` envelope.
 
+## Admission and authentication during a connection
+
+The server revalidates the session before accepting/persisting travel work and
+before generation. Token expiry and periodic database checks also close idle or
+active sockets; revocation on another worker is detected within the configured
+15-second default interval. In-flight work is cancelled when the session closes.
+Refresh/rotation requires reconnecting with the new access token.
+
+If an established socket cannot revalidate its session because of a database
+timeout, network failure or SQLAlchemy error, the server cancels pending work and
+closes with `1011` (`Session validation unavailable`). This is distinct from
+invalid/expired authentication (`4401`). Clients should retry `1011` with bounded
+backoff; that code alone is not a reason to refresh credentials. Provider errors,
+SQL text and credentials are not included in validation failure logs.
+
+A socket with four pending requests rejects additional work with
+`travel.request.rejected`, code `capacity_exceeded`, before persistence.
+Database admission can return `travel.response.failed` with `capacity_exceeded`
+or `daily_limit_exceeded` after request acceptance. Retry capacity failures with
+backoff and the same client message ID; daily quota resets at UTC midnight.
+`stale_request` means a newer turn has advanced planning state: submit the desired
+correction as a new message, rather than replaying the old prompt.
+
 ## Connection lifecycle
 
 The following sequence is the target structured-search lifecycle. The current lifecycle uses `travel.request` and the response events listed above.

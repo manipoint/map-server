@@ -243,6 +243,7 @@ def test_prepare_loads_bounded_history_when_reply_is_missing() -> None:
         conversation_id=accepted_request.conversation.id,
         user_id=user_id,
         limit=12,
+        through_message_id=accepted_request.user_message.id,
     )
 
 

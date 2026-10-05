@@ -111,8 +111,8 @@ class Settings(BaseSettings):
 
     # LLM models
     groq_model: str = "openai/gpt-oss-20b"
-    google_model: str = "gemini-2.5-flash"
-    openai_model: str = "gpt-4.1-mini"
+    google_model: str = "gemini-3.8-flash"
+    openai_model: str = "gpt-6-luna"
 
     # LLM providers
     groq_api_key: SecretStr | None = None
@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     # Request limits
     provider_timeout_seconds: float = Field(default=15.0, gt=0)
     model_timeout_seconds: float = Field(default=30.0, gt=0)
+    model_max_output_tokens: int = Field(default=8192, ge=512, le=32768)
+    model_max_input_chars: int = Field(default=120000, ge=4000, le=500000)
+    generation_global_concurrency: int = Field(default=16, ge=1, le=1000)
+    generation_user_concurrency: int = Field(default=2, ge=1, le=20)
+    generation_daily_request_limit: int = Field(default=100, ge=1, le=10000)
+    websocket_max_pending_requests: int = Field(default=4, ge=1, le=20)
+    websocket_auth_check_seconds: float = Field(default=15.0, gt=0, le=60)
     max_search_results: int = Field(default=10, ge=1, le=100)
     max_model_attempts: int = Field(default=3, ge=1, le=5)
     websocket_max_message_bytes: int = Field(

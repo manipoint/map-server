@@ -16,7 +16,7 @@ from app.graph.clarifications import extract_travel_clarification
 from app.graph.nodes.input import build_travel_graph_input
 from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.schemas.itineraries import to_itinerary_item_drafts
-from app.graph.subgraphs.model_gateway import ModelGatewayError
+from app.graph.subgraphs.model_gateway import ModelGatewayError, model_call_budget
 from app.observability.langsmith import LangSmithTracerFactory
 from app.observability.metrics import record_metric
 from app.observability.request_context import (
@@ -31,13 +31,22 @@ from app.services.assistant_rich_content_mapper import (
 from app.services.conversation_planning_service import (
     ConversationPlanningService,
     PlanningTurn,
+    StalePlanningRequestError,
 )
 from app.services.conversation_processing_service import ConversationProcessingService
 from app.services.conversation_service import AcceptedTravelRequest
+from app.services.generation_admission import (
+    GenerationAdmission,
+    GenerationAdmissionError,
+    GenerationAlreadyInProgressError,
+)
 from app.services.itinerary_service import ItineraryService
 
 logger = logging.getLogger(__name__)
 CANCELLED_RUN_CLEANUP_TIMEOUT_SECONDS = 5.0
+MAX_PLANNING_CONTEXT_MESSAGES = 6
+MAX_PLANNING_CONTEXT_CHARS = 4_000
+MAX_PLANNING_CONTEXT_MESSAGE_CHARS = 2_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +66,56 @@ class TravelResponseResult:
     itinerary_id: UUID | None = None
     clarification: TravelClarification | None = None
     rich_content: AssistantRichContent | None = None
+
+
+def _planning_conversation_context(
+    messages: tuple[Message, ...],
+    *,
+    context_start_message_id: UUID,
+    current_message_id: UUID,
+    anchor_message: Message | None = None,
+) -> list[dict[str, str]]:
+    """Keep the trip's first request and its latest bounded clarifications."""
+    start_index = next(
+        (
+            index
+            for index, message in enumerate(messages)
+            if message.id == context_start_message_id
+        ),
+        None,
+    )
+    if start_index is None and anchor_message is None:
+        return []
+
+    relevant = [
+        message
+        for message in (messages[start_index:] if start_index is not None else messages)
+        if message.id != current_message_id and message.role in {"user", "assistant"}
+    ]
+    anchor = anchor_message or next(
+        (message for message in relevant if message.id == context_start_message_id),
+        None,
+    )
+    if anchor is None or anchor.role != "user":
+        return []
+    recent = [message for message in relevant if message.id != anchor.id]
+    selected = [anchor, *recent[-(MAX_PLANNING_CONTEXT_MESSAGES - 1) :]]
+    context = [
+        {
+            "role": message.role,
+            "content": (
+                message.content[:MAX_PLANNING_CONTEXT_MESSAGE_CHARS]
+                if message.role == "user"
+                else message.content[-MAX_PLANNING_CONTEXT_MESSAGE_CHARS:]
+            ),
+        }
+        for message in selected
+    ]
+    total_chars = sum(len(message["content"]) for message in context)
+    while len(context) > 1 and total_chars > MAX_PLANNING_CONTEXT_CHARS:
+        removed = context.pop(1)
+        total_chars -= len(removed["content"])
+    return context
 
 
 def parse_persisted_structured_content(
@@ -109,6 +168,7 @@ class TravelResponseService:
         max_model_attempts: int,
         langsmith_tracer_factory: LangSmithTracerFactory | None = None,
         planning_service: ConversationPlanningService | None = None,
+        admission: GenerationAdmission | None = None,
     ) -> None:
         self.processing = processing_service
         self.itineraries = itinerary_service
@@ -118,12 +178,74 @@ class TravelResponseService:
         self.max_model_attempts = max_model_attempts
         self.langsmith_tracer_factory = langsmith_tracer_factory
         self.planning = planning_service
+        self.admission = admission
 
     async def generate_reply(
         self,
         *,
         user_id: UUID,
         accepted_request: AcceptedTravelRequest,
+    ) -> TravelResponseResult:
+        # Use the persisted message ID after server-side ownership validation.
+        message_id = accepted_request.user_message.id
+        if self.planning is not None or self.admission is not None:
+            if await self.processing.has_cached_reply(
+                user_id=user_id,
+                message_id=message_id,
+            ):
+                return await self._generate_reply(
+                    user_id=user_id,
+                    accepted_request=accepted_request,
+                )
+        try:
+            if self.admission is not None:
+                async with self.admission.reserve(
+                    user_id,
+                    message_id=message_id,
+                ):
+                    return await self._generate_serialized(
+                        user_id=user_id,
+                        accepted_request=accepted_request,
+                    )
+
+            return await self._generate_serialized(
+                user_id=user_id,
+                accepted_request=accepted_request,
+            )
+
+        except GenerationAlreadyInProgressError:
+            return TravelResponseResult(
+                message=None,
+                is_cached=False,
+                is_processing=True,
+                error_code=None,
+            )
+        except StalePlanningRequestError:
+            code = TravelResponseErrorCode.STALE_REQUEST
+        except GenerationAdmissionError as error:
+            code = error.code
+            await self.processing.defer_generation(
+                user_id=user_id,
+                message_id=message_id,
+            )
+
+        return TravelResponseResult(
+            message=None,
+            is_cached=False,
+            is_processing=False,
+            error_code=code,
+        )
+
+    async def _generate_serialized(
+        self, *, user_id: UUID, accepted_request: AcceptedTravelRequest
+    ) -> TravelResponseResult:
+        with model_call_budget():
+            return await self._generate_turn(
+                user_id=user_id, accepted_request=accepted_request
+            )
+
+    async def _generate_turn(
+        self, *, user_id: UUID, accepted_request: AcceptedTravelRequest
     ) -> TravelResponseResult:
         if self.planning is not None:
             async with self.planning.turn(
@@ -222,6 +344,10 @@ class TravelResponseService:
                     raise RuntimeError(
                         "Planning service is required for a planning turn"
                     )
+                planning_turn = await planning_service.ensure_context_anchor(
+                    turn=planning_turn,
+                    user_message_id=accepted_request.user_message.id,
+                )
 
                 async def persist_requirements(
                     state: PlanningState, reset_trip: bool
@@ -240,15 +366,36 @@ class TravelResponseService:
                 runtime_context = PlanningRuntimeContext(
                     persist_requirements=persist_requirements
                 )
-                # Durable requirements replace history replay for planning turns.
-
+                # Planning receives bounded, trip-scoped context in its typed state.
                 graph_input["messages"] = []
+                context_start_message_id = (
+                    planning_turn.state.context_start_message_id
+                    or planning_turn.state.requirements_message_id
+                    or accepted_request.user_message.id
+                )
+                anchor_message = None
+                if not any(
+                    message.id == context_start_message_id
+                    for message in start.context.history
+                ):
+                    anchor_message = await self.processing.get_context_anchor(
+                        user_id=user_id,
+                        conversation_id=accepted_request.conversation.id,
+                        message_id=context_start_message_id,
+                    )
                 graph_input.update(
                     planning=planning_turn.state,
                     latest_message=accepted_request.user_message.content,
+                    recent_conversation=_planning_conversation_context(
+                        start.context.history,
+                        context_start_message_id=context_start_message_id,
+                        current_message_id=accepted_request.user_message.id,
+                        anchor_message=anchor_message,
+                    ),
                     user_message_id=accepted_request.user_message.id,
                     requirements_changed=False,
                     reset_trip=False,
+                    planning_preferences=planning_turn.preferences,
                 )
             graph_config: dict[str, object] = {
                 "run_id": trace_id,
@@ -304,9 +451,9 @@ class TravelResponseService:
                         metric_type="distribution",
                         labels={"outcome": graph_outcome},
                     )
-                clarification = extract_travel_clarification(
-                    graph_result.get("messages", [])
-                )
+                clarification = graph_result.get(
+                    "clarification"
+                ) or extract_travel_clarification(graph_result.get("messages", []))
                 itinerary_id = None
                 rich_content = None
                 generated_itinerary = graph_result.get("generated_itinerary")

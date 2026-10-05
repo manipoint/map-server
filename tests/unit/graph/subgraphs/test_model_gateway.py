@@ -27,6 +27,7 @@ class FakeChatModel:
         self.result = result
         self.calls: list[list[BaseMessage]] = []
         self.bound_tools_calls: list[list[BaseTool]] = []
+        self.structured_calls: list[tuple[type, str, bool]] = []
 
     async def ainvoke(self, input: Sequence[BaseMessage]) -> BaseMessage:
         """Record input and return or raise the configured result."""
@@ -43,6 +44,18 @@ class FakeChatModel:
 
         self.bound_tools_calls.append(list(tools))
         return self
+
+    def with_structured_output(self, schema, *, method: str, include_raw: bool):
+        """Mimic LangChain's raw response wrapper for structured generation."""
+        self.structured_calls.append((schema, method, include_raw))
+        model = self
+
+        class StructuredModel:
+            async def ainvoke(self, input: Sequence[BaseMessage]):
+                raw = await model.ainvoke(input)
+                return {"raw": raw, "parsed": None, "parsing_error": None}
+
+        return StructuredModel()
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422, 429, 500, 503])
@@ -114,6 +127,27 @@ def test_gateway_returns_the_first_valid_provider_response() -> None:
     assert response.content == "Primary itinerary"
     assert primary.calls == [messages]
     assert fallback.calls == []
+
+
+def test_gateway_uses_native_json_schema_and_returns_raw_message():
+    from app.graph.google_schema import google_generation_schema
+    from app.graph.planning_schemas import RequirementExtraction
+
+    response = AIMessage(content='{"intent":"chat","reply":"Hello"}')
+    primary = FakeChatModel(response)
+    gateway = FallbackModelGateway([ModelProvider("google", primary)])
+
+    result = asyncio.run(
+        gateway.generate(
+            messages=[HumanMessage(content="Plan a trip")],
+            schema=RequirementExtraction,
+        )
+    )
+
+    assert result is response
+    assert primary.structured_calls == [
+        (google_generation_schema(RequirementExtraction), "json_schema", True)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -341,10 +375,10 @@ def test_gateway_allows_task_cancellation_to_propagate() -> None:
     assert fallback.calls == []
 
 
-def test_build_model_gateway_uses_the_configured_cost_aware_order(
+def test_build_model_gateway_uses_google_as_primary_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Configured providers should be built in Groq, Google, OpenAI order."""
+    """Configured providers should use Gemini first, then OpenAI and Groq."""
 
     groq_constructor = FakeModelConstructor()
     google_constructor = FakeModelConstructor()
@@ -366,17 +400,9 @@ def test_build_model_gateway_uses_the_configured_cost_aware_order(
     gateway = build_model_gateway(settings)
 
     assert [provider.name for provider in gateway.providers] == [
-        "groq",
         "google",
         "openai",
-    ]
-    assert groq_constructor.calls == [
-        {
-            "model": "groq-test-model",
-            "api_key": settings.groq_api_key,
-            "timeout": 45.0,
-            "max_retries": 0,
-        }
+        "groq",
     ]
     assert google_constructor.calls == [
         {
@@ -384,6 +410,7 @@ def test_build_model_gateway_uses_the_configured_cost_aware_order(
             "api_key": settings.google_api_key,
             "request_timeout": 45.0,
             "retries": 0,
+            "max_output_tokens": 8192,
         }
     ]
     assert openai_constructor.calls == [
@@ -392,17 +419,28 @@ def test_build_model_gateway_uses_the_configured_cost_aware_order(
             "api_key": settings.openai_api_key,
             "timeout": 45.0,
             "max_retries": 0,
+            "max_tokens": 8192,
+            "reasoning_effort": None,
         }
     ]
-    assert groq_constructor.models[0].bound_tools_calls == []
-    assert google_constructor.models[0].bound_tools_calls == []
+    assert groq_constructor.calls == [
+        {
+            "model": "groq-test-model",
+            "api_key": settings.groq_api_key,
+            "timeout": 45.0,
+            "max_retries": 0,
+            "max_tokens": 8192,
+        }
+    ]
     assert openai_constructor.models[0].bound_tools_calls == []
+    assert google_constructor.models[0].bound_tools_calls == []
+    assert groq_constructor.models[0].bound_tools_calls == []
 
 
-def test_build_model_gateway_binds_the_same_tools_to_every_provider(
+def test_build_model_gateway_binds_tools_to_all_configured_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fallback providers should expose an identical model-facing tool contract."""
+    """All fallback providers should expose the same tool contract."""
 
     groq_constructor = FakeModelConstructor()
     google_constructor = FakeModelConstructor()
@@ -420,19 +458,19 @@ def test_build_model_gateway_binds_the_same_tools_to_every_provider(
     gateway = build_model_gateway(settings, tools=[weather_tool])
 
     assert [provider.name for provider in gateway.providers] == [
-        "groq",
         "google",
         "openai",
+        "groq",
     ]
-    assert groq_constructor.models[0].bound_tools_calls == [[weather_tool]]
-    assert google_constructor.models[0].bound_tools_calls == [[weather_tool]]
     assert openai_constructor.models[0].bound_tools_calls == [[weather_tool]]
+    assert google_constructor.models[0].bound_tools_calls == [[weather_tool]]
+    assert groq_constructor.models[0].bound_tools_calls == [[weather_tool]]
 
 
 def test_build_model_gateway_can_use_google_as_the_only_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Google must not depend on a Groq key being configured."""
+    """Gemini can serve requests without requiring fallback-provider keys."""
 
     google_constructor = FakeModelConstructor()
     monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", google_constructor)
@@ -440,6 +478,7 @@ def test_build_model_gateway_can_use_google_as_the_only_provider(
 
     gateway = build_model_gateway(settings)
 
+    assert settings.google_model == "gemini-3.8-flash"
     assert [provider.name for provider in gateway.providers] == ["google"]
     assert google_constructor.calls[0]["model"] == settings.google_model
 

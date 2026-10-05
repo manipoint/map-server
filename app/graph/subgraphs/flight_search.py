@@ -1,1 +1,0 @@
-"""Flight-search subgraph."""

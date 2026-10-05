@@ -28,6 +28,9 @@ def test_itinerary_item_contains_required_timeline_columns() -> None:
         "location_name",
         "starts_at",
         "ends_at",
+        "start_time_zone",
+        "end_time_zone",
+        "image",
         "created_at",
         "updated_at",
     }

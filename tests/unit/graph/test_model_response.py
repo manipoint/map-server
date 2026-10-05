@@ -15,7 +15,10 @@ from app.graph.model_response import (
     response_diagnostics,
 )
 from app.graph.nodes.responses import build_assistant_response
-from app.graph.planning_builder import structured_call
+from app.graph.planning_builder import (
+    StructuredOutputValidationError,
+    structured_call,
+)
 from app.graph.planning_schemas import (
     MAX_STRUCTURED_RESPONSE_CHARS,
     RequirementExtraction,
@@ -263,7 +266,9 @@ def test_reported_failure_chain_exhausts_once_and_preserves_429(caplog):
 
 
 def test_structured_parser_accepts_blocks_and_final_response_reuses_normalization():
-    payload = json.dumps({"intent": "chat", "reply": "Hello"})
+    payload = json.dumps(
+        {"intent": "chat", "reply": "Hello", "updates": {}, "changed_fields": []}
+    )
     gateway = AsyncMock()
     gateway.generate.return_value = AIMessage(
         content=[
@@ -276,6 +281,12 @@ def test_structured_parser_accepts_blocks_and_final_response_reuses_normalizatio
         structured_call(gateway, RequirementExtraction, prompt="JSON", data={})
     )
     assert result.reply == "Hello"
+    gateway.generate.assert_awaited_once()
+    assert gateway.generate.await_args.kwargs["schema"] is RequirementExtraction
+    assert (
+        "model_json_schema"
+        not in gateway.generate.await_args.kwargs["messages"][0].content
+    )
     assert build_assistant_response(
         {"messages": [AIMessage(content=[{"type": "text", "text": " Hello "}])]}
     ) == {"assistant_response": "Hello"}
@@ -303,6 +314,25 @@ def test_structured_parser_rejects_invalid_output(message):
         asyncio.run(
             structured_call(gateway, RequirementExtraction, prompt="JSON", data={})
         )
+
+
+def test_structured_parser_reports_safe_schema_diagnostics():
+    gateway = AsyncMock()
+    gateway.generate.return_value = AIMessage(
+        content='{"intent":"secret_invalid_value","updates":{},"changed_fields":[]}'
+    )
+
+    with pytest.raises(StructuredOutputValidationError) as caught:
+        asyncio.run(
+            structured_call(gateway, RequirementExtraction, prompt="JSON", data={})
+        )
+
+    error = caught.value
+    assert error.schema_name == "RequirementExtraction"
+    assert error.error_count == 1
+    assert error.error_types == ("literal_error",)
+    assert error.error_fields == ("intent",)
+    assert "secret_invalid_value" not in str(error)
 
 
 def test_structured_parser_propagates_cancellation_and_refusal():

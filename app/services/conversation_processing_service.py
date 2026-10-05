@@ -117,12 +117,38 @@ class ConversationProcessingService:
             conversation_id=accepted_request.conversation.id,
             user_id=user_id,
             limit=self.history_limit,
+            through_message_id=accepted_request.user_message.id,
         )
         return ConversationProcessingContext(
             accepted_request=accepted_request,
             history=tuple(history),
             cached_reply=None,
         )
+
+    async def get_context_anchor(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+        message_id: UUID,
+    ) -> Message | None:
+        """Load an owned older anchor without expanding bounded history."""
+        return await self.messages.get_message_by_id_for_conversation(
+            message_id=message_id, conversation_id=conversation_id, user_id=user_id
+        )
+
+    async def has_cached_reply(self, *, user_id: UUID, message_id: UUID) -> bool:
+        cached = await self.messages.get_assistant_reply(
+            user_id=user_id, reply_to_message_id=message_id
+        )
+        # Return the pooled connection before cross-worker admission opens its own
+        # transaction. Otherwise concurrent preflight reads can exhaust the pool.
+        await self.session.commit()
+        return cached is not None
+
+    async def defer_generation(self, *, user_id: UUID, message_id: UUID) -> None:
+        await self.messages.defer_generation(user_id=user_id, message_id=message_id)
+        await self.session.commit()
 
     async def save_reply(
         self,

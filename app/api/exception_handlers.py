@@ -17,6 +17,9 @@ from app.auth.exceptions import (
 )
 from app.common.exceptions import InvalidCursorError, ProviderError
 from app.domain.errors import (
+    ConversationError,
+    ConversationInProgressError,
+    ConversationNotFoundError,
     DestinationError,
     DestinationNotFoundError,
     DestinationPlaceNotFoundError,
@@ -38,6 +41,46 @@ class ErrorDefinition:
     status_code: int
     code: str
     message: str
+
+
+CONVERSATION_ERROR_DEFINITIONS: dict[type[ConversationError], ErrorDefinition] = {
+    ConversationNotFoundError: ErrorDefinition(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="conversation_not_found",
+        message="Conversation was not found",
+    ),
+    ConversationInProgressError: ErrorDefinition(
+        status_code=status.HTTP_409_CONFLICT,
+        code="conversation_in_progress",
+        message="Conversation planning is in progress",
+    ),
+}
+
+
+async def conversation_exception_handler(
+    request: Request,
+    error: ConversationError,
+) -> JSONResponse:
+    """Convert conversation-domain errors into safe HTTP responses."""
+
+    definition = CONVERSATION_ERROR_DEFINITIONS.get(
+        type(error),
+        ErrorDefinition(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="conversation_operation_failed",
+            message="Conversation operation failed",
+        ),
+    )
+    return JSONResponse(
+        status_code=definition.status_code,
+        content={
+            "error": {
+                "code": definition.code,
+                "message": definition.message,
+                "request_id": getattr(request.state, "request_id", None),
+            }
+        },
+    )
 
 
 DESTINATION_ERROR_DEFINITIONS: dict[type[DestinationError], ErrorDefinition] = {

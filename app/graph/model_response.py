@@ -1,5 +1,7 @@
 """Shared model text handling and allowlisted diagnostics (never raw content)."""
 
+import re
+
 from langchain_core.messages import AIMessage
 
 
@@ -104,15 +106,75 @@ def model_response_text(response: AIMessage) -> str:
     return "".join(parts)
 
 
+_ERROR_HINT_PATTERNS = {
+    "response_schema": r"response[_ ]?(?:json[_ ]?)?schema|json schema",
+    "schema_complexity": r"too (?:many states|complex)|complexity|nesting depth",
+    "unsupported_field": r"unknown name|unknown field|unsupported|not supported",
+    "invalid_api_key": r"api key not valid|invalid api key|api_key_invalid",
+    "model_unavailable": r"model[^\n]{0,120}(?:not found|not supported|unavailable)",
+    "invalid_enum": r"enum",
+    "union_schema": r"\b(?:anyof|oneof)\b",
+    "token_limit": r"max_output_tokens|maxoutputtokens|token limit",
+    "tool_configuration": r"tool_config|toolconfig|function_declarations|functiondeclarations|function calling",
+}
+
+
+def _provider_error_hints(error: BaseException) -> set[str]:
+    """Classify bounded provider text; only constant labels may leave this helper.
+
+    These are diagnostic hints, not authoritative causes or routing decisions.
+    Never emit messages, field paths, descriptions or exception reprs: providers
+    can echo user content and credentials in any of those values.
+    """
+    texts: list[str] = []
+    message = getattr(error, "message", None)
+    if isinstance(message, str):
+        texts.append(message[:4096])
+    for attribute in ("body", "details"):
+        body = getattr(error, attribute, None)
+        if not isinstance(body, dict):
+            continue
+        body = body.get("error", body)
+        if not isinstance(body, dict):
+            continue
+        message = body.get("message")
+        if isinstance(message, str):
+            texts.append(message[:4096])
+        details = body.get("details")
+        if not isinstance(details, list):
+            continue
+        for detail in details[:8]:
+            if not isinstance(detail, dict):
+                continue
+            violations = detail.get("fieldViolations")
+            if not isinstance(violations, list):
+                continue
+            for violation in violations[:8]:
+                if not isinstance(violation, dict):
+                    continue
+                for key in ("field", "description"):
+                    value = violation.get(key)
+                    if isinstance(value, str):
+                        texts.append(value[:512])
+    text = "\n".join(texts).lower()
+    return {
+        hint
+        for hint, pattern in _ERROR_HINT_PATTERNS.items()
+        if re.search(pattern, text)
+    }
+
+
 def provider_error_diagnostics(error: Exception) -> dict[str, object]:
     """Read bounded exception chains; allowlist codes and never stringify errors."""
     result: dict[str, object] = {}
     current: BaseException | None = error
     seen: set[int] = set()
+    hints: set[str] = set()
     for _ in range(5):
         if current is None or id(current) in seen:
             break
         seen.add(id(current))
+        hints.update(_provider_error_hints(current))
         status = getattr(current, "status_code", None)
         if not isinstance(status, int):
             status = getattr(getattr(current, "response", None), "status_code", None)
@@ -141,4 +203,6 @@ def provider_error_diagnostics(error: Exception) -> dict[str, object]:
                     code if code in _ERROR_CODES else "unknown"
                 )
         current = current.__cause__ or current.__context__
+    if hints:
+        result["provider_error_hints"] = sorted(hints)
     return result

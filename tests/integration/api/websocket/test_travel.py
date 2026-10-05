@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from json import dumps
 from threading import Event
 from time import sleep
@@ -9,8 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocketException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.websocket import travel
@@ -73,6 +75,10 @@ def create_travel_websocket_app(
     settings.websocket_heartbeat_interval_seconds = 20.0
     settings.websocket_idle_timeout_seconds = idle_timeout_seconds
     settings.websocket_max_message_bytes = max_message_bytes
+    settings.websocket_auth_check_seconds = 15
+    settings.websocket_max_pending_requests = 4
+    principal.claims.expires_at = datetime.now(UTC) + timedelta(hours=1)
+    application.state.test_principal = principal
     application.state.connection_manager = ConnectionManager()
     application.state.settings = settings
     application.state.session_factory = MagicMock()
@@ -104,6 +110,10 @@ def create_accepted_request(
 def mock_travel_response_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep socket protocol tests independent from graph and database work."""
 
+    async def authenticate(websocket):
+        return websocket.app.state.test_principal
+
+    monkeypatch.setattr(travel, "get_websocket_principal", authenticate)
     monkeypatch.setattr(
         travel,
         "generate_travel_response",
@@ -127,6 +137,208 @@ def create_ping_event() -> dict[str, object]:
         "sent_at": "2026-08-15T16:30:00Z",
         "payload": {},
     }
+
+
+def test_revoked_session_is_checked_before_persisting_a_request(monkeypatch):
+    application = create_travel_websocket_app()
+    persist = AsyncMock()
+    monkeypatch.setattr(travel, "persist_travel_request", persist)
+    monkeypatch.setattr(
+        travel,
+        "get_websocket_principal",
+        AsyncMock(side_effect=WebSocketException(code=4401, reason="Session revoked")),
+    )
+    with (
+        TestClient(application) as client,
+        client.websocket_connect("/ws/travel") as websocket,
+    ):
+        websocket.receive_json()
+        websocket.send_json(create_travel_request_event())
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_json()
+        assert caught.value.code == 4401
+    persist.assert_not_awaited()
+
+
+def test_token_expiry_closes_an_idle_socket_before_poll_interval(monkeypatch):
+    application = create_travel_websocket_app()
+    application.state.test_principal.claims.expires_at = datetime.now(UTC) + timedelta(
+        seconds=0.03
+    )
+    monkeypatch.setattr(
+        travel,
+        "get_websocket_principal",
+        AsyncMock(side_effect=WebSocketException(code=4401, reason="Token expired")),
+    )
+    with (
+        TestClient(application) as client,
+        client.websocket_connect("/ws/travel") as websocket,
+    ):
+        websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_json()
+        assert caught.value.code == 4401
+
+
+@pytest.mark.parametrize(
+    "error,close_code",
+    [
+        (WebSocketException(code=4401, reason="Session revoked"), 4401),
+        (TimeoutError("PRIVATE database details"), 1011),
+    ],
+)
+def test_cross_worker_revocation_cancels_in_flight_generation(
+    monkeypatch, error, close_code
+):
+    application = create_travel_websocket_app()
+    application.state.settings.websocket_auth_check_seconds = 0.01
+    started, cancelled, revoked = Event(), Event(), Event()
+
+    async def authenticate(websocket):
+        if revoked.is_set():
+            raise error
+        return application.state.test_principal
+
+    async def generate(**kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(travel, "get_websocket_principal", authenticate)
+    monkeypatch.setattr(travel, "generate_travel_response", generate)
+    monkeypatch.setattr(
+        travel,
+        "persist_travel_request",
+        AsyncMock(return_value=create_accepted_request()),
+    )
+    with (
+        TestClient(application) as client,
+        client.websocket_connect("/ws/travel") as websocket,
+    ):
+        websocket.receive_json()
+        websocket.send_json(create_travel_request_event())
+        assert websocket.receive_json()["type"] == "travel.request.accepted"
+        assert started.wait(1)
+        revoked.set()
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_json()
+        assert caught.value.code == close_code
+    assert cancelled.wait(1)
+    assert application.state.connection_manager.active_connection_count == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("PRIVATE connection details"),
+        OSError("PRIVATE network details"),
+        OperationalError("PRIVATE SQL", {}, Exception("PRIVATE credentials")),
+    ],
+)
+@pytest.mark.parametrize("phase", ["before_persistence", "before_generation"])
+def test_database_validation_failure_closes_1011_without_private_logs(
+    monkeypatch, caplog, error, phase
+):
+    application = create_travel_websocket_app()
+    persist = AsyncMock(return_value=create_accepted_request())
+    generate = AsyncMock()
+    checks = 0
+
+    async def authenticate(websocket):
+        nonlocal checks
+        checks += 1
+        if phase == "before_persistence" or checks > 1:
+            raise error
+        return application.state.test_principal
+
+    monkeypatch.setattr(travel, "get_websocket_principal", authenticate)
+    monkeypatch.setattr(travel, "persist_travel_request", persist)
+    monkeypatch.setattr(travel, "generate_travel_response", generate)
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(create_travel_request_event())
+            if phase == "before_generation":
+                assert websocket.receive_json()["type"] == "travel.request.accepted"
+            with pytest.raises(WebSocketDisconnect) as caught:
+                websocket.receive_json()
+            assert caught.value.code == 1011
+            assert caught.value.reason == "Session validation unavailable"
+    if phase == "before_persistence":
+        persist.assert_not_awaited()
+    generate.assert_not_awaited()
+    assert application.state.connection_manager.active_connection_count == 0
+    records = [
+        r
+        for r in caplog.records
+        if r.getMessage() == "WebSocket session validation unavailable"
+    ]
+    assert records
+    assert "PRIVATE" not in str([r.__dict__ for r in records])
+
+
+@pytest.mark.parametrize("close_failure", [None, OSError, WebSocketDisconnect])
+def test_session_failure_tolerates_an_already_closed_or_disconnected_socket(
+    monkeypatch, close_failure
+):
+    application = create_travel_websocket_app()
+    from starlette.websockets import WebSocket
+
+    original_close = WebSocket.close
+    close_calls = []
+
+    async def close(websocket, code=1000, reason=None):
+        close_calls.append(code)
+        await original_close(websocket, code=code, reason=reason)
+        if close_failure is not None:
+            raise close_failure()
+
+    async def authenticate(websocket):
+        if close_failure is None:
+            # A concurrent closer has already sent the close frame.
+            await websocket.close(code=1011, reason="Session validation unavailable")
+        raise TimeoutError("PRIVATE")
+
+    persist = AsyncMock()
+    monkeypatch.setattr(WebSocket, "close", close)
+    monkeypatch.setattr(travel, "get_websocket_principal", authenticate)
+    monkeypatch.setattr(travel, "persist_travel_request", persist)
+    with TestClient(application) as client:
+        with client.websocket_connect("/ws/travel") as websocket:
+            websocket.receive_json()
+            websocket.send_json(create_travel_request_event())
+            with pytest.raises(WebSocketDisconnect) as caught:
+                websocket.receive_json()
+            assert caught.value.code == 1011
+    assert close_calls == [1011]
+    persist.assert_not_awaited()
+    assert application.state.connection_manager.active_connection_count == 0
+
+
+def test_socket_pending_limit_rejects_without_persisting_extra_work(monkeypatch):
+    application = create_travel_websocket_app()
+    application.state.settings.websocket_max_pending_requests = 1
+
+    async def generate(**kwargs):
+        await asyncio.sleep(60)
+
+    persist = AsyncMock(return_value=create_accepted_request())
+    monkeypatch.setattr(travel, "generate_travel_response", generate)
+    monkeypatch.setattr(travel, "persist_travel_request", persist)
+    with (
+        TestClient(application) as client,
+        client.websocket_connect("/ws/travel") as websocket,
+    ):
+        websocket.receive_json()
+        websocket.send_json(create_travel_request_event())
+        assert websocket.receive_json()["type"] == "travel.request.accepted"
+        websocket.send_json(create_travel_request_event())
+        rejected = websocket.receive_json()
+        assert rejected["type"] == "travel.request.rejected"
+        assert rejected["payload"]["code"] == "capacity_exceeded"
+    persist.assert_awaited_once()
 
 
 def create_travel_request_event(

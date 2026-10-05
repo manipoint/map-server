@@ -46,6 +46,7 @@ from app.services.hotel_search_service import HotelSearchService
 from app.services.location_resolution_service import LocationResolutionService
 from app.services.place_search_service import PlaceSearchService
 from app.services.planning_research_service import PlanningResearchService
+from app.services.standalone_search_service import StandaloneSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +164,20 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             model_gateway=model_gateway,
             tools=(),
             max_tool_rounds=settings.max_tool_rounds,
+            standalone_service=StandaloneSearchService(
+                client=mcp_client,
+                enabled=frozenset(
+                    {"weather"}
+                    | ({"currency"} if currency_provider else set())
+                    | ({"places"} if place_search_service else set())
+                    | ({"flights"} if flight_search_service else set())
+                    | ({"hotels"} if hotel_search_service else set())
+                ),
+                timeout_seconds=settings.provider_timeout_seconds,
+            ),
             research_service=PlanningResearchService(
                 client=mcp_client,
+                session_factory=session_factory,
                 places_available=place_search_service is not None,
                 hotels_available=hotel_search_service is not None,
                 round_trip_flights_available=(

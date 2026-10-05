@@ -3,6 +3,7 @@
 from datetime import date
 from enum import StrEnum
 
+from app.domain.preferences import BudgetTier
 from app.domain.trip_requirements import (
     BudgetDecision,
     TripRequirements,
@@ -36,6 +37,7 @@ class TripRequirementsPolicy:
         requirements: TripRequirements,
         *,
         today: date,
+        budget_tier: BudgetTier | None = None,
     ) -> tuple[TripRequirementField, ...]:
         missing: list[TripRequirementField] = []
 
@@ -80,7 +82,8 @@ class TripRequirementsPolicy:
             missing.append(TripRequirementField.ROOMS)
 
         if requirements.budget_decision is None:
-            missing.append(TripRequirementField.BUDGET_DECISION)
+            if budget_tier is None:
+                missing.append(TripRequirementField.BUDGET_DECISION)
         elif requirements.budget_decision == BudgetDecision.SPECIFIED:
             if requirements.total_budget is None:
                 missing.append(TripRequirementField.TOTAL_BUDGET)

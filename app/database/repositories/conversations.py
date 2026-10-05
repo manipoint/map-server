@@ -45,3 +45,9 @@ class ConversationRepository:
 
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def delete(self, conversation: Conversation) -> None:
+        """Delete a previously locked conversation and flush cascades."""
+
+        await self.session.delete(conversation)
+        await self.session.flush()

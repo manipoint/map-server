@@ -224,6 +224,9 @@ def test_itinerary_submission_tool_returns_normalized_json_without_dependencies(
         "location_name": "London",
         "starts_at": "2026-09-10T09:00:00Z",
         "ends_at": "2026-09-10T11:00:00Z",
+        "start_time_zone": None,
+        "end_time_zone": None,
+        "image": None,
     }
     assert result["items"][1]["item_type"] == "meal"
 

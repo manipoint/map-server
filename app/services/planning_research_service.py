@@ -1,18 +1,30 @@
 """Bounded parallel research. Models never select or execute these tools."""
 
 import asyncio
+import hashlib
+import json
 from datetime import datetime
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    ValidationError,
+)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.common.exceptions import ProviderUnavailableError
 from app.common.time import utc_now
+from app.database.repositories.destinations import DestinationRepository
 from app.domain.assistant_content import (
     AssistantHotelCard,
     AssistantMedia,
     AssistantMoney,
 )
+from app.domain.destinations import MediaAssetValue
 from app.domain.flights import FlightCabinClass
 from app.domain.trip_requirements import TripRequirements, TripTransport
 from app.domain.trips import TravelerParty, TripRequest
@@ -21,6 +33,7 @@ from app.mcp.schemas.flights import FlightSearchPreparationInput
 from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchResult
 from app.providers.places.schemas import PlaceSearchResult
+from app.services.standalone_search_service import SearchReply, guidance_reply
 from app.services.trip_request_mapper import TripRequestMapper
 
 RESEARCH_TIMEOUT_SECONDS = 15
@@ -38,6 +51,11 @@ class ResearchEvidence(BaseModel):
     source_urls: tuple[HttpUrl, ...] = Field(default=(), max_length=5)
     expires_at: AwareDatetime | None = None
     hotel_card: AssistantHotelCard | None = None
+    image: AssistantMedia | None = None
+    starts_at: AwareDatetime | None = None
+    ends_at: AwareDatetime | None = None
+    start_time_zone: str | None = None
+    end_time_zone: str | None = None
 
 
 class PlanningResearch(BaseModel):
@@ -46,6 +64,9 @@ class PlanningResearch(BaseModel):
     searched_at: AwareDatetime
     evidence: tuple[ResearchEvidence, ...] = Field(default=(), max_length=15)
     warnings: tuple[str, ...] = Field(default=(), max_length=10)
+    cover_image: AssistantMedia | None = None
+    guidance: tuple[SearchReply, ...] = Field(default=(), max_length=3)
+    time_zone: str | None = None
 
 
 def to_trip_request(requirements: TripRequirements) -> TripRequest:
@@ -84,15 +105,31 @@ class PlanningResearchService:
         places_available: bool,
         hotels_available: bool,
         round_trip_flights_available: bool,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.client = client
         self.places_available = places_available
         self.hotels_available = hotels_available
         self.round_trip_flights_available = round_trip_flights_available
+        self.session_factory = session_factory
+
+    def cache_key(self, requirements: TripRequirements) -> str:
+        payload = {
+            "request": to_trip_request(requirements).model_dump(mode="json"),
+            "transport": requirements.transport,
+            "lodging": requirements.needs_lodging,
+            "providers": [
+                self.places_available,
+                self.hotels_available,
+                self.round_trip_flights_available,
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     async def research(self, requirements: TripRequirements) -> PlanningResearch:
         request = to_trip_request(requirements)
-        kinds = ["places"]
+        catalogue = await self._catalogue_research(requirements.destination)
+        kinds = [] if catalogue.evidence else ["places"]
         if requirements.needs_lodging:
             kinds.append("hotels")
         if requirements.transport == TripTransport.FLIGHT:
@@ -100,13 +137,55 @@ class PlanningResearchService:
         results = await asyncio.gather(*(self._search(kind, request) for kind in kinds))
         return PlanningResearch(
             searched_at=utc_now(),
-            evidence=tuple(item for evidence, _ in results for item in evidence),
-            warnings=tuple(warning for _, warning in results if warning),
+            evidence=catalogue.evidence
+            + tuple(item for evidence, _, _ in results for item in evidence),
+            warnings=tuple(warning for _, warning, _ in results if warning),
+            cover_image=catalogue.cover_image,
+            guidance=tuple(reply for _, _, reply in results if reply is not None),
+            time_zone=next(
+                (
+                    item.end_time_zone
+                    for entries, _, _ in results
+                    for item in entries
+                    if item.kind == "flight" and not item.id.endswith("-return")
+                ),
+                None,
+            ),
+        )
+
+    async def _catalogue_research(self, destination: str) -> PlanningResearch:
+        """Reuse published catalogue identities and active media in bounded reads."""
+        empty = PlanningResearch(searched_at=utc_now())
+        if self.session_factory is None:
+            return empty
+        async with self.session_factory() as session:
+            repository = DestinationRepository(session)
+            candidate = await repository.find_for_planning(query=destination)
+            if candidate is None:
+                return empty
+            places = await repository.list_published_places(
+                destination_id=candidate.id, limit=5
+            )
+        return PlanningResearch(
+            searched_at=utc_now(),
+            cover_image=_catalogue_image(candidate.cover_image),
+            evidence=tuple(
+                ResearchEvidence(
+                    id=f"place-{index}",
+                    kind="place",
+                    name=place.name,
+                    location=(place.address or candidate.name)[:200],
+                    description=place.summary,
+                    source_id=str(place.id),
+                    image=_catalogue_image(place.cover_image),
+                )
+                for index, place in enumerate(places, start=1)
+            ),
         )
 
     async def _search(
         self, kind: str, request: TripRequest
-    ) -> tuple[list[ResearchEvidence], str | None]:
+    ) -> tuple[list[ResearchEvidence], str | None, SearchReply | None]:
         enabled = {
             "places": self.places_available,
             "hotels": self.hotels_available,
@@ -116,6 +195,7 @@ class PlanningResearchService:
             return (
                 [],
                 f"{kind}: live search is unavailable; availability and prices are unverified.",
+                None,
             )
         try:
             async with asyncio.timeout(RESEARCH_TIMEOUT_SECONDS):
@@ -149,14 +229,22 @@ class PlanningResearchService:
                         )
                     )
         except (ProviderUnavailableError, TimeoutError):
-            return [], f"{kind}: search failed; availability and prices are unverified."
+            return (
+                [],
+                f"{kind}: search failed; availability and prices are unverified.",
+                None,
+            )
+        guidance = guidance_reply(result)
+        if guidance is not None:
+            return [], None, guidance
         evidence = _compact_evidence(result, now=utc_now())
         if not evidence:
             return (
                 [],
                 f"{kind}: no verified options; further details or a later search may be needed.",
+                None,
             )
-        return evidence, None
+        return evidence, None, None
 
 
 def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence]:
@@ -212,19 +300,50 @@ def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence
                 )
             )
     elif isinstance(result, FlightSearchResult):
-        for offer in result.offers[:3]:
+        for index, offer in enumerate(result.offers[:3], start=1):
             if offer.expires_at is not None and offer.expires_at <= now:
                 continue
-            first, last = offer.outbound.segments[0], offer.outbound.segments[-1]
-            evidence.append(
-                ResearchEvidence(
-                    id=f"flight-{len(evidence) + 1}",
-                    kind="flight",
-                    name=f"{first.departure_airport} to {last.arrival_airport}",
-                    location=last.arrival_airport,
-                    description=f"{first.departure_at.isoformat()} to {last.arrival_at.isoformat()}; quote {offer.total_price} {offer.currency}, not booked.",
-                    expires_at=offer.expires_at,
-                    source_id=offer.offer_id,
+            for suffix, leg in (
+                ("", offer.outbound),
+                ("-return", offer.return_itinerary),
+            ):
+                if leg is None:
+                    continue
+                first, last = leg.segments[0], leg.segments[-1]
+                # Legacy providers may return naive timestamps: never invent offsets.
+                if (
+                    first.departure_at.utcoffset() is None
+                    or last.arrival_at.utcoffset() is None
+                ):
+                    continue
+                evidence.append(
+                    ResearchEvidence(
+                        id=f"flight-{index}{suffix}",
+                        kind="flight",
+                        name=f"{first.departure_airport} to {last.arrival_airport}",
+                        location=last.arrival_airport,
+                        description=f"{first.departure_at.isoformat()} to {last.arrival_at.isoformat()}; quote {offer.total_price} {offer.currency}, not booked.",
+                        expires_at=offer.expires_at,
+                        source_id=offer.offer_id,
+                        starts_at=first.departure_at,
+                        ends_at=last.arrival_at,
+                        start_time_zone=first.departure_time_zone,
+                        end_time_zone=last.arrival_time_zone,
+                    )
                 )
-            )
     return evidence
+
+
+def _catalogue_image(media: MediaAssetValue | None) -> AssistantMedia | None:
+    if media is None:
+        return None
+    try:
+        return AssistantMedia(
+            url=media.url,
+            alt_text=media.alt_text,
+            width=media.width,
+            height=media.height,
+        )
+    except ValidationError:
+        # Invalid legacy media must not prevent a valid itinerary from generating.
+        return None

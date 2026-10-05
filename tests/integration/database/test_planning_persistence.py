@@ -55,7 +55,13 @@ async def exercise_planning(url, migrate):
                 ],
             }
             gateway.generate.side_effect = [
-                AIMessage(content=json.dumps(value))
+                AIMessage(
+                    content=json.dumps(
+                        {**value, "changed_fields": list(value["updates"])}
+                        if "intent" in value
+                        else value
+                    )
+                )
                 for value in [
                     {
                         "intent": "plan",
@@ -132,6 +138,8 @@ async def exercise_planning(url, migrate):
                 user_id=user_id, accepted_request=second
             )
             assert cached.is_cached and cached.itinerary_id == result.itinerary_id
+            assert cached.rich_content == result.rich_content
+            assert len(cached.rich_content.sections[-1].days[0].activities) == 1
             assert gateway.generate.await_count == 3
             before = await session.scalar(
                 select(Conversation.planning_state).where(
@@ -357,6 +365,7 @@ async def exercise_fresh_session_recovery(url, migrate):
                         {
                             "intent": "plan",
                             "updates": extracted_requirements,
+                            "changed_fields": list(extracted_requirements),
                         }
                     )
                 ),

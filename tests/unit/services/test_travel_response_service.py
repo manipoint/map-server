@@ -161,6 +161,7 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
         events.append("release")
 
     planning.turn = open_turn
+    planning.ensure_context_anchor = AsyncMock(return_value=turn)
     persisted_turn = PlanningTurn(
         token=turn.token,
         user_id=turn.user_id,
@@ -212,6 +213,7 @@ def test_natural_conversation_stages_trip_itinerary_and_reply_in_order():
         },
     )
     service.planning = planning
+    processing.has_cached_reply = AsyncMock(return_value=False)
 
     async def invoke_graph(_graph_input, *, config, context):
         assert config["run_name"] == "travel_assistant"

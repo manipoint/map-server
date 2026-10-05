@@ -4,7 +4,7 @@
 
 The backend is a modular monolith. Modules share one Python project and deployment while enforcing boundaries that allow later extraction into services. Transport, orchestration, provider integration, and persistence must remain independently testable.
 
-## Target tree
+## Main modules
 
 ```text
 app/
@@ -36,26 +36,23 @@ app/
 ├── graph/
 │   ├── builder.py
 │   ├── state.py
+│   ├── planning_builder.py
+│   ├── planning_schemas.py
+│   ├── planning_prompts.py
 │   ├── routing.py
 │   ├── nodes/
 │   │   ├── input.py
-│   │   ├── validation.py
 │   │   ├── tools.py
 │   │   ├── models.py
-│   │   ├── persistence.py
 │   │   └── responses.py
 │   └── subgraphs/
-│       ├── model_gateway.py
-│       ├── flight_search.py
-│       ├── hotel_search.py
-│       └── itinerary.py
+│       └── model_gateway.py
 ├── mcp/
 │   ├── server.py
 │   ├── client.py
 │   ├── tools/
 │   └── schemas/
 ├── providers/
-│   ├── base.py
 │   ├── flights/
 │   ├── hotels/
 │   ├── places/
@@ -72,13 +69,14 @@ app/
 │   ├── destination_ranking.py
 │   └── trips.py
 ├── services/
-│   ├── search_service.py
+│   ├── planning_research_service.py
+│   ├── standalone_search_service.py
 │   ├── trip_service.py
 │   ├── user_preference_service.py
 │   ├── home_discovery_service.py
 │   ├── destination_catalogue_service.py
 │   ├── conversation_service.py
-│   └── usage_service.py
+│   └── generation_admission.py
 ├── database/
 │   ├── base.py
 │   ├── session.py
@@ -89,7 +87,6 @@ app/
 │   ├── langsmith.py
 │   └── metrics.py
 └── common/
-    ├── ids.py
     ├── time.py
     └── exceptions.py
 ```

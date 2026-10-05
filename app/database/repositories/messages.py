@@ -2,8 +2,9 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
@@ -68,25 +69,80 @@ class MessageRepository:
         conversation_id: UUID,
         user_id: UUID,
         limit: int,
+        through_message_id: UUID | None = None,
     ) -> list[Message]:
         """Return recent user-owned conversation messages in chronological order."""
 
         if limit < 1:
             raise ValueError("limit must be greater than zero")
 
+        parent = aliased(Message)
+        ordering = func.coalesce(parent.turn_number, Message.turn_number)
         statement = (
             select(Message)
             .join(Conversation, Message.conversation_id == Conversation.id)
+            .outerjoin(parent, Message.reply_to_message_id == parent.id)
             .where(
                 Message.conversation_id == conversation_id,
                 Conversation.user_id == user_id,
             )
-            .order_by(Message.created_at.desc(), Message.id.desc())
+            .order_by(ordering.desc(), Message.role.asc(), Message.id.desc())
             .limit(limit)
         )
+        if through_message_id is not None:
+            boundary = aliased(Message)
+            upper = (
+                select(boundary.turn_number)
+                .where(
+                    boundary.id == through_message_id,
+                    boundary.conversation_id == conversation_id,
+                    boundary.role == "user",
+                )
+                .scalar_subquery()
+            )
+            statement = statement.where(ordering <= upper)
 
         result = await self.session.execute(statement)
         return list(reversed(result.scalars().all()))
+
+    async def get_message_by_id_for_conversation(
+        self,
+        *,
+        message_id: UUID,
+        conversation_id: UUID,
+        user_id: UUID,
+    ) -> Message | None:
+        """Return one message only when it belongs to the user's conversation."""
+
+        statement = (
+            select(Message)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def defer_generation(self, *, user_id: UUID, message_id: UUID) -> None:
+        """Admission failures must not occupy an otherwise unstarted queue slot."""
+        await self.session.execute(
+            update(Message)
+            .where(
+                Message.id == message_id,
+                Message.role == "user",
+                exists(
+                    select(Conversation.id).where(
+                        Conversation.id == Message.conversation_id,
+                        Conversation.user_id == user_id,
+                    )
+                ),
+            )
+            .values(generation_deferred=True)
+            .execution_options(synchronize_session=False)
+        )
 
     async def create_user_message(
         self,

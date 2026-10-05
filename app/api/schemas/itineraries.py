@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.itineraries import (
     ItineraryItemDraft,
-    ItineraryItemType,
     ItineraryStatus,
 )
 
@@ -19,20 +18,12 @@ class ItineraryCreateRequest(BaseModel):
     items: list[ItineraryItemDraft] = Field(min_length=1, max_length=200)
 
 
-class ItineraryItemResponse(BaseModel):
+class ItineraryItemResponse(ItineraryItemDraft):
     """Public representation of one ordered itinerary item."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    day_number: int
-    position: int
-    item_type: ItineraryItemType
-    title: str
-    description: str | None
-    location_name: str | None
-    starts_at: datetime | None
-    ends_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

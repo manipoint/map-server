@@ -111,6 +111,7 @@ class TravelRequestRejectedPayload(BaseModel):
         "conversation_not_found",
         "client_message_conflict",
         "trip_not_found",
+        "capacity_exceeded",
     ]
 
 

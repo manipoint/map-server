@@ -174,6 +174,7 @@ def test_lifespan_builds_one_shared_travel_graph(
         model_gateway=fake_gateway,
         tools=(),
         research_service=ANY,
+        standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
     )
 
@@ -345,6 +346,7 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         model_gateway=fake_gateway,
         tools=(),
         research_service=ANY,
+        standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
     )
     fake_http_client.aclose.assert_awaited_once_with()

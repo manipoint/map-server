@@ -45,6 +45,11 @@ async def _exercise_catalogue(url, migrate):
             repo = DestinationRepository(session)
             skardu = await repo.get_published_by_slug(slug="skardu-pakistan")
             assert skardu is not None
+            assert (await repo.find_for_planning(query=" Skardu ")).id == skardu.id
+            assert (
+                await repo.find_for_planning(query="skardu-pakistan")
+            ).id == skardu.id
+            assert await repo.find_for_planning(query="Skard") is None
             assert len(await repo.list_published_places(destination_id=skardu.id)) == 4
             assert len(await repo.list_destination_media(destination_id=skardu.id)) == 1
             # New high-popularity records must survive low editorial priority.

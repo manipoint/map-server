@@ -17,6 +17,7 @@ from app.database.repositories.messages import MessageRepository
 from app.database.repositories.trips import TripRepository
 from app.domain.errors import (
     ClientMessageConflictError,
+    ConversationInProgressError,
     ConversationNotFoundError,
     TripNotFoundError,
 )
@@ -36,6 +37,7 @@ def create_service() -> tuple[ConversationService, Mock, Mock, Mock]:
     conversations = Mock(spec=ConversationRepository)
     conversations.create = AsyncMock()
     conversations.get_by_id_for_user = AsyncMock()
+    conversations.delete = AsyncMock()
 
     messages = Mock(spec=MessageRepository)
     messages.get_user_message_by_client_id = AsyncMock()
@@ -58,6 +60,68 @@ def create_conversation(*, user_id=None) -> Conversation:
         title="Lahore trip",
         locale="en",
     )
+
+
+def test_delete_conversation_deletes_owned_idle_conversation():
+    service, session, conversations, _ = create_service()
+    user_id = uuid4()
+    conversation = create_conversation(user_id=user_id)
+    conversation.planning_lease_expires_at = None
+    conversations.get_by_id_for_user.return_value = conversation
+
+    asyncio.run(
+        service.delete_conversation(
+            conversation_id=conversation.id,
+            user_id=user_id,
+        )
+    )
+
+    conversations.get_by_id_for_user.assert_awaited_once_with(
+        conversation_id=conversation.id,
+        user_id=user_id,
+        for_update=True,
+    )
+    conversations.delete.assert_awaited_once_with(conversation)
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
+
+
+def test_delete_conversation_hides_missing_or_foreign_conversation():
+    service, session, conversations, _ = create_service()
+    conversation_id = uuid4()
+    user_id = uuid4()
+    conversations.get_by_id_for_user.return_value = None
+
+    with pytest.raises(ConversationNotFoundError):
+        asyncio.run(
+            service.delete_conversation(
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
+        )
+
+    conversations.delete.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
+
+
+def test_delete_conversation_rejects_active_planning_lease():
+    service, session, conversations, _ = create_service()
+    conversation = create_conversation()
+    conversation.planning_lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+    conversations.get_by_id_for_user.return_value = conversation
+
+    with pytest.raises(ConversationInProgressError):
+        asyncio.run(
+            service.delete_conversation(
+                conversation_id=conversation.id,
+                user_id=conversation.user_id,
+            )
+        )
+
+    conversations.delete.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once_with()
 
 
 def create_user_message(

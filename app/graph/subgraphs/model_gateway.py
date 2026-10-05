@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol, runtime_checkable
@@ -12,8 +14,10 @@ from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from app.config import Settings
+from app.graph.google_schema import google_generation_schema
 from app.graph.model_response import (
     ModelResponseRefusedError,
     model_response_text,
@@ -24,6 +28,19 @@ from app.observability.metrics import record_metric
 from app.observability.request_context import cancellation_outcome
 
 logger = logging.getLogger(__name__)
+_attempt_budget: ContextVar[list[int] | None] = ContextVar(
+    "model_attempt_budget", default=None
+)
+
+
+@contextmanager
+def model_call_budget(limit: int = 12):
+    """Share a bounded counter across graph tasks for one response only."""
+    token = _attempt_budget.set([limit])
+    try:
+        yield
+    finally:
+        _attempt_budget.reset(token)
 
 
 class ModelGatewayError(Exception):
@@ -38,8 +55,9 @@ class ModelGateway(Protocol):
         self,
         *,
         messages: Sequence[BaseMessage],
+        schema: type[BaseModel] | None = None,
     ) -> AIMessage:
-        """Return a validated assistant message."""
+        """Return an assistant message, optionally constrained by a schema."""
 
 
 class AsyncChatModel(Protocol):
@@ -63,7 +81,9 @@ class ModelProvider:
 class FallbackModelGateway:
     """Try providers until one returns valid text or tool calls."""
 
-    def __init__(self, providers: Sequence[ModelProvider]) -> None:
+    def __init__(
+        self, providers: Sequence[ModelProvider], *, max_input_chars: int = 120000
+    ) -> None:
         if not providers:
             raise ValueError("at least one model provider is required")
 
@@ -75,18 +95,53 @@ class FallbackModelGateway:
             raise ValueError("model provider names must be unique")
 
         self.providers = tuple(providers)
+        self.max_input_chars = max_input_chars
 
-    async def generate(self, *, messages: Sequence[BaseMessage]) -> AIMessage:
+    async def generate(
+        self,
+        *,
+        messages: Sequence[BaseMessage],
+        schema: type[BaseModel] | None = None,
+    ) -> AIMessage:
         """Return the first valid assistant or tool-call response."""
         if not messages:
             raise ValueError("model messages must not be empty")
+        if (
+            sum(len(str(message.content)) for message in messages)
+            > self.max_input_chars
+        ):
+            raise ModelGatewayError("Model input exceeds the configured limit")
         last_error: Exception | None = None
 
         for provider in self.providers:
+            budget = _attempt_budget.get()
+            if budget is not None:
+                if budget[0] <= 0:
+                    raise ModelGatewayError("Model attempt budget exhausted")
+                budget[0] -= 1
             started_at = perf_counter()
             outcome = "error"
             try:
-                response = await provider.client.ainvoke(list(messages))
+                if schema is None:
+                    response = await provider.client.ainvoke(list(messages))
+                else:
+                    structured_output = getattr(
+                        provider.client, "with_structured_output", None
+                    )
+                    if not callable(structured_output):
+                        raise TypeError(
+                            "model provider does not support structured output"
+                        )
+                    result = await structured_output(
+                        google_generation_schema(schema)
+                        if provider.name == "google"
+                        else schema,
+                        method="json_schema",
+                        include_raw=True,
+                    ).ainvoke(list(messages))
+                    response = (
+                        result.get("raw") if isinstance(result, Mapping) else None
+                    )
                 if not isinstance(response, AIMessage):
                     last_error = TypeError("model provider returned a non-AI message")
                     outcome = "invalid_response"
@@ -114,7 +169,11 @@ class FallbackModelGateway:
                     extra={
                         "model_provider": provider.name,
                         "error_type": type(last_error).__name__,
-                        **response_diagnostics(response),
+                        **(
+                            response_diagnostics(response)
+                            if isinstance(response, AIMessage)
+                            else {}
+                        ),
                     },
                 )
             except ModelResponseRefusedError as error:
@@ -187,23 +246,6 @@ def build_model_gateway(
     """Build configured model providers in cost-aware fallback order."""
 
     providers: list[ModelProvider] = []
-
-    if settings.groq_api_key is not None:
-        providers.append(
-            ModelProvider(
-                name="groq",
-                client=bind_model_tools(
-                    ChatGroq(
-                        model=settings.groq_model,
-                        api_key=settings.groq_api_key,
-                        timeout=settings.model_timeout_seconds,
-                        max_retries=0,
-                    ),
-                    tools=tools,
-                ),
-            )
-        )
-
     if settings.google_api_key is not None:
         providers.append(
             ModelProvider(
@@ -214,12 +256,12 @@ def build_model_gateway(
                         api_key=settings.google_api_key,
                         request_timeout=settings.model_timeout_seconds,
                         retries=0,
+                        max_output_tokens=settings.model_max_output_tokens,
                     ),
                     tools=tools,
                 ),
             )
         )
-
     if settings.openai_api_key is not None:
         providers.append(
             ModelProvider(
@@ -230,12 +272,33 @@ def build_model_gateway(
                         api_key=settings.openai_api_key,
                         timeout=settings.model_timeout_seconds,
                         max_retries=0,
+                        reasoning_effort=None,
+                        max_tokens=settings.model_max_output_tokens,
                     ),
                     tools=tools,
                 ),
             )
         )
-    return FallbackModelGateway(providers=providers)
+    if settings.groq_api_key is not None:
+        providers.append(
+            ModelProvider(
+                name="groq",
+                client=bind_model_tools(
+                    ChatGroq(
+                        model=settings.groq_model,
+                        api_key=settings.groq_api_key,
+                        timeout=settings.model_timeout_seconds,
+                        max_retries=0,
+                        max_tokens=settings.model_max_output_tokens,
+                    ),
+                    tools=tools,
+                ),
+            )
+        )
+
+    return FallbackModelGateway(
+        providers=providers, max_input_chars=settings.model_max_input_chars
+    )
 
 
 def bind_model_tools(

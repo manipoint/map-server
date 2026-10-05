@@ -43,6 +43,14 @@ def capture_itinerary_submission(
 
     try:
         generated_itinerary = GeneratedItinerary.model_validate(tool_call["args"])
+        generated_itinerary = generated_itinerary.model_copy(
+            update={
+                "items": [
+                    item.model_copy(update={"image": None})
+                    for item in generated_itinerary.items
+                ]
+            }
+        )
         submitted_days = {item.day_number for item in generated_itinerary.items}
         expected_days = set(range(1, trip_context.day_count + 1))
         if submitted_days != expected_days:

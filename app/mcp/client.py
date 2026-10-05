@@ -1,8 +1,8 @@
 """Graph-facing MCP client."""
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.common.exceptions import ProviderUnavailableError
 from app.mcp.schemas.airports import AirportResolution
@@ -32,6 +32,9 @@ FlightSearchResponse = (
     FlightSearchResult | FlightSearchGuidance | FlightSearchPreparationGuidance
 )
 
+Result = TypeVar("Result")
+AIRPORT_RESPONSE_ADAPTER = TypeAdapter(AirportResolution)
+WEATHER_RESPONSE_ADAPTER = TypeAdapter(CurrentWeather)
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
 CURRENCY_CONVERSION_RESPONSE_ADAPTER = TypeAdapter(CurrencyConversionResponse)
@@ -55,162 +58,87 @@ class TravelMcpClient:
     def __init__(self, mcp_server: McpToolServer) -> None:
         self.mcp_server = mcp_server
 
-    async def resolve_airport(
+    async def _call(
         self,
         *,
-        request: AirportSearchInput,
-    ) -> AirportResolution:
-        """Resolve an airport query through the internal MCP server."""
-
-        arguments = request.model_dump(mode="json")
+        name: str,
+        label: str,
+        request: BaseModel,
+        adapter: TypeAdapter[Result],
+        envelope: bool = True,
+    ) -> Result:
         try:
             result = await self.mcp_server.call_tool(
-                "resolve_airport",
-                arguments=arguments,
+                name, arguments=request.model_dump(mode="json", exclude_none=True)
             )
         except Exception as error:
-            raise ProviderUnavailableError(
-                "Airport-resolution tool is unavailable"
-            ) from error
-
-        if result.is_error:
-            raise ProviderUnavailableError("Airport-resolution tool failed")
-
+            raise ProviderUnavailableError(f"{label} tool is unavailable") from error
         try:
-            return AirportResolution.model_validate(result.structured_content)
-        except (AttributeError, TypeError, ValidationError) as error:
+            if result.is_error:
+                raise ProviderUnavailableError(f"{label} tool failed")
+            payload = (
+                result.structured_content["result"]
+                if envelope
+                else result.structured_content
+            )
+            return adapter.validate_python(payload)
+        except (AttributeError, KeyError, TypeError, ValidationError) as error:
             raise ProviderUnavailableError(
-                "Airport-resolution tool returned an invalid response"
+                f"{label} tool returned an invalid response"
             ) from error
+
+    async def resolve_airport(
+        self, *, request: AirportSearchInput
+    ) -> AirportResolution:
+        return await self._call(
+            name="resolve_airport",
+            label="Airport-resolution",
+            request=request,
+            adapter=AIRPORT_RESPONSE_ADAPTER,
+            envelope=False,
+        )
 
     async def get_current_weather(self, *, city: str) -> CurrentWeather:
-        """Get validated normalized weather through the internal MCP server."""
-
-        request = CurrentWeatherInput(city=city)
-        try:
-            result = await self.mcp_server.call_tool(
-                "get_current_weather", {"city": request.city}
-            )
-
-        except Exception as error:
-            raise ProviderUnavailableError(
-                "Current-weather tool is unavailable"
-            ) from error
-        if result.is_error:
-            raise ProviderUnavailableError("Current-weather tool failed")
-
-        try:
-            return CurrentWeather.model_validate(result.structured_content)
-        except (AttributeError, TypeError, ValidationError) as error:
-            raise ProviderUnavailableError(
-                "Current-weather tool returned an invalid response"
-            ) from error
+        return await self._call(
+            name="get_current_weather",
+            label="Current-weather",
+            request=CurrentWeatherInput(city=city),
+            adapter=WEATHER_RESPONSE_ADAPTER,
+            envelope=False,
+        )
 
     async def search_flights(
         self, *, request: FlightSearchPreparationInput
     ) -> FlightSearchResponse:
-        """Search flights through MCP and validate results or guidance."""
-
-        arguments = request.model_dump(mode="json", exclude_none=True)
-        try:
-            result = await self.mcp_server.call_tool(
-                "search_flights", arguments=arguments
-            )
-        except Exception as error:
-            raise ProviderUnavailableError(
-                "Flight-search tool is unavailable"
-            ) from error
-        if result.is_error:
-            raise ProviderUnavailableError("Flight-search tool failed")
-        try:
-            payload = result.structured_content["result"]
-            return FLIGHT_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
-        except (AttributeError, KeyError, TypeError, ValidationError) as error:
-            raise ProviderUnavailableError(
-                "Flight-search tool returned an invalid response"
-            ) from error
+        return await self._call(
+            name="search_flights",
+            label="Flight-search",
+            request=request,
+            adapter=FLIGHT_SEARCH_RESPONSE_ADAPTER,
+        )
 
     async def search_hotels(self, *, request: HotelSearchInput) -> HotelSearchResponse:
-        """Search hotels through MCP and validate normalized results or guidance."""
-        arguments = request.model_dump(mode="json", exclude_none=True)
-        try:
-            result = await self.mcp_server.call_tool(
-                "search_hotels",
-                arguments=arguments,
-            )
-        except Exception as error:
-            raise ProviderUnavailableError(
-                "Hotel-search tool is unavailable"
-            ) from error
-
-        if result.is_error:
-            raise ProviderUnavailableError("Hotel-search tool failed")
-        try:
-            payload = result.structured_content["result"]
-            return HOTEL_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
-
-        except (AttributeError, KeyError, TypeError, ValidationError) as error:
-            raise ProviderUnavailableError(
-                "Hotel-search tool returned an invalid response"
-            ) from error
+        return await self._call(
+            name="search_hotels",
+            label="Hotel-search",
+            request=request,
+            adapter=HOTEL_SEARCH_RESPONSE_ADAPTER,
+        )
 
     async def search_places(self, *, request: PlaceSearchInput) -> PlaceSearchResponse:
-        """Search places through MCP and validate results or guidance."""
-        arguments = request.model_dump(mode="json", exclude_none=True)
-        try:
-            result = await self.mcp_server.call_tool(
-                "search_places", arguments=arguments
-            )
-        except Exception as error:
-            raise ProviderUnavailableError(
-                "Place-search tool is unavailable"
-            ) from error
-        if result.is_error:
-            raise ProviderUnavailableError("Place-search tool failed")
-
-        try:
-            payload = result.structured_content["result"]
-            return PLACE_SEARCH_RESPONSE_ADAPTER.validate_python(payload)
-        except (
-            AttributeError,
-            KeyError,
-            TypeError,
-            ValidationError,
-        ) as error:
-            raise ProviderUnavailableError(
-                "Place-search tool returned an invalid response"
-            ) from error
+        return await self._call(
+            name="search_places",
+            label="Place-search",
+            request=request,
+            adapter=PLACE_SEARCH_RESPONSE_ADAPTER,
+        )
 
     async def convert_currency(
-        self,
-        *,
-        request: CurrencyConversionInput,
+        self, *, request: CurrencyConversionInput
     ) -> CurrencyConversionResponse:
-        """Convert currency through MCP and validate the result or guidance."""
-
-        arguments = request.model_dump(mode="json")
-        try:
-            result = await self.mcp_server.call_tool(
-                "convert_currency",
-                arguments=arguments,
-            )
-        except Exception as error:
-            raise ProviderUnavailableError(
-                "Currency-conversion tool is unavailable"
-            ) from error
-
-        if result.is_error:
-            raise ProviderUnavailableError("Currency-conversion tool failed")
-
-        try:
-            payload = result.structured_content["result"]
-            return CURRENCY_CONVERSION_RESPONSE_ADAPTER.validate_python(payload)
-        except (
-            AttributeError,
-            KeyError,
-            TypeError,
-            ValidationError,
-        ) as error:
-            raise ProviderUnavailableError(
-                "Currency-conversion tool returned an invalid response"
-            ) from error
+        return await self._call(
+            name="convert_currency",
+            label="Currency-conversion",
+            request=request,
+            adapter=CURRENCY_CONVERSION_RESPONSE_ADAPTER,
+        )

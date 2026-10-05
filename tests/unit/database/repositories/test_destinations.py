@@ -13,6 +13,16 @@ from app.domain.destinations import DestinationCollection
 from app.domain.preferences import BudgetTier, TravelInterest, TravelStyle
 
 
+@pytest.mark.parametrize("matches", [[], [uuid4(), uuid4()]])
+def test_planning_lookup_does_not_attach_media_to_missing_or_ambiguous_names(matches):
+    session = Mock(spec=AsyncSession)
+    session.scalars = AsyncMock(return_value=matches)
+    repository = DestinationRepository(session)
+    repository._hydrate = AsyncMock()
+    assert asyncio.run(repository.find_for_planning(query="Springfield")) is None
+    repository._hydrate.assert_not_awaited()
+
+
 def create_destination() -> Destination:
     """Create one complete published persistence row."""
 

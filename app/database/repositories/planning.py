@@ -3,10 +3,13 @@
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import func, or_, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.database.models.assistant_run import AssistantRun
 from app.database.models.conversation import Conversation
+from app.database.models.message import Message
 
 
 class PlanningRepository:
@@ -14,11 +17,42 @@ class PlanningRepository:
         self.session = session
 
     async def acquire(
-        self, *, conversation_id: UUID, user_id: UUID, token: UUID, seconds: int
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+        token: UUID,
+        seconds: int,
+        turn_number: int | None = None,
     ) -> tuple[dict[str, object], UUID | None] | None:
+        statement = update(Conversation)
+        if turn_number is not None:
+            reply = aliased(Message)
+            earlier = exists(
+                select(Message.id)
+                .outerjoin(AssistantRun, AssistantRun.user_message_id == Message.id)
+                .where(
+                    Message.conversation_id == conversation_id,
+                    Message.role == "user",
+                    Message.turn_number < turn_number,
+                    ~exists(
+                        select(reply.id).where(reply.reply_to_message_id == Message.id)
+                    ),
+                    or_(
+                        (AssistantRun.status == "processing")
+                        & (AssistantRun.lease_expires_at > func.clock_timestamp()),
+                        AssistantRun.id.is_(None)
+                        & Message.generation_deferred.is_(False)
+                        & (
+                            Message.created_at
+                            > func.clock_timestamp() - timedelta(seconds=seconds)
+                        ),
+                    ),
+                )
+            )
+            statement = statement.where(~earlier)
         result = await self.session.execute(
-            update(Conversation)
-            .where(
+            statement.where(
                 Conversation.id == conversation_id,
                 Conversation.user_id == user_id,
                 or_(

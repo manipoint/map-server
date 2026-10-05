@@ -6,8 +6,7 @@ from json import JSONDecodeError, loads
 from langchain_core.messages import BaseMessage, ToolMessage
 from pydantic import ValidationError
 
-from app.domain.clarifications import AirportInputRequest, TravelClarification
-from app.providers.airports.schemas import AirportResolution
+from app.domain.clarifications import TravelClarification, build_airport_input_request
 from app.services.flight_search_preparation_service import (
     FlightSearchPreparationGuidance,
 )
@@ -40,32 +39,6 @@ def iter_tool_payloads(message: ToolMessage) -> Iterator[object]:
             yield loads(text)
         except (JSONDecodeError, TypeError):
             continue
-
-
-def build_airport_input_request(
-    *,
-    field: str,
-    resolution: AirportResolution,
-) -> AirportInputRequest | None:
-    """Map one unresolved airport result to a stable client request."""
-
-    if resolution.status == "resolved":
-        return None
-    public_field = "origin_airport" if field == "origin" else "destination_airport"
-    if resolution.status == "selection_required":
-        question = f"Select an airport for {resolution.query}."
-    else:
-        question = (
-            f"No airport matched {resolution.query}. "
-            "Provide the city with country or region."
-        )
-    return AirportInputRequest(
-        field=public_field,
-        query=resolution.query,
-        status=resolution.status,
-        question=question,
-        options=resolution.options,
-    )
 
 
 def extract_travel_clarification(

@@ -151,3 +151,17 @@ def test_owner_lookup_can_lock_the_conversation() -> None:
 
     statement = session.execute.await_args.args[0]
     assert "FOR UPDATE" in str(statement.compile())
+
+
+def test_delete_removes_conversation_and_flushes_cascades() -> None:
+    """Deletion flushes the row so database cascades remove chat messages."""
+
+    conversation = Mock(spec=Conversation)
+    session = create_mock_session()
+    repository = ConversationRepository(session)
+
+    asyncio.run(repository.delete(conversation))
+
+    session.delete.assert_awaited_once_with(conversation)
+    session.flush.assert_awaited_once_with()
+    session.commit.assert_not_awaited()

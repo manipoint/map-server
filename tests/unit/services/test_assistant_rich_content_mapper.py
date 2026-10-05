@@ -88,7 +88,7 @@ def test_uses_destination_when_the_trip_has_no_title() -> None:
     assert preview.summary.title == "Japan Adventure"
 
 
-def test_limits_chat_preview_to_seven_days() -> None:
+def test_retains_days_beyond_old_seven_day_preview() -> None:
     generated = GeneratedItinerary.model_validate(
         {
             "summary": "A longer Japan itinerary.",
@@ -110,4 +110,4 @@ def test_limits_chat_preview_to_seven_days() -> None:
     )
 
     preview = content.sections[0]
-    assert [day.day_number for day in preview.days] == list(range(1, 8))
+    assert [day.day_number for day in preview.days] == list(range(1, 9))

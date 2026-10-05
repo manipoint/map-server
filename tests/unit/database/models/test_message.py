@@ -24,6 +24,8 @@ def test_message_contains_required_columns() -> None:
         "reply_to_message_id",
         "role",
         "content",
+        "turn_number",
+        "generation_deferred",
         "structured_content",
         "created_at",
     }
@@ -94,6 +96,7 @@ def test_message_has_conversation_history_index() -> None:
     }
 
     assert indexes == {
+        "ix_messages_conversation_turn": ("conversation_id", "turn_number"),
         "ix_messages_conversation_created_at": (
             "conversation_id",
             "created_at",

@@ -113,6 +113,9 @@ class ItineraryRepository:
                 location_name=item.location_name,
                 starts_at=item.starts_at,
                 ends_at=item.ends_at,
+                start_time_zone=item.start_time_zone,
+                end_time_zone=item.end_time_zone,
+                image=item.image.model_dump(mode="json") if item.image else None,
             )
             for item in items
         ]

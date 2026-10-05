@@ -17,3 +17,6 @@ class TravelResponseErrorCode(StrEnum):
     PROVIDER_ERROR = "provider_error"
     GENERATION_FAILED = "generation_failed"
     ATTEMPTS_EXHAUSTED = "attempts_exhausted"
+    STALE_REQUEST = "stale_request"
+    CAPACITY_EXCEEDED = "capacity_exceeded"
+    DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"

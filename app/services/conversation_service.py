@@ -15,6 +15,7 @@ from app.database.repositories.messages import MessageRepository
 from app.database.repositories.trips import TripRepository
 from app.domain.errors import (
     ClientMessageConflictError,
+    ConversationInProgressError,
     ConversationNotFoundError,
     TripNotFoundError,
 )
@@ -57,6 +58,37 @@ class ConversationService:
         self.conversations = conversation_repository or ConversationRepository(session)
         self.messages = message_repository or MessageRepository(session)
         self.trips = trip_repository or TripRepository(session)
+
+    async def delete_conversation(
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        """Permanently delete one idle conversation owned by the user."""
+
+        try:
+            conversation = await self.conversations.get_by_id_for_user(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                for_update=True,
+            )
+            if conversation is None:
+                raise ConversationNotFoundError("Conversation was not found")
+
+            if (
+                conversation.planning_lease_expires_at is not None
+                and conversation.planning_lease_expires_at > utc_now()
+            ):
+                raise ConversationInProgressError(
+                    "Conversation planning is in progress"
+                )
+
+            await self.conversations.delete(conversation)
+            await self.session.commit()
+        except BaseException:
+            await self.session.rollback()
+            raise
 
     async def accept_request(
         self,
