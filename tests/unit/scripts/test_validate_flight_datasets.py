@@ -12,7 +12,7 @@ from app.common.exceptions import ProviderConfigurationError
 from scripts.validate_flight_datasets import validate_datasets
 
 ROOT = Path(__file__).resolve().parents[3]
-FIXTURES = ROOT / "tests" / "fixtures" / "travelport"
+FIXTURES = ROOT / "tests" / "fixtures" / "airports"
 
 
 @pytest.fixture

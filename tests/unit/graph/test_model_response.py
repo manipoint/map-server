@@ -335,6 +335,64 @@ def test_structured_parser_reports_safe_schema_diagnostics():
     assert "secret_invalid_value" not in str(error)
 
 
+def test_structured_parser_reports_nested_paths_without_response_values():
+    gateway = AsyncMock()
+    gateway.generate.return_value = AIMessage(
+        content=(
+            '{"intent":"search","updates":{},"changed_fields":[],"search":'
+            '{"kind":"weather","arguments":{},"private_key":"PRIVATE"}}'
+        )
+    )
+
+    with pytest.raises(StructuredOutputValidationError) as caught:
+        asyncio.run(
+            structured_call(gateway, RequirementExtraction, prompt="JSON", data={})
+        )
+
+    details = caught.value.error_details
+    assert any(
+        detail["type"] == "missing" and detail["path"][-2:] == ["arguments", "city"]
+        for detail in details
+    )
+    assert any(
+        detail["type"] == "extra_forbidden" and detail["path"][-1] == "<extra_field>"
+        for detail in details
+    )
+    assert "PRIVATE" not in repr(details)
+
+
+def test_structured_parser_summarizes_invalid_union_discriminator_safely():
+    gateway = AsyncMock()
+    gateway.generate.return_value = AIMessage(
+        content=(
+            '{"intent":"search","updates":{},"changed_fields":[],"search":'
+            '{"kind":"private-kind","arguments":{"origin":"PRIVATE_CITY",'
+            '"destination":"PRIVATE_DESTINATION"}}}'
+        )
+    )
+
+    with pytest.raises(StructuredOutputValidationError) as caught:
+        asyncio.run(
+            structured_call(gateway, RequirementExtraction, prompt="JSON", data={})
+        )
+
+    kind_errors = [
+        detail
+        for detail in caught.value.error_details
+        if detail["type"] == "literal_error" and detail["path"][-1] == "kind"
+    ]
+    assert kind_errors
+    assert any(
+        detail["input_present"]
+        and detail["input_kind"] == "string"
+        and detail["input_length"] == len("private-kind")
+        and "expected" in detail
+        for detail in kind_errors
+    )
+    assert "private-kind" not in repr(caught.value.error_details)
+    assert "PRIVATE_CITY" not in repr(caught.value.error_details)
+
+
 def test_structured_parser_propagates_cancellation_and_refusal():
     gateway = AsyncMock()
     gateway.generate.side_effect = asyncio.CancelledError()

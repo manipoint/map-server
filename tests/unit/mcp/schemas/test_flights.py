@@ -35,7 +35,7 @@ def test_flight_search_normalizes_codes_and_uses_cost_aware_defaults() -> None:
     assert search.currency == "PKR"
     assert search.cabin_class is FlightCabinClass.ECONOMY
     assert search.nonstop_only is False
-    assert search.max_results == 5
+    assert search.max_results == 100
 
 
 @pytest.mark.parametrize("adults", [12, 35])
@@ -116,7 +116,7 @@ def test_flight_search_rejects_return_before_departure() -> None:
         ("infants_with_seat", 1),
         ("infants_on_lap", 1),
         ("max_results", 0),
-        ("max_results", 11),
+        ("max_results", 101),
     ],
 )
 def test_flight_search_rejects_invalid_fields(

@@ -8,12 +8,12 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from openai.lib._pydantic import to_strict_json_schema
 from pydantic import ValidationError
 
 from app.domain.planning import PlanningState
 from app.domain.planning_preferences import PlanningPreferences
 from app.domain.trip_requirements import TripRequirements
+from app.graph.google_schema import google_generation_schema
 from app.graph.planning_builder import (
     build_planning_graph,
     merge_requirements,
@@ -64,12 +64,13 @@ def proposal(**item_updates):
     )
 
 
-def test_strict_schema_nulls_do_not_clear_unselected_fields():
-    schema = to_strict_json_schema(RequirementExtraction)
+def test_google_patch_nulls_do_not_clear_unselected_fields():
+    schema = google_generation_schema(RequirementExtraction)
     assert '"oneOf"' not in json.dumps(schema)
     patch = schema["$defs"]["TripRequirementsPatch"]
-    assert set(patch["required"]) == set(TripRequirements.model_fields)
-    values = {key: None for key in patch["required"]}
+    assert set(patch["properties"]) == set(TripRequirements.model_fields)
+    assert not patch.get("required")
+    values = {key: None for key in patch["properties"]}
     values["destination"] = "Osaka"
     extracted = RequirementExtraction(
         intent="revise", updates=values, changed_fields=["destination"]
@@ -135,7 +136,7 @@ def test_model_cannot_supply_image_urls_or_timezone_identifiers():
         )
     with pytest.raises(ValidationError):
         proposal(start_time_zone="Asia/Tokyo")
-    schema = to_strict_json_schema(ResearchedItinerary)
+    schema = google_generation_schema(ResearchedItinerary)
     assert '"format": "uri"' not in json.dumps(schema)
 
 

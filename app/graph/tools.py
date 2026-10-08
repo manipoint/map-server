@@ -97,6 +97,10 @@ def create_hotel_search_tool(*, mcp_client: TravelMcpClient) -> BaseTool:
         description=(
             "Search live hotel availability by destination, dates, rooms, and guests. "
             "Provide every child's exact age and include country or region when known. "
+            "Before calling, ask for the user's maximum total accommodation budget "
+            "and currency unless already explicit or the user says no limit. Never "
+            "derive an accommodation budget from the overall trip budget. Pass an "
+            "explicit whole-stay budget as max_total_price. "
             "Prices are provisional. Search only; no booking."
         ),
         args_schema=HotelSearchInput,

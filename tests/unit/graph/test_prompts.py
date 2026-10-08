@@ -2,6 +2,7 @@
 
 from datetime import date
 
+from app.graph.planning_prompts import REQUIREMENTS_PROMPT
 from app.graph.prompts import (
     TRAVEL_ASSISTANT_SYSTEM_PROMPT,
     TRAVEL_PROMPT_VERSION,
@@ -127,6 +128,15 @@ def test_travel_prompt_requires_verified_hotels_and_clarification() -> None:
     assert "show returned candidates" in prompt
     assert "never guess" in prompt
     assert "Prices/availability can change" in prompt
+
+
+def test_hotel_search_prompt_collects_separate_whole_stay_budget() -> None:
+    prompt = " ".join(REQUIREMENTS_PROMPT.split())
+
+    assert "maximum accommodation budget for the complete stay" in prompt
+    assert "general total trip budget is not the hotel budget" in prompt
+    assert "max_total_price" in prompt
+    assert "explicitly says no limit" in prompt
 
 
 def test_travel_prompt_requires_verified_places_and_preserves_intent() -> None:

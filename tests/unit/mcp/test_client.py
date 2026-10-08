@@ -437,6 +437,7 @@ def test_search_hotels_serializes_request_and_validates_result() -> None:
                     "adults": 1,
                     "children_ages": [8],
                     "rooms": 1,
+                    "currency": "USD",
                     "free_cancellation_only": True,
                     "max_results": 3,
                 },

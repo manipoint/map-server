@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from pydantic import (
@@ -33,10 +33,12 @@ from app.mcp.schemas.flights import FlightSearchPreparationInput
 from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchResult
 from app.providers.places.schemas import PlaceSearchResult
+from app.providers.weather.schemas import WeatherForecast
 from app.services.standalone_search_service import SearchReply, guidance_reply
 from app.services.trip_request_mapper import TripRequestMapper
 
 RESEARCH_TIMEOUT_SECONDS = 15
+NEARBY_FLIGHT_SEARCH_TIMEOUT_SECONDS = 8
 
 
 class ResearchEvidence(BaseModel):
@@ -56,17 +58,21 @@ class ResearchEvidence(BaseModel):
     ends_at: AwareDatetime | None = None
     start_time_zone: str | None = None
     end_time_zone: str | None = None
+    alternative_start_date: date | None = None
+    alternative_end_date: date | None = None
 
 
 class PlanningResearch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     searched_at: AwareDatetime
-    evidence: tuple[ResearchEvidence, ...] = Field(default=(), max_length=15)
+    evidence: tuple[ResearchEvidence, ...] = Field(default=(), max_length=55)
     warnings: tuple[str, ...] = Field(default=(), max_length=10)
     cover_image: AssistantMedia | None = None
     guidance: tuple[SearchReply, ...] = Field(default=(), max_length=3)
     time_zone: str | None = None
+    weather_forecast: WeatherForecast | None = None
+    weather_requested: bool = False
 
 
 def to_trip_request(requirements: TripRequirements) -> TripRequest:
@@ -105,16 +111,19 @@ class PlanningResearchService:
         places_available: bool,
         hotels_available: bool,
         round_trip_flights_available: bool,
+        weather_forecasts_available: bool = False,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.client = client
         self.places_available = places_available
         self.hotels_available = hotels_available
         self.round_trip_flights_available = round_trip_flights_available
+        self.weather_forecasts_available = weather_forecasts_available
         self.session_factory = session_factory
 
     def cache_key(self, requirements: TripRequirements) -> str:
         payload = {
+            "version": 2,
             "request": to_trip_request(requirements).model_dump(mode="json"),
             "transport": requirements.transport,
             "lodging": requirements.needs_lodging,
@@ -122,11 +131,17 @@ class PlanningResearchService:
                 self.places_available,
                 self.hotels_available,
                 self.round_trip_flights_available,
+                self.weather_forecasts_available,
             ],
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
-    async def research(self, requirements: TripRequirements) -> PlanningResearch:
+    async def research(
+        self,
+        requirements: TripRequirements,
+        *,
+        allow_nearby_flight_dates: bool = True,
+    ) -> PlanningResearch:
         request = to_trip_request(requirements)
         catalogue = await self._catalogue_research(requirements.destination)
         kinds = [] if catalogue.evidence else ["places"]
@@ -134,12 +149,23 @@ class PlanningResearchService:
             kinds.append("hotels")
         if requirements.transport == TripTransport.FLIGHT:
             kinds.append("flights")
-        results = await asyncio.gather(*(self._search(kind, request) for kind in kinds))
+        results, (weather_forecast, weather_warning) = await asyncio.gather(
+            asyncio.gather(
+                *(
+                    self._search(
+                        kind,
+                        request,
+                        allow_nearby_flight_dates=allow_nearby_flight_dates,
+                    )
+                    for kind in kinds
+                )
+            ),
+            self._weather_forecast(requirements),
+        )
         return PlanningResearch(
             searched_at=utc_now(),
             evidence=catalogue.evidence
             + tuple(item for evidence, _, _ in results for item in evidence),
-            warnings=tuple(warning for _, warning, _ in results if warning),
             cover_image=catalogue.cover_image,
             guidance=tuple(reply for _, _, reply in results if reply is not None),
             time_zone=next(
@@ -147,11 +173,46 @@ class PlanningResearchService:
                     item.end_time_zone
                     for entries, _, _ in results
                     for item in entries
-                    if item.kind == "flight" and not item.id.endswith("-return")
+                    if item.kind == "flight"
+                    and not item.id.endswith("-return")
+                    and item.end_time_zone is not None
                 ),
-                None,
+                weather_forecast.time_zone if weather_forecast is not None else None,
+            ),
+            weather_forecast=weather_forecast,
+            weather_requested=self.weather_forecasts_available,
+            warnings=tuple(
+                [warning for _, warning, _ in results if warning]
+                + ([weather_warning] if weather_warning else [])
             ),
         )
+
+    async def _weather_forecast(
+        self, requirements: TripRequirements
+    ) -> tuple[WeatherForecast | None, str | None]:
+        """Fetch date-specific destination weather without blocking itinerary research."""
+        end_date = requirements.resolved_end_date
+        if (
+            not self.weather_forecasts_available
+            or requirements.destination is None
+            or requirements.start_date is None
+            or end_date is None
+        ):
+            return None, None
+        try:
+            async with asyncio.timeout(RESEARCH_TIMEOUT_SECONDS):
+                forecast = await self.client.get_weather_forecast(
+                    city=requirements.destination,
+                    start_date=requirements.start_date,
+                    end_date=end_date,
+                )
+        except (ProviderUnavailableError, TimeoutError):
+            return None, (
+                "weather: forecast unavailable; no verified hourly weather was returned."
+            )
+        # Missing dates are expected coverage, rendered as daily notes. They must
+        # not invalidate otherwise reusable flight/hotel/place research.
+        return forecast, None
 
     async def _catalogue_research(self, destination: str) -> PlanningResearch:
         """Reuse published catalogue identities and active media in bounded reads."""
@@ -184,7 +245,11 @@ class PlanningResearchService:
         )
 
     async def _search(
-        self, kind: str, request: TripRequest
+        self,
+        kind: str,
+        request: TripRequest,
+        *,
+        allow_nearby_flight_dates: bool = True,
     ) -> tuple[list[ResearchEvidence], str | None, SearchReply | None]:
         enabled = {
             "places": self.places_available,
@@ -197,6 +262,11 @@ class PlanningResearchService:
                 f"{kind}: live search is unavailable; availability and prices are unverified.",
                 None,
             )
+        if kind == "flights":
+            return await self._search_flights_with_nearby_dates(
+                request,
+                allow_nearby_dates=allow_nearby_flight_dates,
+            )
         try:
             async with asyncio.timeout(RESEARCH_TIMEOUT_SECONDS):
                 if kind == "places":
@@ -208,24 +278,7 @@ class PlanningResearchService:
                 elif kind == "hotels":
                     result = await self.client.search_hotels(
                         request=TripRequestMapper.to_hotel_search(
-                            request, max_results=3
-                        )
-                    )
-                else:
-                    party = request.travelers
-                    result = await self.client.search_flights(
-                        request=FlightSearchPreparationInput(
-                            origin=request.origin,
-                            destination=request.destination,
-                            departure_date=request.start_date,
-                            return_date=request.end_date,
-                            adults=party.adults,
-                            children_ages=party.children_ages,
-                            infants_with_seat_ages=party.infants_with_seat_ages,
-                            infants_on_lap_ages=party.infants_on_lap_ages,
-                            cabin_class=request.cabin_class,
-                            currency=request.budget_currency,
-                            max_results=3,
+                            request, max_results=10
                         )
                     )
         except (ProviderUnavailableError, TimeoutError):
@@ -245,6 +298,122 @@ class PlanningResearchService:
                 None,
             )
         return evidence, None, None
+
+    async def _search_flights_with_nearby_dates(
+        self,
+        request: TripRequest,
+        *,
+        allow_nearby_dates: bool,
+    ) -> tuple[list[ResearchEvidence], str | None, SearchReply | None]:
+        """Try exact round-trip dates first, then one-day shifts if no offers verify."""
+        party = request.travelers
+
+        def flight_request(
+            departure_date: date, return_date: date
+        ) -> FlightSearchPreparationInput:
+            return FlightSearchPreparationInput(
+                origin=request.origin,
+                destination=request.destination,
+                departure_date=departure_date,
+                return_date=return_date,
+                adults=party.adults,
+                children_ages=party.children_ages,
+                infants_with_seat_ages=party.infants_with_seat_ages,
+                infants_on_lap_ages=party.infants_on_lap_ages,
+                cabin_class=request.cabin_class,
+                currency=request.budget_currency,
+                max_results=10,
+            )
+
+        try:
+            async with asyncio.timeout(RESEARCH_TIMEOUT_SECONDS):
+                exact_result = await self.client.search_flights(
+                    request=flight_request(request.start_date, request.end_date)
+                )
+        except (ProviderUnavailableError, TimeoutError):
+            return (
+                [],
+                "flights: search failed; availability and prices are unverified.",
+                None,
+            )
+        guidance = guidance_reply(exact_result)
+        if guidance is not None:
+            return [], None, guidance
+        exact_evidence = _compact_evidence(exact_result, now=utc_now())
+        if exact_evidence:
+            return exact_evidence, None, None
+        if not allow_nearby_dates:
+            return (
+                [],
+                "flights: no verified options for requested dates; nearby date suggestions were already checked.",
+                None,
+            )
+
+        alternatives = [
+            (
+                request.start_date + timedelta(days=offset),
+                request.end_date + timedelta(days=offset),
+            )
+            for offset in (-1, 1)
+            if request.start_date + timedelta(days=offset) >= utc_now().date()
+        ]
+        if not alternatives:
+            return (
+                [],
+                "flights: no verified options for requested dates; no valid nearby dates remain.",
+                None,
+            )
+
+        async def search_alternative(
+            departure_date: date, return_date: date
+        ) -> tuple[list[ResearchEvidence], bool]:
+            try:
+                async with asyncio.timeout(NEARBY_FLIGHT_SEARCH_TIMEOUT_SECONDS):
+                    result = await self.client.search_flights(
+                        request=flight_request(departure_date, return_date)
+                    )
+            except (ProviderUnavailableError, TimeoutError):
+                return [], True
+            if guidance_reply(result) is not None:
+                return [], True
+            evidence = _compact_evidence(result, now=utc_now())
+            return [
+                item.model_copy(
+                    update={
+                        "id": f"near-{departure_date:%Y%m%d}-{item.id}",
+                        "alternative_start_date": departure_date,
+                        "alternative_end_date": return_date,
+                    }
+                )
+                for item in evidence
+            ], False
+
+        nearby_results = await asyncio.gather(
+            *(
+                search_alternative(departure, returning)
+                for departure, returning in alternatives
+            )
+        )
+        nearby_evidence = [item for evidence, _ in nearby_results for item in evidence]
+        failed_checks = any(failed for _, failed in nearby_results)
+        if nearby_evidence:
+            warning = (
+                "flights: some nearby-date checks failed; those dates remain unverified."
+                if failed_checks
+                else None
+            )
+            return nearby_evidence, warning, None
+        if failed_checks:
+            return (
+                [],
+                "flights: no verified options for requested dates; nearby-date checks failed and availability is unverified.",
+                None,
+            )
+        return (
+            [],
+            "flights: no verified options for requested dates or one-day-shifted trip dates.",
+            None,
+        )
 
 
 def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence]:
@@ -268,23 +437,24 @@ def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence
                 )
             )
     elif isinstance(result, HotelSearchResult):
-        for option in result.options[:3]:
-            if option.expires_at <= now:
+        for option in result.options[:10]:
+            if option.expires_at <= now or option.cheapest_total_price is None:
                 continue
             hotel = option.hotel
+            location = hotel.city_name or hotel.address or hotel.name
             evidence.append(
                 ResearchEvidence(
                     id=f"hotel-{len(evidence) + 1}",
                     kind="hotel",
                     name=hotel.name,
-                    location=hotel.city_name,
+                    location=location,
                     description=hotel.description or hotel.name,
                     source_id=option.search_result_id,
                     expires_at=option.expires_at,
                     hotel_card=AssistantHotelCard(
                         id=option.search_result_id,
                         name=hotel.name,
-                        location=hotel.city_name,
+                        location=location,
                         rating=hotel.rating,
                         review_score=hotel.review_score,
                         price=AssistantMoney(
@@ -300,7 +470,7 @@ def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence
                 )
             )
     elif isinstance(result, FlightSearchResult):
-        for index, offer in enumerate(result.offers[:3], start=1):
+        for index, offer in enumerate(result.offers[:10], start=1):
             if offer.expires_at is not None and offer.expires_at <= now:
                 continue
             for suffix, leg in (
@@ -316,13 +486,28 @@ def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence
                     or last.arrival_at.utcoffset() is None
                 ):
                     continue
+                duration_hours, duration_minutes = divmod(leg.duration_minutes, 60)
+                duration = f"{duration_hours}h {duration_minutes}m"
+                stops = f"{leg.stops} stop(s)"
                 evidence.append(
                     ResearchEvidence(
                         id=f"flight-{index}{suffix}",
                         kind="flight",
-                        name=f"{first.departure_airport} to {last.arrival_airport}",
+                        name=(
+                            f"{first.marketing_carrier_name}: "
+                            f"{first.departure_airport} to {last.arrival_airport}"
+                        ),
                         location=last.arrival_airport,
-                        description=f"{first.departure_at.isoformat()} to {last.arrival_at.isoformat()}; quote {offer.total_price} {offer.currency}, not booked.",
+                        description=(
+                            f"{first.departure_at.isoformat()} to "
+                            f"{last.arrival_at.isoformat()}, {duration}, {stops}; "
+                            + (
+                                f"quote {offer.total_price} {offer.currency}"
+                                if offer.total_price is not None
+                                else "price unavailable"
+                            )
+                            + ", not booked."
+                        ),
                         expires_at=offer.expires_at,
                         source_id=offer.offer_id,
                         starts_at=first.departure_at,

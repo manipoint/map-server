@@ -42,8 +42,16 @@ class HotelSearchInput(BaseModel):
         default_factory=list,
     )
     rooms: int = Field(default=1, ge=1)
+    currency: CurrencyCode = "USD"
+    max_total_price: Decimal | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        max_digits=14,
+        description="Maximum budget for the complete stay in the selected currency.",
+    )
     free_cancellation_only: bool = False
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int = Field(default=10, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_stay(self) -> Self:
@@ -102,11 +110,11 @@ class HotelProperty(BaseModel):
     review_count: int | None = Field(default=None, ge=0)
 
     address: str | None = Field(default=None, max_length=500)
-    city_name: str = Field(min_length=1, max_length=120)
-    country_code: CountryCode
+    city_name: str | None = Field(default=None, min_length=1, max_length=120)
+    country_code: CountryCode | None = None
 
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
     amenities: list[AmenityText] = Field(
         default_factory=list,
@@ -134,8 +142,10 @@ class HotelSearchOption(BaseModel):
     rooms: int = Field(ge=1)
     guest_count: int = Field(ge=1)
 
-    cheapest_total_price: Decimal = Field(ge=0)
+    cheapest_total_price: Decimal | None = Field(default=None, ge=0)
     currency: CurrencyCode
+    provider_source: str | None = Field(default=None, max_length=120)
+    booking_url: HttpUrl | None = None
 
     expires_at: datetime
     price_is_final: Literal[False] = False
@@ -169,7 +179,7 @@ class HotelSearchResult(BaseModel):
     location: ResolvedLocation
     options: list[HotelSearchOption] = Field(
         default_factory=list,
-        max_length=10,
+        max_length=100,
     )
     message: str | None = Field(default=None, max_length=500)
 

@@ -57,7 +57,7 @@ class FlightSearchPreparationInput(BaseModel):
     cabin_class: FlightCabinClass = FlightCabinClass.ECONOMY
     nonstop_only: bool = False
     currency: CurrencyCode = "USD"
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int = Field(default=100, ge=1, le=100)
 
     @field_validator("origin", "destination", mode="before")
     @classmethod

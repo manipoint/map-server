@@ -10,7 +10,6 @@ from pydantic import SecretStr
 import app.lifespan as lifespan_module
 import app.main as main_module
 from app.api.websocket.connection_manager import ConnectionManager
-from app.common.exceptions import ProviderConfigurationError
 from app.config import Settings
 
 
@@ -135,15 +134,8 @@ def test_lifespan_creates_and_disposes_database_resources(
     fake_engine.dispose.assert_awaited_once()
 
 
-@pytest.mark.parametrize("retired_provider_configured", [False, True])
-def test_lifespan_builds_one_shared_travel_graph(
-    monkeypatch, retired_provider_configured
-) -> None:
+def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
     """Startup should construct the provider gateway and compiled graph once."""
-
-    if retired_provider_configured:
-        monkeypatch.setenv("HOTEL_PROVIDER", "duffel")
-        monkeypatch.setenv("DUFFEL_API_KEY", "retired-test-key")
 
     fake_engine = AsyncMock()
     fake_gateway = object()
@@ -715,219 +707,72 @@ def test_cloud_sql_cleanup_runs_when_websocket_cleanup_fails(monkeypatch) -> Non
     fake_connector.close_async.assert_awaited_once_with()
 
 
-@pytest.mark.parametrize("extra_airport", [False, True])
-def test_travelport_startup_wires_flight_services(
-    monkeypatch,
-    tmp_path,
-    extra_airport: bool,
-) -> None:
-    """Flight startup works independently of Google Places."""
+def test_serpapi_startup_wires_search_services(monkeypatch, tmp_path) -> None:
+    """SerpApi adapters connect through existing normalized search services."""
     engine = AsyncMock()
     http_client = MagicMock()
     http_client.aclose = AsyncMock()
-
-    metadata_provider = MagicMock(
-        airport_codes=frozenset({"LHE", "JFK"} if extra_airport else {"LHE"})
-    )
+    metadata_provider = MagicMock(airport_codes=frozenset({"LHE", "JFK"}))
     airport_provider = MagicMock(airport_codes=frozenset({"LHE"}))
-    auth_client = object()
     flight_provider = object()
-
+    hotel_provider = object()
     load_metadata = AsyncMock(return_value=metadata_provider)
     load_directory = AsyncMock(return_value=airport_provider)
-    create_auth = MagicMock(return_value=auth_client)
     create_flight = MagicMock(return_value=flight_provider)
+    create_hotel = MagicMock(return_value=hotel_provider)
 
     monkeypatch.setattr(
-        lifespan_module,
-        "create_database_engine",
-        lambda settings: engine,
+        lifespan_module, "create_database_engine", lambda settings: engine
     )
     monkeypatch.setattr(
-        lifespan_module,
-        "create_session_factory",
-        lambda engine: object(),
+        lifespan_module, "create_session_factory", lambda engine: object()
+    )
+    monkeypatch.setattr(lifespan_module.httpx, "AsyncClient", lambda: http_client)
+    monkeypatch.setattr(
+        lifespan_module.LocalFlightMetadataProvider, "from_file", load_metadata
     )
     monkeypatch.setattr(
-        lifespan_module.httpx,
-        "AsyncClient",
-        lambda: http_client,
+        lifespan_module.LocalAirportProvider, "from_file", load_directory
     )
-    monkeypatch.setattr(
-        lifespan_module.LocalFlightMetadataProvider,
-        "from_file",
-        load_metadata,
-    )
-    monkeypatch.setattr(
-        lifespan_module.LocalAirportProvider,
-        "from_file",
-        load_directory,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "TravelportAuthClient",
-        create_auth,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "TravelportFlightClient",
-        create_flight,
-    )
+    monkeypatch.setattr(lifespan_module, "SerpApiFlightClient", create_flight)
+    monkeypatch.setattr(lifespan_module, "SerpApiHotelClient", create_hotel)
 
     metadata_path = tmp_path / "flight_metadata.json"
     directory_path = tmp_path / "airport_directory.json"
-
     settings = create_url_settings(
         places_provider=None,
-        flight_provider="travelport",
+        flight_provider="serpapi",
+        hotel_provider="serpapi",
+        serpapi_api_key=SecretStr("test-serpapi-key"),
         flight_metadata_path=str(metadata_path),
         airport_directory_path=str(directory_path),
-        travelport_username=SecretStr("test-user"),
-        travelport_password=SecretStr("test-password"),
-        travelport_client_id=SecretStr("test-client"),
-        travelport_client_secret=SecretStr("test-secret"),
-        travelport_pcc_core="TEST",
     )
     application = main_module.create_app(settings)
 
     with TestClient(application):
         state = application.state
-        preparation = state.flight_search_preparation_service
-
         assert state.airport_provider is airport_provider
         assert state.flight_provider is flight_provider
         assert state.airport_resolution_service.airport_provider is airport_provider
         assert state.flight_search_service.flight_provider is flight_provider
         assert state.flight_search_service.supports_round_trip is True
-        assert (
-            preparation.airport_resolution_service is state.airport_resolution_service
+        assert state.hotel_provider is hotel_provider
+        assert state.hotel_search_service.hotel_provider is hotel_provider
+        assert state.hotel_search_service.location_provider is state.location_provider
+        assert state.flight_search_preparation_service.flight_search_service is (
+            state.flight_search_service
         )
-        assert preparation.flight_search_service is state.flight_search_service
-
         load_metadata.assert_awaited_once_with(path=metadata_path)
         load_directory.assert_awaited_once_with(path=directory_path)
-
-        create_auth.assert_called_once_with(
-            http_client=http_client,
-            settings=settings,
-        )
         create_flight.assert_called_once_with(
             http_client=http_client,
-            auth_client=auth_client,
             metadata_provider=metadata_provider,
+            settings=settings,
+        )
+        create_hotel.assert_called_once_with(
+            http_client=http_client,
             settings=settings,
         )
 
     http_client.aclose.assert_awaited_once()
     engine.dispose.assert_awaited_once()
-
-
-@pytest.mark.parametrize("dataset", ["metadata", "directory"])
-@pytest.mark.parametrize("failure", ["missing", "invalid", "inconsistent"])
-def test_travelport_dataset_failure_closes_resources(
-    monkeypatch,
-    tmp_path,
-    dataset: str,
-    failure: str,
-) -> None:
-    """Invalid startup data must fail safely and release resources."""
-    engine = AsyncMock()
-    http_client = MagicMock()
-    http_client.aclose = AsyncMock()
-
-    manager = MagicMock()
-    manager.close_all = AsyncMock(return_value=0)
-
-    create_auth = MagicMock()
-    create_mcp = MagicMock()
-
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_database_engine",
-        lambda settings: engine,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_session_factory",
-        lambda engine: object(),
-    )
-    monkeypatch.setattr(
-        lifespan_module.httpx,
-        "AsyncClient",
-        lambda: http_client,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "ConnectionManager",
-        lambda: manager,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "TravelportAuthClient",
-        create_auth,
-    )
-    monkeypatch.setattr(
-        lifespan_module,
-        "create_mcp_server",
-        create_mcp,
-    )
-
-    metadata_path = tmp_path / "flight_metadata.json"
-    directory_path = tmp_path / "airport_directory.json"
-
-    if dataset == "directory":
-        # Valid metadata lets startup reach the directory loader.
-        metadata_path.write_text(
-            '{"airports": {}, "airlines": {}}',
-            encoding="utf-8",
-        )
-
-    failing_path = metadata_path if dataset == "metadata" else directory_path
-
-    if failure == "invalid":
-        failing_path.write_text("{invalid-json", encoding="utf-8")
-
-    if failure == "inconsistent":
-        metadata_path.write_text(
-            '{"airports": {"JFK": {"iata_code": "JFK", '
-            '"time_zone": "America/New_York"}}, "airlines": {}}'
-            if dataset == "metadata"
-            else '{"airports": {}, "airlines": {}}',
-            encoding="utf-8",
-        )
-        directory_path.write_text(
-            '{"airports": [{"provider_location_id": "local:LHE", '
-            '"iata_code": "LHE", "location_type": "airport", '
-            '"name": "Lahore Airport", "country_code": "PK"}]}',
-            encoding="utf-8",
-        )
-
-    settings = create_url_settings(
-        places_provider=None,
-        flight_provider="travelport",
-        flight_metadata_path=str(metadata_path),
-        airport_directory_path=str(directory_path),
-        travelport_username=SecretStr("test-user"),
-        travelport_password=SecretStr("test-password"),
-        travelport_client_id=SecretStr("test-client"),
-        travelport_client_secret=SecretStr("test-secret"),
-        travelport_pcc_core="TEST",
-    )
-    application = main_module.create_app(settings)
-
-    with pytest.raises(
-        ProviderConfigurationError,
-        match=(
-            "without timezone metadata"
-            if failure == "inconsistent"
-            else "unavailable or invalid"
-        ),
-    ):
-        with TestClient(application):
-            pytest.fail("Startup must reject the invalid dataset")
-
-    create_auth.assert_not_called()
-    create_mcp.assert_not_called()
-    manager.close_all.assert_awaited_once_with()
-    http_client.aclose.assert_awaited_once_with()
-    engine.dispose.assert_awaited_once_with()

@@ -4,7 +4,7 @@
 
 The Home endpoint returns personalized suggestions and curated discovery content
 in one authenticated response. It reads PostgreSQL only. A Home refresh never
-invokes LangGraph, an LLM, MCP, Google Places, Tavily, Duffel, or WeatherAPI.
+invokes LangGraph, an LLM, MCP, Google Places, Tavily, SerpApi, or WeatherAPI.
 
 ## Request
 

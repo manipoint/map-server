@@ -53,7 +53,10 @@ def test_weather_mcp_tool_exposes_a_bounded_city_schema() -> None:
         server = create_mcp_server(weather_provider=FakeWeatherProvider())
         tools = await server.list_tools()
 
-        assert [tool.name for tool in tools] == ["get_current_weather"]
+        assert [tool.name for tool in tools] == [
+            "get_current_weather",
+            "get_weather_forecast",
+        ]
         schema = tools[0].parameters
         assert schema["required"] == ["city"]
         assert schema["properties"]["city"] == {

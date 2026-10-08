@@ -195,7 +195,7 @@ Provides structured logging, LangSmith metadata, metrics, redaction, and correla
 - access/session token configuration;
 - an MCP path reserved for a future network transport;
 - provider endpoints, keys, timeouts, and limits;
-- model profiles and fallback order;
+- model profiles and provider selection;
 - LangSmith tracing and sampling;
 - retention, maximum result counts, and cost budgets.
 

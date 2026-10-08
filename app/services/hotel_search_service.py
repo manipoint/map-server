@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from app.common.exceptions import (
     InvalidTravelDateError,
+    UnsupportedHotelRequestError,
 )
 from app.common.time import DateClock, utc_today
 from app.providers.hotels.client import HotelProvider
@@ -37,6 +38,11 @@ class HotelSearchService:
         self.clock = clock
 
     async def search_hotels(self, *, request: HotelSearchInput) -> HotelSearchResult:
+        if request.rooms != 1:
+            raise UnsupportedHotelRequestError(
+                "Hotel search currently supports one room per search."
+            )
+
         today = self.clock()
 
         if request.check_in_date < today:

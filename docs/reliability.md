@@ -13,7 +13,7 @@ flowchart LR
     client["Flutter client"] --> api["FastAPI process"]
     api --> db[("PostgreSQL")]
     api --> graph["In-process LangGraph"]
-    graph --> models["Groq, Google, OpenAI"]
+    graph --> models["Google Gemini"]
     graph --> mcp["In-process FastMCP"]
     mcp --> weather["WeatherAPI"]
     mcp --> places["Google Places"]
@@ -34,9 +34,9 @@ FastAPI, LangGraph, MCP, and the WebSocket connection registry share one process
 | Resolved with bounded delay | Logout fan-out was process-local | Cross-worker sockets could outlive revocation indefinitely. | Sessions are checked before work, at token expiry and every 15 seconds; revocation cancels in-flight work. | Pub/sub remains optional for immediate rather than polling-based disconnects. |
 | P1 | WeatherAPI is initialized unconditionally and also resolves locations | Missing credentials or an outage can block startup/current weather and can disable Google Places searches. | Typed provider errors and HTTP timeouts. | Make weather optional, separate geocoding from weather, add a location fallback/cache, and expose feature readiness independently. |
 | P1 | Flight, hotel, and airport adapters are not wired during provider migration | Live availability and airport lookup tools are unavailable. | Provider-independent protocols and normalized schemas are retained; unavailable tools are not registered. | Implement and test replacement adapters before enabling these tools. |
-| Resolved | Model fallback retried non-transient errors | Invalid credentials/requests could amplify cost. | Refusals and HTTP 400/401/403/404/413/422 stop fallback; each response has a 12-attempt cap and input/output bounds. | Provider circuit breakers remain a separate availability improvement. |
+| P1 | Gemini is the only configured model provider | Gemini outage, rate limits, or credential errors disable LLM planning. | Requests have a shared deadline, bounded input/output, and typed provider errors. | Add a second provider only if the availability target justifies its ongoing integration and evaluation cost. |
 | Partial | Authentication/IP rate limits remain unimplemented | Login abuse still needs perimeter/application controls. | PostgreSQL enforces global/user generation concurrency and daily quotas; sockets cap pending work. | Add authentication-specific and IP limits; existing generation counters are not exact dollar accounting. |
-| P1 | Observability exporters are placeholders | Provider degradation, fallback storms, pool saturation, and cost growth may remain undetected. | Structured JSON access/application logs and request IDs. | Add metrics and alerts for DB pool, WebSockets, leases, provider errors/latency, model fallback/tokens/cost, and terminal graph outcomes. Add sampled LangSmith tracing with redaction. |
+| P1 | Observability exporters are placeholders | Provider degradation, pool saturation, and cost growth may remain undetected. | Structured JSON access/application logs and request IDs. | Add metrics and alerts for DB pool, WebSockets, leases, Gemini errors/latency, model tokens/cost, and terminal graph outcomes. Add sampled LangSmith tracing with redaction. |
 | P2 | One HS256 signing key has no key ID or overlap rotation | Rotation invalidates every access token; compromise affects the complete access-token trust boundary. | Short access-token lifetime and DB-backed session checks. | Support a key ring with `kid`, staged rotation, secret-manager versions, and a documented emergency procedure. |
 | P2 | Frankfurter is the only currency source and results are not cached | Currency conversion alone becomes unavailable during its outage; repeated requests add avoidable latency. | Feature is optional and returns reference values, not payment quotes. | Add short TTL caching and graceful feature errors; add a second source only if the product availability target justifies it. |
 | P2 | Per-instance SQLAlchemy pools multiply during scale-out | Cloud Run instance/worker growth can exhaust PostgreSQL connections and turn normal scaling into an outage. | Bounded pool size and overflow settings. | Set an instance cap from the DB connection budget, monitor pool waits, and add PgBouncer or another pooler when justified. |
@@ -47,13 +47,13 @@ FastAPI, LangGraph, MCP, and the WebSocket connection registry share one process
 The current defaults are:
 
 - model timeout: 30 seconds;
-- configured model providers: up to 3;
+- configured model providers: 1;
 - tool rounds: up to 2;
 - shared graph timeout: 75 seconds;
 - completion margin: 15 seconds;
 - assistant-run lease: 120 seconds.
 
-Without an outer deadline, one initial model invocation plus two post-tool invocations could each traverse three providers. The former theoretical model-only duration was:
+Without an outer deadline, one initial model invocation plus two post-tool invocations could each consume the configured model timeout. The theoretical model-only duration for the former three-provider setup was:
 
 ```text
 (1 initial invocation + 2 tool rounds) × 3 providers × 30 seconds = 270 seconds
@@ -69,9 +69,9 @@ With defaults, `120 > 75 + 15`, leaving an additional 30 seconds beyond the requ
 
 ## Existing resilience strengths
 
-- Groq, Google, and OpenAI provide model-vendor diversity when all are configured.
-- Model SDK retries are disabled, preventing hidden nested retry multiplication.
-- Tool rounds, model attempts, search result counts, message size, and conversation history are bounded.
+- Gemini is the only configured model provider, so provider outages remain a model-service dependency.
+- Gemini SDK retries are disabled, preventing hidden repeated-call multiplication.
+- Tool rounds, model-call count, search result counts, message size, and conversation history are bounded.
 - User-message idempotency, database leases, claim tokens, and the unique assistant-reply constraint prevent duplicate visible replies.
 - Refresh tokens are hashed, rotated, replay-aware, and independently revocable per device.
 - Provider adapters use typed normalized contracts and a shared bounded HTTP client.
@@ -87,7 +87,7 @@ These controls reduce damage, but they do not remove the SPOFs in the risk regis
 2. Add database readiness and platform startup/readiness probes.
 3. Monitor graph timeout frequency and preserve the tested lease/deadline/margin invariant when changing configuration.
 4. Add authentication, WebSocket, provider-call, and model-cost rate limits.
-5. Add actionable metrics and alerts for the database, leases, providers, model fallback, and WebSockets.
+5. Add actionable metrics and alerts for the database, leases, Gemini provider errors/latency, and WebSockets.
 6. Store every key in Secret Manager and document key/token rotation.
 
 ### Required before horizontal scale-out
@@ -111,6 +111,6 @@ These controls reduce damage, but they do not remove the SPOFs in the risk regis
 - Killing a worker during generation produces a recoverable run, not permanent processing state.
 - Revoking a session closes its sockets on every active instance.
 - A provider timeout cannot exceed the graph deadline or assistant lease.
-- A fallback storm cannot exceed per-request or per-user call/cost limits.
+- Provider call volume cannot exceed per-request model-call and per-user admission limits.
 - Cloud SQL restoration and signing-key rotation have been exercised, not only documented.
 - Optional provider failure degrades only its feature and does not prevent application startup.

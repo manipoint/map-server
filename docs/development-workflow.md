@@ -188,13 +188,12 @@ uv run pytest --last-failed
 
 The project configures pytest with `--import-mode=importlib`, so test files in different directories may safely use the same filename.
 
-## Flight and hotel provider transition
+## Flight and hotel search
 
-Travelport authentication, request/response models, reference decoding and batch
-metadata resolution are implemented. Settings alone do not enable search: a live
-metadata source, normalized offer mapping, search HTTP adapter and startup wiring
-remain. See [Travelport integration status](travelport-integration.md) for current
-boundaries, validation commands and the remaining work.
+SerpApi adapters normalize Google Flights and Google Hotels results behind the
+existing provider contracts. Search does not book or guarantee availability.
+See [SerpApi integration](serpapi-integration.md) for required configuration,
+tests and provider limitations.
 
 ## Live currency graph smoke test
 

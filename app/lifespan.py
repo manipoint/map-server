@@ -31,11 +31,8 @@ from app.providers.flights.local_metadata_provider import LocalFlightMetadataPro
 from app.providers.hotels.client import HotelProvider
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
 from app.providers.places.google_client import GooglePlacesClient
-from app.providers.travelport.auth_client import TravelportAuthClient
-from app.providers.travelport.flight_client import TravelportFlightClient
-from app.providers.travelport.flight_request_mapper import (
-    TRAVELPORT_MAX_SEARCH_TRAVELERS,
-)
+from app.providers.serpapi.flight_client import SerpApiFlightClient
+from app.providers.serpapi.hotel_client import SerpApiHotelClient
 from app.providers.weather.client import WeatherApiClient
 from app.services.airport_resolution_service import AirportResolutionService
 from app.services.flight_search_preparation_service import (
@@ -108,7 +105,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             location_resolution_service = LocationResolutionService(
                 provider=place_provider,
             )
-        if settings.flight_provider == "travelport":
+        if settings.flight_provider == "serpapi":
             metadata_path = settings.flight_metadata_path
             directory_path = settings.airport_directory_path
             if metadata_path is None or not metadata_path.strip():
@@ -127,18 +124,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 raise ProviderConfigurationError(
                     "Airport directory contains airports without timezone metadata"
                 )
-            travelport_auth_client = TravelportAuthClient(
-                http_client=http_client, settings=settings
-            )
-            flight_provider = TravelportFlightClient(
+            flight_provider = SerpApiFlightClient(
                 http_client=http_client,
-                auth_client=travelport_auth_client,
                 metadata_provider=flight_metadata_provider,
                 settings=settings,
             )
             flight_search_service = FlightSearchService(
                 flight_provider=flight_provider,
-                self_service_traveler_limit=TRAVELPORT_MAX_SEARCH_TRAVELERS,
+                self_service_traveler_limit=9,
                 supports_round_trip=True,
             )
             airport_resolution_service = AirportResolutionService(
@@ -148,6 +141,21 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             flight_search_preparation_service = FlightSearchPreparationService(
                 airport_resolution_service=airport_resolution_service,
                 flight_search_service=flight_search_service,
+            )
+        if settings.hotel_provider == "serpapi":
+            if location_provider is None:
+                location_provider = WeatherApiLocationClient(
+                    http_client=http_client,
+                    settings=settings,
+                )
+            hotel_provider = SerpApiHotelClient(
+                http_client=http_client,
+                settings=settings,
+            )
+            hotel_search_service = HotelSearchService(
+                location_provider=location_provider,
+                hotel_provider=hotel_provider,
+                radius_km=25,
             )
         mcp_server = create_mcp_server(
             weather_provider=weather_provider,
@@ -184,6 +192,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                     flight_search_service is not None
                     and flight_search_service.supports_round_trip
                 ),
+                weather_forecasts_available=True,
             ),
         )
 

@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # External APIs
     weather_api_key: SecretStr | None = None
     weather_api_url: str = "https://api.weatherapi.com/v1/current.json"
+    weather_forecast_api_url: str = "https://api.weatherapi.com/v1/forecast.json"
     weather_search_api_url: str = "https://api.weatherapi.com/v1/search.json"
     places_provider: Literal["google"] | None = None
     google_places_api_key: SecretStr | None = None
@@ -82,7 +83,15 @@ class Settings(BaseSettings):
     )
     currency_provider: Literal["frankfurter"] | None = None
     frankfurter_base_url: str = "https://api.frankfurter.dev/v2"
-    flight_provider: Literal["travelport"] | None = None
+    flight_provider: Literal["serpapi"] | None = None
+    hotel_provider: Literal["serpapi"] | None = None
+    serpapi_api_key: SecretStr | None = None
+    serpapi_search_url: str = "https://serpapi.com/search.json"
+    serpapi_max_response_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        le=20 * 1024 * 1024,
+    )
     flight_metadata_path: str | None = Field(
         default=None,
         min_length=1,
@@ -92,32 +101,11 @@ class Settings(BaseSettings):
         min_length=1,
     )
 
-    # Travelport
-    travelport_environment: Literal["preproduction", "production"] = "preproduction"
-    travelport_username: SecretStr | None = None
-    travelport_password: SecretStr | None = None
-    travelport_client_id: SecretStr | None = None
-    travelport_client_secret: SecretStr | None = None
-    travelport_pcc_core: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=100,
-    )
-    travelport_max_response_bytes: int = Field(
-        default=5 * 1024 * 1024,
-        ge=1024,
-        le=20 * 1024 * 1024,
-    )
-
     # LLM models
-    groq_model: str = "openai/gpt-oss-20b"
     google_model: str = "gemini-3.8-flash"
-    openai_model: str = "gpt-6-luna"
 
     # LLM providers
-    groq_api_key: SecretStr | None = None
     google_api_key: SecretStr | None = None
-    openai_api_key: SecretStr | None = None
 
     # LangSmith
     langsmith_api_key: SecretStr | None = None
@@ -138,7 +126,7 @@ class Settings(BaseSettings):
     generation_daily_request_limit: int = Field(default=100, ge=1, le=10000)
     websocket_max_pending_requests: int = Field(default=4, ge=1, le=20)
     websocket_auth_check_seconds: float = Field(default=15.0, gt=0, le=60)
-    max_search_results: int = Field(default=10, ge=1, le=100)
+    max_search_results: int = Field(default=100, ge=1, le=100)
     max_model_attempts: int = Field(default=3, ge=1, le=5)
     websocket_max_message_bytes: int = Field(
         default=64 * 1024,
@@ -234,49 +222,33 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_flight_provider_configuration(self) -> Self:
-        """Require configuration for the enabled flight provider."""
-        if self.flight_provider != "travelport":
+        """Require shared credentials and timezone data for enabled searches."""
+        if self.flight_provider is None and self.hotel_provider is None:
             return self
 
-        required_settings = {
-            "TRAVELPORT_USERNAME": self.travelport_username,
-            "TRAVELPORT_PASSWORD": self.travelport_password,
-            "TRAVELPORT_CLIENT_ID": self.travelport_client_id,
-            "TRAVELPORT_CLIENT_SECRET": self.travelport_client_secret,
-            "TRAVELPORT_PCC_CORE": self.travelport_pcc_core,
-            "FLIGHT_METADATA_PATH": self.flight_metadata_path,
-            "AIRPORT_DIRECTORY_PATH": self.airport_directory_path,
-        }
+        if self.serpapi_api_key is None:
+            raise ValueError("SERPAPI_API_KEY is required for SerpApi searches")
 
-        missing_settings: list[str] = []
-
-        for name, value in required_settings.items():
-            raw_value = (
-                value.get_secret_value() if isinstance(value, SecretStr) else value
-            )
-
-            if raw_value is None or not raw_value.strip():
-                missing_settings.append(name)
-
-        if missing_settings:
+        if self.flight_provider == "serpapi":
+            missing_data = [
+                name
+                for name, value in (
+                    ("FLIGHT_METADATA_PATH", self.flight_metadata_path),
+                    ("AIRPORT_DIRECTORY_PATH", self.airport_directory_path),
+                )
+                if value is None or not value.strip()
+            ]
+            if missing_data:
+                raise ValueError(
+                    "SerpApi flight search requires: " + ", ".join(missing_data)
+                )
+        if self.hotel_provider == "serpapi" and self.weather_api_key is None:
             raise ValueError(
-                "Travelport flight provider requires: " + ", ".join(missing_settings)
+                "SerpApi hotel search requires WEATHER_API_KEY "
+                "for destination resolution"
             )
 
         return self
-
-    @property
-    def travelport_auth_url(self) -> str:
-        if self.travelport_environment == "production":
-            return "https://auth.travelport.net/oauth/token"
-        return "https://auth.pp.travelport.net/oauth/token"
-
-    @property
-    def travelport_air_base_url(self) -> str:
-        if self.travelport_environment == "production":
-            return "https://api.travelport.net/11/air"
-
-        return "https://api.pp.travelport.net/11/air"
 
 
 @lru_cache

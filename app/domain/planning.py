@@ -1,11 +1,23 @@
 """Versioned business state for conversational planning, independent of graphs."""
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.trip_requirements import TripRequirements
+
+
+class PendingTravelSelection(BaseModel):
+    """A provider search result that the user must choose or revise."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["flight", "hotel", "flight_dates"]
+    option_ids: tuple[Annotated[str, Field(max_length=300)], ...] = Field(
+        default=(), max_length=10
+    )
+    reason: Literal["choose", "no_results"]
 
 
 class PlanningState(BaseModel):
@@ -27,3 +39,7 @@ class PlanningState(BaseModel):
     research: dict[str, object] | None = None
     research_key: str | None = None
     pending_search: dict[str, object] | None = None
+    pending_travel_selection: PendingTravelSelection | None = None
+    selected_flight_id: str | None = Field(default=None, max_length=300)
+    selected_hotel_id: str | None = Field(default=None, max_length=300)
+    nearby_flight_dates_checked: bool = False

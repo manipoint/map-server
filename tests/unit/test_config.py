@@ -38,11 +38,26 @@ def test_url_database_mode_requires_database_url() -> None:
 def test_configuration_error_hides_input_values() -> None:
     marker = "private-input-must-not-appear"
     with pytest.raises(ValidationError) as captured:
-        create_settings(flight_provider="travelport", travelport_password=marker)
+        create_settings(log_level=marker)
 
-    assert "FLIGHT_METADATA_PATH" in str(captured.value)
     assert marker not in str(captured.value)
     assert "input_value" not in str(captured.value)
+
+
+def test_flight_provider_requires_timezone_and_airport_datasets() -> None:
+    with pytest.raises(ValidationError, match="FLIGHT_METADATA_PATH"):
+        create_settings(
+            flight_provider="serpapi",
+            serpapi_api_key=SecretStr("test-serpapi-key"),
+        )
+
+
+def test_hotel_provider_requires_a_destination_resolver() -> None:
+    with pytest.raises(ValidationError, match="WEATHER_API_KEY"):
+        create_settings(
+            hotel_provider="serpapi",
+            serpapi_api_key=SecretStr("test-serpapi-key"),
+        )
 
 
 def test_cloud_sql_mode_accepts_complete_configuration() -> None:
@@ -307,21 +322,8 @@ def test_assistant_completion_margin_rejects_values_outside_bounds(
         )
 
 
-def test_retired_provider_environment_does_not_break_settings(monkeypatch) -> None:
-    """Old deployment variables cannot reactivate removed adapters."""
-
-    monkeypatch.setenv("HOTEL_PROVIDER", "duffel")
-    monkeypatch.setenv("DUFFEL_API_KEY", "retired-test-key")
-    settings = create_settings()
-
-    assert settings.flight_provider is None
-    assert "hotel_provider" not in Settings.model_fields
-    assert not any(name.startswith("duffel_") for name in Settings.model_fields)
-    assert settings.travelport_environment == "preproduction"
-
-
-def test_retired_flight_provider_is_rejected(monkeypatch) -> None:
-    monkeypatch.setenv("FLIGHT_PROVIDER", "duffel")
+def test_unsupported_flight_provider_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("FLIGHT_PROVIDER", "unsupported")
     with pytest.raises(ValidationError, match="flight_provider"):
         create_settings()
 

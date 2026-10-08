@@ -12,8 +12,6 @@ from typing import Protocol, runtime_checkable
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_groq import ChatGroq
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from app.config import Settings
@@ -24,6 +22,7 @@ from app.graph.model_response import (
     provider_error_diagnostics,
     response_diagnostics,
 )
+from app.graph.planning_schemas import RequirementExtraction
 from app.observability.metrics import record_metric
 from app.observability.request_context import cancellation_outcome
 
@@ -125,17 +124,26 @@ class FallbackModelGateway:
                 if schema is None:
                     response = await provider.client.ainvoke(list(messages))
                 else:
-                    structured_output = getattr(
-                        provider.client, "with_structured_output", None
-                    )
+                    client = provider.client
+                    if (
+                        provider.name == "google"
+                        and schema is RequirementExtraction
+                        and isinstance(client, ChatGoogleGenerativeAI)
+                    ):
+                        client = client.model_copy(update={"reasoning_effort": "low"})
+
+                    structured_output = getattr(client, "with_structured_output", None)
+
                     if not callable(structured_output):
                         raise TypeError(
                             "model provider does not support structured output"
                         )
                     result = await structured_output(
-                        google_generation_schema(schema)
-                        if provider.name == "google"
-                        else schema,
+                        (
+                            google_generation_schema(schema)
+                            if provider.name == "google"
+                            else schema
+                        ),
                         method="json_schema",
                         include_raw=True,
                     ).ainvoke(list(messages))
@@ -243,7 +251,10 @@ def _record_provider_attempt(
 def build_model_gateway(
     settings: Settings, *, tools: Sequence[BaseTool] = ()
 ) -> FallbackModelGateway:
-    """Build configured model providers in cost-aware fallback order."""
+    """Build Gemini only, retaining the shared gateway interface for callers."""
+
+    if settings.google_api_key is None:
+        raise ValueError("GOOGLE_API_KEY is required for the Gemini model gateway")
 
     providers: list[ModelProvider] = []
     if settings.google_api_key is not None:
@@ -257,39 +268,6 @@ def build_model_gateway(
                         request_timeout=settings.model_timeout_seconds,
                         retries=0,
                         max_output_tokens=settings.model_max_output_tokens,
-                    ),
-                    tools=tools,
-                ),
-            )
-        )
-    if settings.openai_api_key is not None:
-        providers.append(
-            ModelProvider(
-                name="openai",
-                client=bind_model_tools(
-                    ChatOpenAI(
-                        model=settings.openai_model,
-                        api_key=settings.openai_api_key,
-                        timeout=settings.model_timeout_seconds,
-                        max_retries=0,
-                        reasoning_effort=None,
-                        max_tokens=settings.model_max_output_tokens,
-                    ),
-                    tools=tools,
-                ),
-            )
-        )
-    if settings.groq_api_key is not None:
-        providers.append(
-            ModelProvider(
-                name="groq",
-                client=bind_model_tools(
-                    ChatGroq(
-                        model=settings.groq_model,
-                        api_key=settings.groq_api_key,
-                        timeout=settings.model_timeout_seconds,
-                        max_retries=0,
-                        max_tokens=settings.model_max_output_tokens,
                     ),
                     tools=tools,
                 ),

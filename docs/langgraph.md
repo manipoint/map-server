@@ -16,7 +16,9 @@ Persist user message → reserve generation capacity → acquire ordered convers
       → chat: return short reply without changing requirements
       → search: typed standalone MCP lookup → grounded response or guidance
       → complete: persist requirements → reuse fresh research or run bounded research
-          → compact verified evidence
+          → ask the user to choose among multiple flight/hotel results, or revise
+            requirements when a verified search returns no options
+          → compact verified evidence for the selected options
           → tool-free itinerary synthesis
           → validate (at most one repair)
           → atomically save trip, itinerary, planning state and rich reply
@@ -75,25 +77,54 @@ completion messages, not a new structured requirements-form event.
 ## Research and grounding
 
 `PlanningResearchService` maps complete requirements through `TripRequestMapper`.
-It runs relevant enabled searches concurrently, with a 15-second bound per branch:
+It runs relevant enabled searches concurrently, with a 15-second bound per ordinary
+branch. A flight branch with no exact-date offers may spend up to eight additional
+seconds on bounded nearby-date checks:
 
 - places: up to five compact, deduplicated results;
-- lodging: up to three hotel options when lodging is requested and available;
-- flights: up to three round-trip results only when that capability is available.
+- lodging: up to ten hotel options when lodging is requested and available;
+- flights: up to ten round-trip results only when that capability is available;
+- weather: one dated forecast lookup, with only provider-returned trip dates retained.
 
-Travelport currently supports one-way only, so planner round-trip research is
-explicitly disabled. A one-way search is never silently substituted. No hotel
-provider is currently initialized. Missing providers, empty results and expected
-search failures produce visible warnings while allowing an unverified draft.
+Weather requests support the full 30-day trip range; the provider's forecast
+coverage is a separate limit (at most 14 returned days, depending on subscription).
+Dates or hours outside returned coverage are explicitly unavailable. Missing rain
+or snow probabilities stay unknown, never zero. The weather response's validated
+IANA timezone also enables scheduling for road/rail/own-arrangements trips. For
+distant dates a one-day provider lookup resolves the location timezone without
+using today's weather as a forecast for the trip.
+
+SerpApi flight search supports round-trip results when configured. When multiple
+verified flights or hotels are returned, the graph stores a bounded selection
+prompt in the conversation state and waits for the user's numbered choice before
+synthesis. One result is selected automatically. A verified empty flight or hotel
+search pauses itinerary generation and asks the user to change the relevant dates,
+route or budget, or continue without that service. Provider failures are marked
+unverified and are not reported as proof that no options exist. Selection replies
+reuse fresh cached results and are matched deterministically; they do not trigger
+an LLM choice. If the exact round trip has no verified flight options, the planner
+checks the same trip shifted one day earlier and one day later, preserving the trip
+length. This adds at most two parallel provider requests, each with an eight-second
+bound, and happens only after the exact search has no verified offer. It presents
+any nearby-date choices and changes trip requirements only
+after the user selects one; the new dates then receive a fresh exact flight search.
+The same adjacent date pair is not offered repeatedly if that fresh exact search
+also returns no verified flights; the user can then choose another date manually.
+Standalone search responses continue to expose all normalized options up to the
+backend limit.
 Standalone weather, currency, places, hotels and flight searches do not require a
 complete itinerary. Disabled capabilities return an explicit unavailable response.
 Current weather is not misrepresented as a forecast. Airport choices and location
 candidates are preserved; research requiring clarification stops before synthesis.
 
 Research is reusable for five minutes within the owned conversation when search
-arguments and enabled providers are unchanged, evidence has not expired, and the
-snapshot has no warnings or unresolved guidance. Pace-only revisions avoid paid
+arguments and enabled providers are unchanged and evidence has not expired.
+Selection prompts may reuse fresh evidence even when an unrelated weather warning
+is present. Pace-only revisions avoid paid
 research. Budget/date/route/party changes invalidate the relevant request key.
+Expected weather coverage gaps are daily informational notes, not failure warnings,
+so they do not invalidate successful search results. Transient weather failures
+still produce warnings and allow an unverified draft.
 
 Evidence retains local IDs, provider source IDs, place source URLs, observation
 time and offer expiry where available. Named place/hotel/flight items must refer
@@ -103,13 +134,25 @@ Generic items use server-owned English/Roman Urdu templates and the summary is
 server-owned, preventing invented bookings from bypassing evidence requirements
 under an `activity` type. They remain unverified suggestions, not a verified budget.
 
-The output must cover every inclusive day in order. Optional scheduled items must
-have paired timezone-aware timestamps, match their day and not overlap. Non-flight
-times are omitted when no trusted destination timezone is available. Both flight
+The output must cover every inclusive day in order. When the destination timezone
+is verified, every non-note activity requires paired timezone-aware timestamps,
+must match its day and must not overlap. Missing times trigger the bounded repair
+attempt. The prompt asks for meals, transfers, interest-based activities and rest,
+with durations chosen from interests, constraints and pace (not fixed hourly slots).
+Generic breakfast/lunch/dinner, hiking and photography use trusted display templates.
+Activity and transfer times are explicitly estimates, not verified opening hours
+or routing results. Non-flight times are omitted with a visible explanation when
+no trusted destination timezone is available. Both flight
 legs retain provider timestamps and IANA zones; overnight arrivals are allowed.
 Flight times cannot be supplied or changed by the model. Output is
 bounded to 100,000 characters, 200 items and 30 trip days. Invalid synthesis gets
 one repair attempt without re-running research; a second failure terminates.
+One server-rendered weather `note` per day is reserved within the 200-item bound.
+These notes are attached after model validation and persist in itinerary items,
+rich-content day activities, cached replies and REST reads. Equal probabilities
+are grouped only across consecutive hours and remain hourly probabilities, never
+an aggregate probability over a range. Synthesis receives compact weather text
+for scheduling rather than the full hourly JSON and cannot author the weather notes.
 Extraction and synthesis use provider-native JSON Schema output with local
 Pydantic validation. Each stage gets one bounded repair attempt for schema
 validation failures. If extraction remains invalid, it raises a generation failure
@@ -184,19 +227,20 @@ including different departure/arrival zones. Older rows without zones remain val
 
 ## Models and observability
 
-Extraction and synthesis reuse the configured Google → OpenAI → Groq gateway,
-without callable tools. A clarification/chat turn normally costs one logical
+Extraction and synthesis use the configured Gemini gateway, without callable
+tools. Requirement extraction uses low reasoning effort; synthesis keeps the
+configured model default. A clarification/chat turn normally costs one logical
 model call; generation costs two; each stage permits one repair. Physical calls
-are capped at 12 per response, including fallback. Input text is capped by
+are capped at 12 per response. Input text is capped by
 `MODEL_MAX_INPUT_CHARS` (120,000); each provider uses `MODEL_MAX_OUTPUT_TOKENS`
 (8,192). These are hard request bounds, not accurate dollar-cost accounting.
 Prompts are versioned in `planning_prompts.py`; safe repair feedback includes
 validation fields/types or invariant failures, never raw invalid model output.
 Separate economy/quality profiles and circuit breakers remain deferred.
 
-HTTP 400/401/403/404/413/422 model errors terminate instead of falling through to
-another provider. Transient failures retain bounded fallback; cancellation
-propagates. Structured-output validation is separate from transport fallback.
+Provider failures return typed errors; there is no cross-provider fallback.
+Structured-output validation is separate from transport errors. Cancellation
+propagates.
 Existing tracing remains enabled according to configuration. Stage latency and
 provider-reported input/output token counts are recorded without response text.
 
@@ -280,5 +324,5 @@ uv run python -m scripts.evaluate_planning_prompts --live
 
 This command makes paid calls with configured credentials. It is never run by
 pytest or automatically during deployment. The strict change-mask contract follows
-[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs):
+[Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output):
 required nullable fields are distinct from the fields explicitly selected to change.

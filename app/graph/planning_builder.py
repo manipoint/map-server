@@ -2,9 +2,10 @@
 
 import json
 import logging
-from datetime import timedelta
+import re
+from datetime import date, timedelta
 from time import perf_counter
-from typing import NotRequired, TypeVar
+from typing import NotRequired, TypeVar, get_args
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,8 +16,8 @@ from pydantic import BaseModel, ValidationError
 
 from app.common.time import utc_now
 from app.domain.clarifications import TravelClarification
-from app.domain.itineraries import ItineraryItemType
-from app.domain.planning import PlanningState
+from app.domain.itineraries import MAX_ITINERARY_ITEMS, ItineraryItemType
+from app.domain.planning import PendingTravelSelection, PlanningState
 from app.domain.planning_preferences import PlanningPreferences
 from app.domain.trip_requirements import TripRequirements
 from app.domain.trip_rules import inclusive_day_count
@@ -42,8 +43,11 @@ from app.observability.metrics import record_metric
 from app.services.planning_research_service import (
     PlanningResearch,
     PlanningResearchService,
+    ResearchEvidence,
 )
+from app.services.planning_weather import itinerary_weather_notes
 from app.services.standalone_search_service import (
+    HotelsRequest,
     StandaloneRequest,
     StandaloneSearchService,
 )
@@ -53,6 +57,261 @@ Output = TypeVar("Output", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+def _travel_options(
+    research: PlanningResearch, kind: str
+) -> list[tuple[str, tuple[ResearchEvidence, ...]]]:
+    """Return stable user-facing choices; a round trip is one flight option."""
+    if kind == "flight":
+
+        def option_id(item: ResearchEvidence) -> str:
+            return item.source_id or item.id.removesuffix("-return")
+
+        outbound = [
+            item
+            for item in research.evidence
+            if item.kind == "flight"
+            and item.alternative_start_date is None
+            and not item.id.endswith("-return")
+        ]
+        return [
+            (
+                option_id(item),
+                tuple(
+                    candidate
+                    for candidate in research.evidence
+                    if candidate.kind == "flight"
+                    and candidate.alternative_start_date is None
+                    and option_id(candidate) == option_id(item)
+                ),
+            )
+            for item in outbound
+        ]
+    return [(item.id, (item,)) for item in research.evidence if item.kind == "hotel"]
+
+
+def _flight_date_options(
+    research: PlanningResearch,
+) -> list[tuple[str, tuple[ResearchEvidence, ...]]]:
+    alternatives = sorted(
+        {
+            (item.alternative_start_date, item.alternative_end_date)
+            for item in research.evidence
+            if item.kind == "flight"
+            and item.alternative_start_date is not None
+            and item.alternative_end_date is not None
+        }
+    )
+    return [
+        (
+            f"{departure.isoformat()}|{returning.isoformat()}",
+            tuple(
+                item
+                for item in research.evidence
+                if item.kind == "flight"
+                and item.alternative_start_date == departure
+                and item.alternative_end_date == returning
+            ),
+        )
+        for departure, returning in alternatives
+    ]
+
+
+def _selected_flight_date_pair(
+    research: PlanningResearch,
+    selection_id: str,
+) -> tuple[date, date] | None:
+    for option_id, evidence in _flight_date_options(research):
+        if option_id != selection_id or not evidence:
+            continue
+        departure = evidence[0].alternative_start_date
+        returning = evidence[0].alternative_end_date
+        if departure is not None and returning is not None:
+            return departure, returning
+    return None
+
+
+def _has_no_verified_options(research: PlanningResearch, kind: str) -> bool:
+    return any(
+        warning.startswith(f"{kind}s: no verified options")
+        for warning in research.warnings
+    )
+
+
+def _selection_text(
+    *,
+    kind: str,
+    options: list[tuple[str, tuple[ResearchEvidence, ...]]],
+    research: PlanningResearch,
+    language: str,
+    no_results: bool = False,
+    nearby_search_note: str | None = None,
+) -> str:
+    """Render bounded provider results and a clear next action in chat."""
+    if no_results:
+        if kind == "flight":
+            text = (
+                "Aap ki tareekh aur route ke liye koi verified flight option nahi mili. "
+                "Itinerary abhi generate nahi ki. Tareekh ya route badlein, ya kahen ke flight khud arrange karenge."
+                if language == "ur-Latn"
+                else "No verified flights were found for those dates and route, so I have not generated the itinerary. Change the dates or route, or tell me you will arrange flights yourself."
+            )
+            if nearby_search_note == "checked":
+                text += (
+                    " Qareebi dates par aik din pehle/baad, trip ki muddat barqarar rakh kar, search ki; wahan bhi option nahi mili."
+                    if language == "ur-Latn"
+                    else " I also checked one day earlier and later while keeping the trip length the same, but found no verified options."
+                )
+            elif nearby_search_note == "incomplete":
+                text += (
+                    " Provider issue ki wajah se qareebi dates verify nahi ho sakin."
+                    if language == "ur-Latn"
+                    else " A provider issue prevented me from verifying nearby dates."
+                )
+            return text
+        return (
+            "Aap ke stay ke liye koi verified hotel option nahi mila. Itinerary abhi generate nahi ki. "
+            "Tareekhein ya budget badlein, ya kahen ke accommodation khud arrange karenge."
+            if language == "ur-Latn"
+            else "No verified hotels were found for those stay dates, so I have not generated the itinerary. Change the dates or budget, or tell me you will arrange accommodation yourself."
+        )
+
+    label = "flight" if kind == "flight" else "hotel"
+    if language == "ur-Latn":
+        title = (
+            "Flights mein se aik select karein:"
+            if kind == "flight"
+            else "Hotels mein se aik select karein:"
+        )
+        next_step = f"Reply mein {label} ka option number bhejein, ya dates/route/budget badal dein."
+    else:
+        title = (
+            "Choose one flight before I build the itinerary:"
+            if kind == "flight"
+            else "Choose one hotel before I build the itinerary:"
+        )
+        next_step = f"Reply with the {label} option number, or change the dates, route, or budget."
+    lines = [title]
+    for index, (_, evidence) in enumerate(options, start=1):
+        primary = evidence[0]
+        if kind == "flight":
+            outbound = primary.description
+            returning = next(
+                (item.description for item in evidence if item.id.endswith("-return")),
+                None,
+            )
+            detail = f"{primary.name}; outbound {outbound}"
+            if returning:
+                detail += f"; return {returning}"
+        else:
+            card = primary.hotel_card
+            detail = f"{primary.name}, {primary.location}"
+            if card and card.price:
+                detail += f"; {card.price.amount} {card.price.currency} total"
+            if card and card.review_score is not None:
+                detail += f"; review score {card.review_score}/10"
+        lines.append(f"{index}. {detail[:500]}")
+    lines.append(next_step)
+    return "\n".join(lines)
+
+
+def _flight_date_selection_text(
+    options: list[tuple[str, tuple[ResearchEvidence, ...]]],
+    *,
+    language: str,
+) -> str:
+    if language == "ur-Latn":
+        lines = [
+            "Aap ki exact trip dates par flight verify nahi hui. Trip ki muddat barqarar rakhte hue qareebi dates par yeh options mile:",
+        ]
+    else:
+        lines = [
+            "No flight was verified for your exact trip dates. Keeping the trip length the same, these nearby date options have flights:",
+        ]
+    for index, (date_key, evidence) in enumerate(options, start=1):
+        departure_text, return_text = date_key.split("|", maxsplit=1)
+        grouped_offers: dict[str, list[ResearchEvidence]] = {}
+        for item in evidence:
+            offer_id = item.source_id or item.id.removesuffix("-return")
+            grouped_offers.setdefault(offer_id, []).append(item)
+        lines.append(
+            f"Date option {index}: {departure_text} to {return_text} "
+            f"({len(grouped_offers)} verified flight option(s))"
+        )
+        for offer_index, offer_evidence in enumerate(grouped_offers.values(), start=1):
+            outbound = next(
+                (item for item in offer_evidence if not item.id.endswith("-return")),
+                offer_evidence[0],
+            )
+            returning = next(
+                (item for item in offer_evidence if item.id.endswith("-return")),
+                None,
+            )
+            detail = f"  {offer_index}. {outbound.name}; {outbound.description}"
+            if returning:
+                detail += f"; return {returning.description}"
+            lines.append(detail[:700])
+    lines.append(
+        "Reply with a date option number to update the trip dates and run an exact flight search. Your current dates will stay unchanged unless you choose one."
+        if language == "en"
+        else "Tareekh chunne ke liye date option ka number bhejein. Phir trip dates update kar ke exact flight search hogi. Aap ke mojooda dates aap ke intikhab tak nahi badlein ge."
+    )
+    return "\n".join(lines)
+
+
+def _match_selection(
+    message: str,
+    pending: PendingTravelSelection,
+    research: PlanningResearch,
+) -> str | None:
+    """Resolve an explicit number or exact option name without model guessing."""
+    if pending.reason != "choose":
+        return None
+    available = (
+        _flight_date_options(research)
+        if pending.kind == "flight_dates"
+        else _travel_options(research, pending.kind)
+    )
+    options = [option for option in available if option[0] in pending.option_ids]
+    normalized = message.strip().casefold()
+    match = re.fullmatch(
+        r"(?:(?:i\s+)?(?:choose|select|pick|want|take|go\s+with)\s+)?"
+        r"(?:(?:the\s+)?(?:flight|hotel|date)\s+)?(?:option\s+)?(?:number\s+)?"
+        r"(10|[1-9])(?:\s+please)?[.!]?",
+        normalized,
+    )
+    if match:
+        index = int(match.group(1)) - 1
+        return options[index][0] if index < len(options) else None
+    exact = [
+        option[0]
+        for option in options
+        if any(item.name.casefold() == normalized for item in option[1])
+    ]
+    return exact[0] if len(exact) == 1 else None
+
+
+def _research_for_selection(
+    research: PlanningResearch,
+    *,
+    flight_id: str | None,
+    hotel_id: str | None,
+) -> PlanningResearch:
+    """Keep only the user-selected flight and hotel in synthesis evidence."""
+    evidence = tuple(
+        item
+        for item in research.evidence
+        if (
+            item.kind == "flight"
+            and flight_id is not None
+            and item.alternative_start_date is None
+            and (item.source_id or item.id.removesuffix("-return")) == flight_id
+        )
+        or (item.kind == "hotel" and hotel_id is not None and item.id == hotel_id)
+        or item.kind == "place"
+    )
+    return research.model_copy(update={"evidence": evidence})
+
+
 class StructuredOutputValidationError(ValueError):
     """A model response failed its expected structured-output schema."""
 
@@ -60,11 +319,14 @@ class StructuredOutputValidationError(ValueError):
         self,
         *,
         schema_name: str,
+        schema: type[BaseModel],
         validation_error: ValidationError,
         allowed_fields: set[str],
     ) -> None:
+        # Input stays in memory only long enough to derive its safe type/length.
+        # Never attach raw Pydantic errors to logs or exception messages.
         errors = validation_error.errors(
-            include_url=False, include_context=False, include_input=False
+            include_url=False, include_context=True, include_input=True
         )
         error_types = sorted(
             {item["type"] for item in errors if isinstance(item.get("type"), str)}
@@ -82,7 +344,80 @@ class StructuredOutputValidationError(ValueError):
         self.error_count = len(errors)
         self.error_types = tuple(error_types[:5])
         self.error_fields = tuple(error_fields[:5])
+        self.error_details = tuple(
+            _safe_validation_detail(item, _schema_field_names(schema))
+            for item in errors[:12]
+        )
         super().__init__(f"Model response does not match {schema_name}.")
+
+
+def _schema_field_names(schema: type[BaseModel]) -> set[str]:
+    """Collect model-declared names so arbitrary response keys stay redacted."""
+    names: set[str] = set()
+    pending: list[type[BaseModel]] = [schema]
+    visited: set[type[BaseModel]] = set()
+    while pending:
+        model = pending.pop()
+        if model in visited:
+            continue
+        visited.add(model)
+        names.add(model.__name__)
+        for field_name, field in model.model_fields.items():
+            names.add(field_name)
+            candidates = [field.annotation, *get_args(field.annotation)]
+            for candidate in candidates:
+                if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                    pending.append(candidate)
+    return names
+
+
+def _safe_validation_detail(
+    error: dict[str, object], schema_fields: set[str]
+) -> dict[str, object]:
+    """Describe a schema failure without logging model or user-provided values."""
+    location = error.get("loc", ())
+    error_type = error.get("type")
+    path: list[str | int] = []
+    for part in location if isinstance(location, tuple) else ():
+        if isinstance(part, int):
+            path.append(part)
+        elif isinstance(part, str):
+            if part in schema_fields:
+                path.append(part)
+            else:
+                path.append(
+                    "<extra_field>" if error_type == "extra_forbidden" else "<variant>"
+                )
+    result: dict[str, object] = {
+        "type": error_type if isinstance(error_type, str) else "unknown",
+        "path": path[:8],
+        "input_present": "input" in error,
+    }
+    value = error.get("input")
+    result["input_kind"] = (
+        "null"
+        if value is None
+        else "boolean"
+        if isinstance(value, bool)
+        else "number"
+        if isinstance(value, (int, float))
+        else "string"
+        if isinstance(value, str)
+        else "object"
+        if isinstance(value, dict)
+        else "array"
+        if isinstance(value, (list, tuple))
+        else "other"
+    )
+    if isinstance(value, str):
+        result["input_length"] = len(value)
+    elif isinstance(value, (dict, list, tuple)):
+        result["input_size"] = len(value)
+    context = error.get("ctx")
+    expected = context.get("expected") if isinstance(context, dict) else None
+    if error_type == "literal_error" and isinstance(expected, str):
+        result["expected"] = expected[:200]
+    return result
 
 
 class PlanningGraphState(TravelGraphState):
@@ -123,9 +458,11 @@ async def structured_call(
         metric_type="distribution",
         labels={
             "stage": stage,
-            "prompt_version": REQUIREMENTS_PROMPT_VERSION
-            if stage == "requirements"
-            else SYNTHESIS_PROMPT_VERSION,
+            "prompt_version": (
+                REQUIREMENTS_PROMPT_VERSION
+                if stage == "requirements"
+                else SYNTHESIS_PROMPT_VERSION
+            ),
         },
     )
     for key in ("input_tokens", "output_tokens"):
@@ -148,6 +485,7 @@ async def structured_call(
     except ValidationError as error:
         raise StructuredOutputValidationError(
             schema_name=schema.__name__,
+            schema=schema,
             validation_error=error,
             allowed_fields=set(schema.model_fields),
         ) from error
@@ -201,6 +539,7 @@ def validate_researched_itinerary(
     requirements: TripRequirements,
     research: PlanningResearch,
     language: str = "en",
+    required_evidence_ids: set[str] | None = None,
 ) -> GeneratedItinerary:
     start = requirements.start_date
     end = requirements.resolved_end_date
@@ -238,16 +577,20 @@ def validate_researched_itinerary(
                 title=source.name,
                 location_name=source.location,
                 description=source.description,
-                starts_at=source.starts_at
-                if source.kind == "flight"
-                else item.starts_at,
+                starts_at=(
+                    source.starts_at if source.kind == "flight" else item.starts_at
+                ),
                 ends_at=source.ends_at if source.kind == "flight" else item.ends_at,
-                start_time_zone=source.start_time_zone
-                if source.kind == "flight"
-                else research.time_zone,
-                end_time_zone=source.end_time_zone
-                if source.kind == "flight"
-                else research.time_zone,
+                start_time_zone=(
+                    source.start_time_zone
+                    if source.kind == "flight"
+                    else research.time_zone
+                ),
+                end_time_zone=(
+                    source.end_time_zone
+                    if source.kind == "flight"
+                    else research.time_zone
+                ),
                 image=source.image
                 or (source.hotel_card.image if source.hotel_card else None),
             )
@@ -260,6 +603,23 @@ def validate_researched_itinerary(
         else:
             # Free text cannot bypass evidence requirements by choosing 'activity'.
             templates = {
+                "breakfast": (
+                    "Breakfast",
+                    "Suggested breakfast break; choose a suitable venue.",
+                ),
+                "lunch": ("Lunch", "Suggested lunch break; choose a suitable venue."),
+                "dinner": (
+                    "Dinner",
+                    "Suggested dinner break; choose a suitable venue.",
+                ),
+                "hike": (
+                    "Optional hike",
+                    "Allow time for your interests and pace; check trail access and weather.",
+                ),
+                "photography": (
+                    "Photography time",
+                    "Suggested time for photography; confirm access before visiting.",
+                ),
                 "explore": (
                     "Explore the area",
                     "Choose a local activity after checking access and opening hours.",
@@ -285,6 +645,26 @@ def validate_researched_itinerary(
             }
             if language == "ur-Latn":
                 templates = {
+                    "breakfast": (
+                        "Nashta",
+                        "Nashtay ka tajweez shuda waqfa; munasib jagah chunain.",
+                    ),
+                    "lunch": (
+                        "Dopehar ka khana",
+                        "Dopehar ke khanay ka waqfa; munasib jagah chunain.",
+                    ),
+                    "dinner": (
+                        "Raat ka khana",
+                        "Raat ke khanay ka waqfa; munasib jagah chunain.",
+                    ),
+                    "hike": (
+                        "Ikhtiyari hiking",
+                        "Apni dilchaspi aur raftaar ke mutabiq waqt rakhein; rasta aur mausam check karein.",
+                    ),
+                    "photography": (
+                        "Tasveerain lenay ka waqt",
+                        "Tasveerain lenay ke liye tajweez shuda waqt; rasai pehle check karein.",
+                    ),
                     "explore": (
                         "Ilaqa dekhein",
                         "Rasai aur khulne ke auqat tasdeeq kar ke maqami sargarmi chunain.",
@@ -326,6 +706,10 @@ def validate_researched_itinerary(
             if research.time_zone is None:
                 values.update(starts_at=None, ends_at=None)
                 starts = ends = None
+            elif starts is None and item.item_type != ItineraryItemType.NOTE:
+                raise ValueError(
+                    "Every activity requires start/end times in the verified destination timezone"
+                )
             elif starts is not None:
                 try:
                     zone = ZoneInfo(research.time_zone)
@@ -349,10 +733,38 @@ def validate_researched_itinerary(
                 )
             previous_end = ends
         normalized.append(values)
+    if required_evidence_ids:
+        referenced_ids = {item.evidence_id for item in generated.items}
+        if not required_evidence_ids.issubset(referenced_ids):
+            raise ValueError(
+                "Itinerary must include the selected flight and hotel options"
+            )
+    if research.time_zone is not None and {
+        item["day_number"] for item in normalized if item["starts_at"] is not None
+    } != set(range(1, days + 1)):
+        raise ValueError("Each trip day requires at least one scheduled activity")
+    weather_notes = (
+        itinerary_weather_notes(
+            start_date=start,
+            end_date=end,
+            forecast=research.weather_forecast,
+            language=language,
+        )
+        if research.weather_requested or research.weather_forecast is not None
+        else []
+    )
+    if len(normalized) + len(weather_notes) > MAX_ITINERARY_ITEMS:
+        raise ValueError(
+            "Too many schedule items; reserve one weather note per trip day"
+        )
+    normalized.extend(note.model_dump() for note in weather_notes)
+    normalized.sort(key=lambda item: item["day_number"])
     return GeneratedItinerary(
-        summary="Aap ki safar ki zarooriyat par mabni draft plan."
-        if language == "ur-Latn"
-        else "Draft itinerary based on your trip requirements.",
+        summary=(
+            "Aap ki safar ki zarooriyat par mabni draft plan. Activity aur transfer ke auqat andazan hain."
+            if language == "ur-Latn"
+            else "Draft itinerary based on your trip requirements. Activity and transfer times are estimates."
+        ),
         items=normalized,
     )
 
@@ -430,6 +842,74 @@ def build_planning_graph(
         message_id = state.get("user_message_id")
         if message_id is not None and previous.requirements_message_id == message_id:
             return route_planning_requirements(previous, preferences=preferences)
+        if previous.pending_travel_selection and previous.research:
+            stored_research = PlanningResearch.model_validate(previous.research)
+            selected_id = _match_selection(
+                state["latest_message"],
+                previous.pending_travel_selection,
+                stored_research,
+            )
+            if selected_id is not None:
+                if previous.pending_travel_selection.kind == "flight_dates":
+                    selected_dates = _selected_flight_date_pair(
+                        stored_research, selected_id
+                    )
+                    if selected_dates is None:
+                        return {
+                            "route": "respond",
+                            "planning": previous,
+                            "assistant_response": (
+                                "That nearby-date option is no longer available. Please send your preferred travel dates."
+                            ),
+                        }
+                    departure, returning = selected_dates
+                    requirements = merge_requirements(
+                        previous.requirements,
+                        {
+                            "start_date": departure.isoformat(),
+                            "end_date": returning.isoformat(),
+                            "duration_days": inclusive_day_count(departure, returning),
+                        },
+                    )
+                    updated = PlanningState(
+                        **{
+                            **previous.model_dump(),
+                            "requirements": requirements,
+                            "revision": previous.revision + 1,
+                            "phase": "ready",
+                            "pending_fields": (),
+                            "itinerary": None,
+                            "research": None,
+                            "research_key": None,
+                            "pending_travel_selection": None,
+                            "selected_flight_id": None,
+                            "selected_hotel_id": None,
+                        }
+                    )
+                    return {
+                        **route_planning_requirements(
+                            updated,
+                            preferences=preferences,
+                        ),
+                        "requirements_changed": True,
+                    }
+                selection_update = {
+                    "pending_travel_selection": None,
+                    "selected_flight_id": (
+                        selected_id
+                        if previous.pending_travel_selection.kind == "flight"
+                        else previous.selected_flight_id
+                    ),
+                    "selected_hotel_id": (
+                        selected_id
+                        if previous.pending_travel_selection.kind == "hotel"
+                        else previous.selected_hotel_id
+                    ),
+                }
+                return route_planning_requirements(
+                    previous.model_copy(update=selection_update),
+                    preferences=preferences,
+                )
         extraction_prompt = REQUIREMENTS_PROMPT
         extraction_data = {
             "today": utc_now().date().isoformat(),
@@ -441,6 +921,7 @@ def build_planning_graph(
             "message": state["latest_message"],
         }
         extraction = None
+        validation_attempts: list[dict[str, object]] = []
         for attempt in range(2):
             try:
                 extraction = await structured_call(
@@ -457,6 +938,14 @@ def build_planning_graph(
                 )
                 break
             except StructuredOutputValidationError as error:
+                validation_attempts.append(
+                    {
+                        "attempt": attempt + 1,
+                        "error_count": error.error_count,
+                        "error_types": error.error_types,
+                        "errors": error.error_details,
+                    }
+                )
                 extraction_data["repair"] = {
                     "fields": error.error_fields,
                     "errors": error.error_types,
@@ -470,12 +959,37 @@ def build_planning_graph(
                         "validation_error_count": error.error_count,
                         "validation_error_types": error.error_types,
                         "validation_error_fields": error.error_fields,
+                        "validation_errors": error.error_details,
+                        "validation_attempts": validation_attempts,
                         "attempts": attempt + 1,
                     },
                 )
                 raise
         assert extraction is not None
         if extraction.intent == "search":
+            if (
+                isinstance(extraction.search, HotelsRequest)
+                and extraction.search.budget_decision is None
+                and extraction.search.arguments.rooms == 1
+            ):
+                question = (
+                    "What is your maximum budget for the entire hotel stay, and "
+                    "which currency? You can also say no limit."
+                    if extraction.language == "en"
+                    else "Poore hotel stay ka maximum budget aur currency kya hai? "
+                    "Agar limit nahi rakhni to ‘no limit’ keh dein."
+                )
+                planning = previous.model_copy(
+                    update={
+                        "language": extraction.language,
+                        "pending_search": extraction.search.model_dump(mode="json"),
+                    }
+                )
+                return {
+                    "route": "respond",
+                    "assistant_response": question,
+                    "planning": planning,
+                }
             return {"route": "standalone", "standalone_request": extraction.search}
         if extraction.intent == "chat":
             return {
@@ -498,6 +1012,41 @@ def build_planning_graph(
             ]
         extracted_updates = extraction.selected_updates()
         updates = {**default_updates, **extracted_updates}
+        changed_flight_fields = {
+            "origin",
+            "destination",
+            "start_date",
+            "end_date",
+            "duration_days",
+            "adults",
+            "minor_count",
+            "minor_ages",
+            "transport",
+            "cabin_class",
+            "budget_currency",
+        }
+        changed_hotel_fields = {
+            "destination",
+            "start_date",
+            "end_date",
+            "duration_days",
+            "adults",
+            "minor_count",
+            "minor_ages",
+            "needs_lodging",
+            "rooms",
+            "budget_decision",
+            "total_budget",
+            "budget_currency",
+        }
+        clear_flight = bool(changed_flight_fields.intersection(extracted_updates))
+        clear_hotel = bool(changed_hotel_fields.intersection(extracted_updates))
+        pending_selection = base.pending_travel_selection
+        if pending_selection and (
+            (pending_selection.kind == "flight" and clear_flight)
+            or (pending_selection.kind == "hotel" and clear_hotel)
+        ):
+            pending_selection = None
         route_changed = any(
             field in extracted_updates
             and extracted_updates[field] != getattr(base.requirements, field)
@@ -542,6 +1091,12 @@ def build_planning_graph(
             itinerary=base.itinerary,
             research=base.research,
             research_key=base.research_key,
+            pending_travel_selection=pending_selection,
+            selected_flight_id=None if clear_flight else base.selected_flight_id,
+            selected_hotel_id=None if clear_hotel else base.selected_hotel_id,
+            nearby_flight_dates_checked=(
+                False if clear_flight else base.nearby_flight_dates_checked
+            ),
         )
         return {
             **route_planning_requirements(
@@ -560,9 +1115,21 @@ def build_planning_graph(
             return {}
         if runtime.context is None:
             raise RuntimeError("Planning requirements persistence context is required")
-        persisted = await runtime.context.persist_requirements(
-            state["planning"], state.get("reset_trip", False)
-        )
+        started = perf_counter()
+        outcome = "error"
+        try:
+            persisted = await runtime.context.persist_requirements(
+                state["planning"], state.get("reset_trip", False)
+            )
+            outcome = "success"
+        finally:
+            record_metric(
+                name="planning_requirements_save_duration_ms",
+                value=(perf_counter() - started) * 1000,
+                metric_type="distribution",
+                labels={"outcome": outcome},
+            )
+
         return {
             "planning": persisted,
             "requirements_changed": False,
@@ -588,11 +1155,30 @@ def build_planning_graph(
                 for item in cached.evidence
             )
         )
-        result = (
-            cached
-            if reusable
-            else await research_service.research(planning.requirements)
+        reusable_for_selection = (
+            cached is not None
+            and (
+                planning.pending_travel_selection is not None
+                or planning.selected_flight_id is not None
+                or planning.selected_hotel_id is not None
+            )
+            and planning.research_key == key
+            and timedelta(0) <= now - cached.searched_at < timedelta(minutes=5)
+            and all(
+                item.expires_at is None or item.expires_at > now
+                for item in cached.evidence
+            )
         )
+        if reusable or reusable_for_selection:
+            result = cached
+        elif planning.nearby_flight_dates_checked:
+            result = await research_service.research(
+                planning.requirements,
+                allow_nearby_flight_dates=False,
+            )
+        else:
+            result = await research_service.research(planning.requirements)
+        assert result is not None
         if result.guidance:
             return {
                 "research": result,
@@ -609,10 +1195,152 @@ def build_planning_graph(
                     None,
                 ),
             }
+        selected_flight_id = planning.selected_flight_id
+        selected_hotel_id = planning.selected_hotel_id
+        if planning.requirements.transport == "flight":
+            flight_options = _travel_options(result, "flight")
+            nearby_dates_checked = bool(_flight_date_options(result)) or any(
+                "nearby" in warning or "one-day-shifted" in warning
+                for warning in result.warnings
+                if warning.startswith("flights:")
+            )
+            available_flight_ids = {option_id for option_id, _ in flight_options}
+            if selected_flight_id not in available_flight_ids:
+                selected_flight_id = None
+            if selected_flight_id is None:
+                date_options = _flight_date_options(result)
+                if not flight_options and date_options:
+                    pending = PendingTravelSelection(
+                        kind="flight_dates",
+                        option_ids=tuple(option_id for option_id, _ in date_options),
+                        reason="choose",
+                    )
+                    planning = planning.model_copy(
+                        update={
+                            "research": result.model_dump(mode="json"),
+                            "research_key": key,
+                            "pending_travel_selection": pending,
+                            "selected_flight_id": None,
+                            "nearby_flight_dates_checked": True,
+                        }
+                    )
+                    return {
+                        "research": result,
+                        "route": "respond",
+                        "planning": planning,
+                        "assistant_response": _flight_date_selection_text(
+                            date_options,
+                            language=planning.language,
+                        ),
+                    }
+                if len(flight_options) > 1:
+                    pending = PendingTravelSelection(
+                        kind="flight",
+                        option_ids=tuple(option_id for option_id, _ in flight_options),
+                        reason="choose",
+                    )
+                elif len(flight_options) == 1:
+                    selected_flight_id = flight_options[0][0]
+                    pending = None
+                elif _has_no_verified_options(result, "flight"):
+                    pending = PendingTravelSelection(kind="flight", reason="no_results")
+                else:
+                    pending = None
+                if pending is not None:
+                    planning = planning.model_copy(
+                        update={
+                            "research": result.model_dump(mode="json"),
+                            "research_key": key,
+                            "pending_travel_selection": pending,
+                            "selected_flight_id": selected_flight_id,
+                            "nearby_flight_dates_checked": nearby_dates_checked,
+                        }
+                    )
+                    return {
+                        "research": result,
+                        "route": "respond",
+                        "planning": planning,
+                        "assistant_response": _selection_text(
+                            kind="flight",
+                            options=flight_options,
+                            research=result,
+                            language=planning.language,
+                            no_results=pending.reason == "no_results",
+                            nearby_search_note=(
+                                "incomplete"
+                                if any(
+                                    "nearby-date checks failed" in warning
+                                    for warning in result.warnings
+                                )
+                                else "checked"
+                                if any(
+                                    "one-day-shifted trip dates" in warning
+                                    or "already checked" in warning
+                                    for warning in result.warnings
+                                )
+                                else None
+                            ),
+                        ),
+                    }
+
+        if planning.requirements.needs_lodging:
+            hotel_options = _travel_options(result, "hotel")
+            available_hotel_ids = {option_id for option_id, _ in hotel_options}
+            if selected_hotel_id not in available_hotel_ids:
+                selected_hotel_id = None
+            if selected_hotel_id is None:
+                if len(hotel_options) > 1:
+                    pending = PendingTravelSelection(
+                        kind="hotel",
+                        option_ids=tuple(option_id for option_id, _ in hotel_options),
+                        reason="choose",
+                    )
+                elif len(hotel_options) == 1:
+                    selected_hotel_id = hotel_options[0][0]
+                    pending = None
+                elif _has_no_verified_options(result, "hotel"):
+                    pending = PendingTravelSelection(kind="hotel", reason="no_results")
+                else:
+                    pending = None
+                if pending is not None:
+                    planning = planning.model_copy(
+                        update={
+                            "research": result.model_dump(mode="json"),
+                            "research_key": key,
+                            "pending_travel_selection": pending,
+                            "selected_flight_id": selected_flight_id,
+                            "selected_hotel_id": selected_hotel_id,
+                        }
+                    )
+                    return {
+                        "research": result,
+                        "route": "respond",
+                        "planning": planning,
+                        "assistant_response": _selection_text(
+                            kind="hotel",
+                            options=hotel_options,
+                            research=result,
+                            language=planning.language,
+                            no_results=pending.reason == "no_results",
+                        ),
+                    }
+        result = _research_for_selection(
+            result,
+            flight_id=selected_flight_id,
+            hotel_id=selected_hotel_id,
+        )
         return {
             "research": result,
             "route": "synthesize",
-            "planning": planning.model_copy(update={"research_key": key}),
+            "planning": planning.model_copy(
+                update={
+                    "research_key": key,
+                    "research": result.model_dump(mode="json"),
+                    "pending_travel_selection": None,
+                    "selected_flight_id": selected_flight_id,
+                    "selected_hotel_id": selected_hotel_id,
+                }
+            ),
         }
 
     async def standalone(state: PlanningGraphState) -> dict[str, object]:
@@ -622,9 +1350,9 @@ def build_planning_graph(
         reply = await standalone_service.search(request)
         planning = state["planning"].model_copy(
             update={
-                "pending_search": request.model_dump(mode="json")
-                if reply.input_required
-                else None,
+                "pending_search": (
+                    request.model_dump(mode="json") if reply.input_required else None
+                ),
             }
         )
         return {
@@ -640,7 +1368,7 @@ def build_planning_graph(
         data = {
             "requirements": planning.requirements.model_dump(mode="json"),
             "language": planning.language,
-            "research": research.model_dump(mode="json"),
+            "research": research.model_dump(mode="json", exclude={"weather_forecast"}),
             "previous_itinerary": planning.itinerary,
             "request": state["latest_message"],
             "profile_preferences": state.get(
@@ -648,6 +1376,33 @@ def build_planning_graph(
                 PlanningPreferences(),
             ).model_dump(mode="json", exclude={"home_city", "home_country_code"}),
         }
+        weather_notes = (
+            itinerary_weather_notes(
+                start_date=planning.requirements.start_date,
+                end_date=planning.requirements.resolved_end_date,
+                forecast=research.weather_forecast,
+                language=planning.language,
+            )
+            if research.weather_requested or research.weather_forecast is not None
+            else []
+        )
+        data["weather_outlook"] = [
+            {"day_number": note.day_number, "outlook": note.description}
+            for note in weather_notes
+        ]
+        data["max_schedule_items"] = MAX_ITINERARY_ITEMS - len(weather_notes)
+        required_evidence_ids = {
+            item.id
+            for item in research.evidence
+            if (
+                item.kind == "flight"
+                and planning.selected_flight_id is not None
+                and (item.source_id or item.id.removesuffix("-return"))
+                == planning.selected_flight_id
+            )
+            or (item.kind == "hotel" and item.id == planning.selected_hotel_id)
+        }
+        data["required_selected_evidence_ids"] = sorted(required_evidence_ids)
         for attempt in range(2):
             try:
                 proposed = await structured_call(
@@ -658,6 +1413,7 @@ def build_planning_graph(
                     requirements=planning.requirements,
                     research=research,
                     language=planning.language,
+                    required_evidence_ids=required_evidence_ids,
                 )
                 break
             except ModelResponseRefusedError:
@@ -681,6 +1437,16 @@ def build_planning_graph(
         )
         if research.warnings:
             text += "\n\n" + "\n".join(research.warnings)
+        if weather_notes:
+            text += "\n\n" + "\n\n".join(
+                f"{note.title}\n{note.description}" for note in weather_notes
+            )
+        if research.time_zone is None:
+            text += (
+                "\n\nDestination ka timezone verify nahi hua; activity timings dastiyab nahi."
+                if planning.language == "ur-Latn"
+                else "\n\nDestination timezone could not be verified; activity timings are unavailable."
+            )
         return {
             "generated_itinerary": generated,
             "assistant_response": text,

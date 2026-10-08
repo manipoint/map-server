@@ -2,7 +2,7 @@
 
 ## Purpose
 
-WebSocket currently provides authenticated travel chat, heartbeats, processing state, final responses, and structured airport clarification. Durable graph interrupts, explicit cancellation, incremental category results, trip history, and ordinary trip/conversation CRUD are target capabilities.
+WebSocket currently provides authenticated travel chat, heartbeats, processing state, final responses, and structured airport clarification. Flight/hotel itinerary choices are presented in the assistant's text response and submitted as a normal follow-up `travel.request`. Durable graph interrupts, explicit cancellation, incremental category results, trip history, and ordinary trip/conversation CRUD are target capabilities.
 
 Endpoint:
 
@@ -43,6 +43,45 @@ travel.response.failed
 ```
 
 `travel.response.completed` includes the persisted assistant message ID, content, duplicate indicator, and a nullable `itinerary_id`. A non-null itinerary ID lets Flutter offer a deterministic **View itinerary** action and fetch the structured timeline from `GET /itineraries/{itinerary_id}`. Normal chat and search replies return `null`. Cached retries return the same generated itinerary ID. Public response failure codes are `provider_error`, `generation_failed`, and `attempts_exhausted`; no provider body, stack trace, token, or credential is sent to Flutter.
+
+Before itinerary synthesis, multiple verified flight or hotel results are listed
+with numbers. The user replies with a number (for example, `2`) or an exact option
+name in another `travel.request`; the server keeps the pending selection in the
+conversation's planning state. Flights are selected before hotels when both need a
+choice. A single result is used automatically. A verified empty search pauses the
+itinerary and asks the user to revise dates/route/budget or continue without that
+service. These replies use the existing text-message contract and do not introduce
+a new event type.
+
+If the exact round-trip flight dates have no verified options, the planner also
+checks the trip shifted one day earlier and one day later while preserving trip
+length. Those are date suggestions, not a date change: the user must select one,
+after which the backend updates planning dates and runs a fresh exact flight
+search before building the itinerary.
+
+### Itinerary times and weather
+
+In the completion's `rich_content`, select the section with
+`type="itinerary_preview"` and render `days[].activities[]`. The same itinerary
+items are available through the itinerary REST endpoint. Use `starts_at`,
+`ends_at`, `start_time_zone` and `end_time_zone` for the timeline; do not derive
+times from titles or convert everything to the phone's timezone. For example,
+`2099-11-07T08:00:00+09:00` to `2099-11-07T09:00:00+09:00` with
+`start_time_zone="Asia/Tokyo"` represents breakfast from 8–9 AM in Tokyo.
+Durations vary by activity and user preferences; they are not fixed one-hour slots.
+
+When the backend verifies a destination timezone, non-note planned activities
+have start/end times. If timezone lookup fails, the response explains that
+schedule times are unavailable. Flight timestamps remain provider-sourced;
+other activity/transfer times are estimates.
+
+Daily weather is an existing `item_type="note"` activity with a dated title and
+`description`, and null schedule times. Render its description even without a
+time badge. It contains local forecast hours/ranges and exact returned rain/snow
+percentages; `?` denotes unknown and uncovered dates are explicitly unavailable.
+These notes survive persistence, history and cached retries. No new database
+migration or WebSocket event type is required. Older saved drafts retain their
+original data until the user requests a new or revised itinerary.
 
 When flight airport resolution requires a choice, the terminal event is
 `travel.input.required` instead of `travel.response.completed`. It includes the

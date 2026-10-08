@@ -84,7 +84,7 @@ def test_flight_tool_exposes_bounded_public_schema() -> None:
         assert schema["properties"]["origin"]["minLength"] == 2
         assert schema["properties"]["origin"]["maxLength"] == 120
         assert schema["properties"]["max_results"]["minimum"] == 1
-        assert schema["properties"]["max_results"]["maximum"] == 10
+        assert schema["properties"]["max_results"]["maximum"] == 100
         assert "children_ages" in schema["properties"]
         assert "infants_with_seat_ages" in schema["properties"]
         assert "infants_on_lap_ages" in schema["properties"]
@@ -134,10 +134,12 @@ def test_mcp_server_registers_flight_tool_only_when_provider_is_available() -> N
         )
 
         assert [tool.name for tool in await weather_only.list_tools()] == [
-            "get_current_weather"
+            "get_current_weather",
+            "get_weather_forecast",
         ]
         assert [tool.name for tool in await complete.list_tools()] == [
             "get_current_weather",
+            "get_weather_forecast",
             "search_flights",
         ]
 

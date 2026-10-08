@@ -343,7 +343,7 @@ def test_flight_search_tool_exposes_bounded_model_schema() -> None:
         "do not correct spelling" in schema["properties"]["destination"]["description"]
     )
     assert schema["properties"]["max_results"]["minimum"] == 1
-    assert schema["properties"]["max_results"]["maximum"] == 10
+    assert schema["properties"]["max_results"]["maximum"] == 100
     assert "children_ages" in schema["properties"]
     assert "infants_with_seat_ages" in schema["properties"]
     assert "infants_on_lap_ages" in schema["properties"]
@@ -449,7 +449,7 @@ def test_hotel_search_tool_exposes_bounded_model_schema() -> None:
         "check_out_date",
     ]
     assert schema["properties"]["max_results"]["minimum"] == 1
-    assert schema["properties"]["max_results"]["maximum"] == 10
+    assert schema["properties"]["max_results"]["maximum"] == 100
     assert "children_ages" in schema["properties"]
 
 

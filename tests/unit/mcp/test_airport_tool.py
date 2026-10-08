@@ -103,10 +103,12 @@ def test_mcp_server_registers_airport_tool_only_when_configured() -> None:
         )
 
         assert [tool.name for tool in await weather_only.list_tools()] == [
-            "get_current_weather"
+            "get_current_weather",
+            "get_weather_forecast",
         ]
         assert [tool.name for tool in await complete.list_tools()] == [
             "get_current_weather",
+            "get_weather_forecast",
             "resolve_airport",
         ]
 

@@ -29,7 +29,7 @@ def write_manifest(path):
 
 @pytest.fixture
 def snapshot(tmp_path):
-    fixtures = ROOT / "tests/fixtures/travelport"
+    fixtures = ROOT / "tests/fixtures/airports"
     for name in ("airport_directory.json", "flight_metadata.json"):
         (tmp_path / name).write_bytes((fixtures / name).read_bytes())
     (tmp_path / "LICENSE-airportsdata.txt").write_text("Synthetic license\n")

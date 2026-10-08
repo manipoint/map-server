@@ -80,14 +80,15 @@ Use environment variables or a secret manager for deploy-time configuration. Exp
 - `APP_ENV`, `LOG_LEVEL`, `PUBLIC_BASE_URL`
 - `DATABASE_URL`
 - `JWT_SIGNING_KEY`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`
-- `GROQ_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`
+- `GOOGLE_API_KEY` (required for the Gemini model gateway)
 - `MODEL_TIMEOUT_SECONDS`, `TRAVEL_RESPONSE_TIMEOUT_SECONDS`, `MAX_TOOL_ROUNDS`
 - `ASSISTANT_RUN_LEASE_SECONDS`, `ASSISTANT_RUN_COMPLETION_MARGIN_SECONDS`
 - `WEATHER_API_KEY` and `GOOGLE_PLACES_API_KEY`
 - `PLACES_PROVIDER` and `CURRENCY_PROVIDER`
-- Travelport configuration is preparatory; flight/hotel tools remain disabled.
-  Remove retired `FLIGHT_PROVIDER`, `HOTEL_PROVIDER`, and `DUFFEL_*` variables
-  and secret bindings from deployment configuration.
+- `SERPAPI_API_KEY`; set `FLIGHT_PROVIDER=serpapi` and/or
+  `HOTEL_PROVIDER=serpapi` to enable search. Flight search also needs the
+  airport-directory and timezone-metadata snapshots described in
+  [SerpApi integration](serpapi-integration.md).
 - `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_TRACING`,
   `LANGSMITH_ENDPOINT`, `LANGSMITH_TRACING_SAMPLING_RATE`
 - Route-specific model configuration and request budget settings
@@ -214,7 +215,7 @@ Collect structured logs, metrics, and traces with a shared request/run correlati
 - Active WebSocket connections and reconnect frequency.
 - Graph-node duration and terminal outcomes.
 - Provider latency, rate limits, failures, and open circuits.
-- Model tokens, estimated cost, fallback rate, and schema failures.
+- Model tokens, estimated cost, provider errors, latency, and schema failures.
 - Database connections, transaction latency, and slow queries.
 
 Logs must redact authorization headers, cookies, credentials, and sensitive request fields.

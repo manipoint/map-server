@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from datetime import date
 
 import httpx
 import pytest
@@ -169,3 +170,115 @@ def test_weather_api_client_rejects_a_malformed_provider_payload() -> None:
             settings=create_settings(),
             city="Lahore",
         )
+
+
+def test_weather_forecast_normalizes_hourly_probabilities_and_local_time() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "location": {
+                    "name": "Tokyo",
+                    "country": "Japan",
+                    "tz_id": "Asia/Tokyo",
+                },
+                "forecast": {
+                    "forecastday": [
+                        {
+                            "date": "2026-10-08",
+                            "day": {
+                                "condition": {"text": "Patchy rain"},
+                                "maxtemp_c": 18,
+                                "mintemp_c": 11,
+                                "totalprecip_mm": 3.2,
+                                "totalsnow_cm": 0,
+                            },
+                            "hour": [
+                                {
+                                    "time_epoch": 1791435600,
+                                    "condition": {"text": "Rain"},
+                                    "temp_c": 16,
+                                    "chance_of_rain": 90,
+                                    "chance_of_snow": 0,
+                                    "precip_mm": 2.1,
+                                    "snow_cm": 0,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WeatherApiClient(
+                http_client=http_client, settings=create_settings()
+            )
+            return await client.get_forecast(
+                city="Tokyo",
+                start_date=date(2026, 10, 8),
+                end_date=date(2026, 10, 8),
+            )
+
+    forecast = asyncio.run(exercise())
+    hour = forecast.days[0].hours[0]
+    assert forecast.time_zone == "Asia/Tokyo"
+    assert hour.chance_of_rain_percent == 90
+    assert hour.chance_of_snow_percent == 0
+    assert hour.local_time.hour == 14
+    assert requests[0].url.path.endswith("/forecast.json")
+    assert requests[0].url.params["q"] == "Tokyo"
+
+
+def test_weather_forecast_rejects_invalid_timezone_without_leaking_provider_data() -> (
+    None
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "location": {"name": "Tokyo", "tz_id": "invalid/timezone"},
+                "forecast": {
+                    "forecastday": [
+                        {
+                            "date": "2026-10-08",
+                            "day": {
+                                "condition": {"text": "Sunny"},
+                                "maxtemp_c": 18,
+                                "mintemp_c": 11,
+                                "totalprecip_mm": 0,
+                            },
+                            "hour": [
+                                {
+                                    "time_epoch": 1791435600,
+                                    "condition": {"text": "Rain"},
+                                    "temp_c": 16,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WeatherApiClient(
+                http_client=http_client, settings=create_settings()
+            )
+            return await client.get_forecast(
+                city="Tokyo",
+                start_date=date(2026, 10, 8),
+                end_date=date(2026, 10, 8),
+            )
+
+    with pytest.raises(ProviderUnavailableError, match="invalid forecast"):
+        asyncio.run(exercise())

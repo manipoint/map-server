@@ -273,7 +273,7 @@ def test_offer_preserves_decimal_group_total_and_normalizes_currency() -> None:
 
 
 def test_offer_accepts_timezone_aware_expiry() -> None:
-    """A Duffel expiry should remain an absolute book-before instant."""
+    """An offer expiry should remain an absolute book-before instant."""
 
     expires_at = datetime(2026, 9, 10, 7, 30, tzinfo=UTC)
 
@@ -370,12 +370,12 @@ def test_search_result_rejects_naive_search_timestamp() -> None:
         )
 
 
-def test_search_result_limits_provider_offers_to_ten() -> None:
-    """Provider payloads should stay within the MCP and LLM cost boundary."""
+def test_search_result_limits_provider_offers_to_one_hundred() -> None:
+    """Provider payloads should stay within the search response boundary."""
 
     with pytest.raises(ValidationError):
         FlightSearchResult(
             status=FlightSearchStatus.OFFERS_AVAILABLE,
             searched_at=datetime.now(UTC),
-            offers=[create_offer(offer_id=f"offer-{index}") for index in range(11)],
+            offers=[create_offer(offer_id=f"offer-{index}") for index in range(101)],
         )

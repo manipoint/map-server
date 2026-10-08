@@ -1,5 +1,6 @@
 """Graph-facing MCP client."""
 
+from datetime import date
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -14,7 +15,7 @@ from app.mcp.schemas.flights import (
 )
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
-from app.mcp.schemas.weather import CurrentWeatherInput
+from app.mcp.schemas.weather import CurrentWeatherInput, WeatherForecastInput
 from app.providers.airports.schemas import AirportSearchInput
 from app.providers.currency.schemas import (
     CurrencyConversionInput,
@@ -23,7 +24,7 @@ from app.providers.currency.schemas import (
 from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
-from app.providers.weather.schemas import CurrentWeather
+from app.providers.weather.schemas import CurrentWeather, WeatherForecast
 
 HotelSearchResponse = HotelSearchResult | HotelSearchGuidance
 PlaceSearchResponse = PlaceSearchResult | PlaceSearchGuidance
@@ -35,6 +36,7 @@ FlightSearchResponse = (
 Result = TypeVar("Result")
 AIRPORT_RESPONSE_ADAPTER = TypeAdapter(AirportResolution)
 WEATHER_RESPONSE_ADAPTER = TypeAdapter(CurrentWeather)
+WEATHER_FORECAST_RESPONSE_ADAPTER = TypeAdapter(WeatherForecast)
 HOTEL_SEARCH_RESPONSE_ADAPTER = TypeAdapter(HotelSearchResponse)
 PLACE_SEARCH_RESPONSE_ADAPTER = TypeAdapter(PlaceSearchResponse)
 CURRENCY_CONVERSION_RESPONSE_ADAPTER = TypeAdapter(CurrencyConversionResponse)
@@ -104,6 +106,20 @@ class TravelMcpClient:
             label="Current-weather",
             request=CurrentWeatherInput(city=city),
             adapter=WEATHER_RESPONSE_ADAPTER,
+            envelope=False,
+        )
+
+    async def get_weather_forecast(
+        self, *, city: str, start_date: date, end_date: date
+    ) -> WeatherForecast:
+        """Fetch a verified normalized forecast through the weather MCP tool."""
+        return await self._call(
+            name="get_weather_forecast",
+            label="Weather-forecast",
+            request=WeatherForecastInput(
+                city=city, start_date=start_date, end_date=end_date
+            ),
+            adapter=WEATHER_FORECAST_RESPONSE_ADAPTER,
             envelope=False,
         )
 

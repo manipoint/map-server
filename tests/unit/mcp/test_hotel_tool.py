@@ -96,7 +96,11 @@ def test_hotel_tool_exposes_bounded_public_schema() -> None:
         assert properties["destination"]["minLength"] == 2
         assert properties["destination"]["maxLength"] == 120
         assert properties["max_results"]["minimum"] == 1
-        assert properties["max_results"]["maximum"] == 10
+        assert properties["max_results"]["maximum"] == 100
+        assert any(
+            option.get("exclusiveMinimum") == 0
+            for option in properties["max_total_price"]["anyOf"]
+        )
         assert properties["children_ages"]["anyOf"][0]["items"]["minimum"] == 0
         assert properties["children_ages"]["anyOf"][0]["items"]["maximum"] == 17
 
@@ -114,10 +118,12 @@ def test_mcp_server_registers_hotel_tool_only_when_service_is_available() -> Non
         )
 
         assert [tool.name for tool in await weather_only.list_tools()] == [
-            "get_current_weather"
+            "get_current_weather",
+            "get_weather_forecast",
         ]
         assert [tool.name for tool in await with_hotels.list_tools()] == [
             "get_current_weather",
+            "get_weather_forecast",
             "search_hotels",
         ]
 
@@ -139,6 +145,8 @@ def test_hotel_tool_preserves_family_rooms_and_preferences() -> None:
                 "children_ages": [4, 8],
                 "rooms": 1,
                 "free_cancellation_only": True,
+                "currency": "PKR",
+                "max_total_price": 200000,
                 "max_results": 3,
             },
         )
@@ -150,6 +158,8 @@ def test_hotel_tool_preserves_family_rooms_and_preferences() -> None:
         assert request.total_guests == 3
         assert request.rooms == 1
         assert request.free_cancellation_only is True
+        assert request.currency == "PKR"
+        assert request.max_total_price == 200000
         assert request.max_results == 3
 
     asyncio.run(exercise())

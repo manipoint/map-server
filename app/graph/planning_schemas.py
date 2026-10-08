@@ -79,7 +79,20 @@ class ResearchedItineraryItem(GeneratedItineraryItem):
     end_time_zone: None = None
     evidence_id: str | None = Field(default=None, max_length=64)
     generic_activity: (
-        Literal["explore", "walk", "meal", "transfer", "rest", "free_time", "note"]
+        Literal[
+            "explore",
+            "walk",
+            "meal",
+            "breakfast",
+            "lunch",
+            "dinner",
+            "hike",
+            "photography",
+            "transfer",
+            "rest",
+            "free_time",
+            "note",
+        ]
         | None
     ) = None
 

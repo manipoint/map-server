@@ -45,7 +45,7 @@ class FlightSearchInput(BaseModel):
     nonstop_only: bool = False
     currency: CurrencyCode = "USD"
 
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int = Field(default=100, ge=1, le=100)
 
     @field_validator("origin", "destination", mode="before")
     @classmethod
@@ -201,12 +201,13 @@ class FlightOffer(BaseModel):
     offer_id: str = Field(min_length=1, max_length=256)
     outbound: FlightItinerary
     return_itinerary: FlightItinerary | None = None
-    total_price: Decimal = Field(ge=0)
+    total_price: Decimal | None = Field(default=None, ge=0)
     currency: CurrencyCode
     traveler_count: int = Field(ge=1)
     seats_available: int | None = Field(default=None, ge=0)
     refundable: bool | None = None
     expires_at: datetime | None = None
+    booking_url: str | None = Field(default=None, max_length=2048)
 
     @field_validator("expires_at")
     @classmethod
@@ -225,7 +226,7 @@ class FlightSearchResult(BaseModel):
 
     status: FlightSearchStatus
     searched_at: datetime
-    offers: list[FlightOffer] = Field(default_factory=list, max_length=10)
+    offers: list[FlightOffer] = Field(default_factory=list, max_length=100)
     message: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")

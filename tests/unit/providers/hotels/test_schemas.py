@@ -97,7 +97,21 @@ def test_hotel_search_normalizes_destination_and_computes_party() -> None:
     assert request.nights == 2
     assert request.total_guests == 3
     assert request.rooms == 1
-    assert request.max_results == 5
+    assert request.max_results == 10
+    assert request.max_total_price is None
+
+
+def test_hotel_search_accepts_a_positive_whole_stay_budget() -> None:
+    request = create_search(max_total_price=Decimal("900.50"), currency="PKR")
+
+    assert request.max_total_price == Decimal("900.50")
+    assert request.currency == "PKR"
+
+
+@pytest.mark.parametrize("budget", [0, -1, Decimal("NaN"), Decimal("Infinity")])
+def test_hotel_search_rejects_invalid_whole_stay_budgets(budget) -> None:
+    with pytest.raises(ValidationError):
+        create_search(max_total_price=budget)
 
 
 @pytest.mark.parametrize(
@@ -114,7 +128,7 @@ def test_hotel_search_requires_checkout_after_checkin(
 
 
 def test_hotel_search_accepts_exactly_ninety_nine_nights() -> None:
-    """Duffel's documented maximum stay should remain valid."""
+    """The supported maximum stay should remain valid."""
 
     check_in = date(2026, 9, 10)
     request = create_search(
@@ -126,7 +140,7 @@ def test_hotel_search_accepts_exactly_ninety_nine_nights() -> None:
 
 
 def test_hotel_search_rejects_more_than_ninety_nine_nights() -> None:
-    """A stay longer than Duffel supports should fail locally."""
+    """A stay longer than supported should fail locally."""
 
     check_in = date(2026, 9, 10)
 
@@ -212,7 +226,7 @@ def test_resolved_location_rejects_out_of_range_coordinates(
     latitude: float,
     longitude: float,
 ) -> None:
-    """Invalid coordinates must not be sent to Duffel."""
+    """Invalid coordinates must not be sent to a search provider."""
 
     with pytest.raises(ValidationError):
         ResolvedLocation(
@@ -413,7 +427,7 @@ def test_hotel_result_rejects_naive_search_time() -> None:
         )
 
 
-def test_hotel_result_rejects_more_than_ten_options() -> None:
+def test_hotel_result_rejects_more_than_one_hundred_options() -> None:
     """Unexpected output must stay inside the model payload boundary."""
 
     with pytest.raises(ValidationError):
@@ -422,6 +436,6 @@ def test_hotel_result_rejects_more_than_ten_options() -> None:
             searched_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
             location=create_location(),
             options=[
-                create_option(search_result_id=f"srr_{index}") for index in range(11)
+                create_option(search_result_id=f"srr_{index}") for index in range(101)
             ],
         )

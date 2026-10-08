@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Sequence
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 import app.graph.subgraphs.model_gateway as model_gateway
 from app.config import Settings
+from app.graph.planning_schemas import RequirementExtraction, ResearchedItinerary
 from app.graph.subgraphs.model_gateway import (
     FallbackModelGateway,
     ModelGatewayError,
@@ -56,6 +57,35 @@ class FakeChatModel:
                 return {"raw": raw, "parsed": None, "parsing_error": None}
 
         return StructuredModel()
+
+
+@pytest.mark.parametrize("schema", [RequirementExtraction, ResearchedItinerary])
+def test_extraction_reasoning_does_not_mutate_shared_gemini_client(monkeypatch, schema):
+    client = model_gateway.ChatGoogleGenerativeAI(
+        model="gemini-3.8-flash", api_key="test-key", reasoning_effort="medium"
+    )
+    observed = []
+    runnable = MagicMock()
+    runnable.ainvoke = AsyncMock(return_value={"raw": AIMessage(content="{}")})
+
+    def structured_output(self, schema, **kwargs):
+        observed.append((self.reasoning_effort, self.client))
+        return runnable
+
+    monkeypatch.setattr(
+        model_gateway.ChatGoogleGenerativeAI,
+        "with_structured_output",
+        structured_output,
+    )
+    gateway = FallbackModelGateway([ModelProvider("google", client)])
+    asyncio.run(
+        gateway.generate(messages=[HumanMessage(content="Plan a trip")], schema=schema)
+    )
+    assert observed == [
+        ("low" if schema is RequirementExtraction else "medium", client.client)
+    ]
+    assert client.reasoning_effort == "medium"
+    runnable.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422, 429, 500, 503])
@@ -116,8 +146,8 @@ def test_gateway_returns_the_first_valid_provider_response() -> None:
     fallback = FakeChatModel(AIMessage(content="Fallback itinerary"))
     gateway = FallbackModelGateway(
         [
-            ModelProvider(name="groq", client=primary),
-            ModelProvider(name="openai", client=fallback),
+            ModelProvider(name="first", client=primary),
+            ModelProvider(name="second", client=fallback),
         ]
     )
     messages = [HumanMessage(content="Plan a Lahore trip")]
@@ -375,36 +405,19 @@ def test_gateway_allows_task_cancellation_to_propagate() -> None:
     assert fallback.calls == []
 
 
-def test_build_model_gateway_uses_google_as_primary_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Configured providers should use Gemini first, then OpenAI and Groq."""
-
-    groq_constructor = FakeModelConstructor()
-    google_constructor = FakeModelConstructor()
-    openai_constructor = FakeModelConstructor()
-    monkeypatch.setattr(model_gateway, "ChatGroq", groq_constructor)
-    monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", google_constructor)
-    monkeypatch.setattr(model_gateway, "ChatOpenAI", openai_constructor)
+def test_build_model_gateway_uses_google_as_primary_provider(monkeypatch):
+    """The runtime creates only Gemini with bounded SDK settings."""
+    constructor = FakeModelConstructor()
+    monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", constructor)
     settings = create_settings(
-        groq_api_key=SecretStr("test-groq-key"),
         google_api_key=SecretStr("test-google-key"),
-        openai_api_key=SecretStr("test-openai-key"),
-        groq_model="groq-test-model",
         google_model="google-test-model",
-        openai_model="openai-test-model",
         model_timeout_seconds=45.0,
         assistant_run_lease_seconds=120,
     )
-
     gateway = build_model_gateway(settings)
-
-    assert [provider.name for provider in gateway.providers] == [
-        "google",
-        "openai",
-        "groq",
-    ]
-    assert google_constructor.calls == [
+    assert [provider.name for provider in gateway.providers] == ["google"]
+    assert constructor.calls == [
         {
             "model": "google-test-model",
             "api_key": settings.google_api_key,
@@ -413,58 +426,17 @@ def test_build_model_gateway_uses_google_as_primary_provider(
             "max_output_tokens": 8192,
         }
     ]
-    assert openai_constructor.calls == [
-        {
-            "model": "openai-test-model",
-            "api_key": settings.openai_api_key,
-            "timeout": 45.0,
-            "max_retries": 0,
-            "max_tokens": 8192,
-            "reasoning_effort": None,
-        }
-    ]
-    assert groq_constructor.calls == [
-        {
-            "model": "groq-test-model",
-            "api_key": settings.groq_api_key,
-            "timeout": 45.0,
-            "max_retries": 0,
-            "max_tokens": 8192,
-        }
-    ]
-    assert openai_constructor.models[0].bound_tools_calls == []
-    assert google_constructor.models[0].bound_tools_calls == []
-    assert groq_constructor.models[0].bound_tools_calls == []
+    assert constructor.models[0].bound_tools_calls == []
 
 
-def test_build_model_gateway_binds_tools_to_all_configured_providers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """All fallback providers should expose the same tool contract."""
-
-    groq_constructor = FakeModelConstructor()
-    google_constructor = FakeModelConstructor()
-    openai_constructor = FakeModelConstructor()
-    monkeypatch.setattr(model_gateway, "ChatGroq", groq_constructor)
-    monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", google_constructor)
-    monkeypatch.setattr(model_gateway, "ChatOpenAI", openai_constructor)
+def test_build_model_gateway_binds_tools_to_gemini(monkeypatch):
+    constructor = FakeModelConstructor()
+    monkeypatch.setattr(model_gateway, "ChatGoogleGenerativeAI", constructor)
     weather_tool = MagicMock(spec=BaseTool)
-    settings = create_settings(
-        groq_api_key=SecretStr("test-groq-key"),
-        google_api_key=SecretStr("test-google-key"),
-        openai_api_key=SecretStr("test-openai-key"),
-    )
-
+    settings = create_settings(google_api_key=SecretStr("test-google-key"))
     gateway = build_model_gateway(settings, tools=[weather_tool])
-
-    assert [provider.name for provider in gateway.providers] == [
-        "google",
-        "openai",
-        "groq",
-    ]
-    assert openai_constructor.models[0].bound_tools_calls == [[weather_tool]]
-    assert google_constructor.models[0].bound_tools_calls == [[weather_tool]]
-    assert groq_constructor.models[0].bound_tools_calls == [[weather_tool]]
+    assert [provider.name for provider in gateway.providers] == ["google"]
+    assert constructor.models[0].bound_tools_calls == [[weather_tool]]
 
 
 def test_build_model_gateway_can_use_google_as_the_only_provider(
@@ -486,5 +458,5 @@ def test_build_model_gateway_can_use_google_as_the_only_provider(
 def test_build_model_gateway_rejects_missing_provider_credentials() -> None:
     """Startup should fail clearly when no LLM provider can be constructed."""
 
-    with pytest.raises(ValueError, match="at least one model provider is required"):
+    with pytest.raises(ValueError, match="GOOGLE_API_KEY is required"):
         build_model_gateway(create_settings())

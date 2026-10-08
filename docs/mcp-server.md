@@ -21,6 +21,7 @@ arguments and results are excluded.
 | `search_hotels` | Search available hotel offers for dates, rooms, guests, and budget. | No |
 | `search_places` | Find attractions or activities by location and interests. | No |
 | `get_current_weather` | Return current conditions for a city. | No |
+| `get_weather_forecast` | Return covered trip dates with daily/hourly weather and verified destination timezone. | No |
 | `convert_currency` | Convert a monetary amount using an observed exchange rate. | No |
 
 Potential later tools include route estimates, offer refresh, and booking-related tools. Any tool that creates a booking, payment, or cancellation requires explicit user confirmation and a separate design review.
@@ -30,6 +31,7 @@ Potential later tools include route estimates, offer refresh, and booking-relate
 | Capability | Implemented adapter | Runtime wiring |
 | --- | --- | --- |
 | Current weather | WeatherAPI | Always registered by the current lifespan. |
+| Dated forecast | WeatherAPI | Registered with weather; called during itinerary research. |
 | Airport/city IATA resolution | Replacement pending | Not registered by application startup. |
 | Flights | Replacement pending | Not registered by application startup. |
 | Hotels | Replacement pending | Not registered by application startup. |
@@ -98,6 +100,15 @@ resolution as well, avoiding both airport and fare-provider calls.
 ```
 
 Unknown facts remain `null`; the tool must not infer them.
+
+`get_weather_forecast` takes `city`, `start_date` and `end_date` (inclusive, at most
+30 trip days). `WEATHER_FORECAST_API_URL` defaults to the HTTPS WeatherAPI
+`forecast.json` endpoint and uses the existing `WEATHER_API_KEY`. Actual returned
+coverage depends on the provider subscription and forecast horizon; an empty
+`days` collection may still carry a verified timezone. Hourly timestamps must be
+aware, ordered, unique, and consistent with their local day and IANA timezone.
+Missing precipitation probabilities remain `null`. WeatherAPI's forecast endpoint
+accepts up to 14 days: <https://www.weatherapi.com/docs/>.
 
 ## Provider adapter boundary
 
@@ -169,7 +180,8 @@ These bullets are the target retry policy. Current adapters use strict HTTP time
 - Do not retry invalid credentials, malformed input, unsupported routes, or expired offers.
 - Total retries must fit inside the graph request deadline.
 
-LLM fallback is unrelated to travel-provider fallback. A failed flight API must not cause a switch from Groq to OpenAI.
+The model gateway currently uses Gemini only. A failed flight API is handled by
+the travel-tool error policy; changing model providers cannot repair that outage.
 
 ## Normalization and ranking
 

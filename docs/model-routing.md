@@ -8,38 +8,21 @@ Structured operations such as flight searches, hotel availability, weather looku
 
 ## Current implemented baseline
 
-`FallbackModelGateway` is configured from server-side settings and uses this provider priority when the corresponding API key is present:
+The runtime is configured for Google Gemini only. `build_model_gateway` creates one Gemini client using `GOOGLE_API_KEY`; the legacy `FallbackModelGateway` name remains as a shared gateway interface, but no cross-provider fallback occurs. SDK retries are disabled, model input and output are bounded, and the application applies a shared 75-second deadline to graph execution and atomic reply persistence. A missing Gemini key fails startup with a configuration error.
 
-```text
-Google Gemini → OpenAI → Groq
-```
-
-Each provider client receives `MODEL_TIMEOUT_SECONDS`. Provider-local retries are disabled (`0`) because retry/fallback ownership belongs to the gateway; this prevents hidden repeated calls and keeps cost/latency bounded. The gateway returns the first non-empty `AIMessage` response or raises a safe `ModelGatewayError` after every configured provider fails.
-
-Current configured model defaults are `gemini-3.8-flash` on Google, `gpt-6-luna` on OpenAI, and `openai/gpt-oss-20b` on Groq.
-
-The gateway stops on explicit refusals and HTTP 400/401/403/404/413/422. Transient errors can fall through to another provider; SDK retries are disabled. `TravelResponseService` now wraps graph execution and atomic reply persistence in a shared 75-second default deadline, so the former theoretical 270-second model path is cancelled before the 120-second assistant lease expires. Configuration also reserves a minimum 15-second margin for timeout/failure handling; see [Reliability and SPOF Review](reliability.md).
-
-The active planner uses tool-free extraction and synthesis routes with a shared provider chain; standalone tool requests use typed deterministic dispatch. Provider fallback and correlated LangSmith tracing are implemented; economy/quality profiles and circuit breakers remain planned work.
+The active planner uses tool-free structured extraction and synthesis. Requirement extraction uses low reasoning effort to reduce latency; synthesis retains the configured model default. Gemini receives a simplified generation schema because the complete extraction schema was rejected by the configured endpoint with HTTP 400. The backend validates results against the original Pydantic schema and allows one bounded repair attempt. Provider errors become typed failures; they do not route to another model vendor. See [Reliability and SPOF Review](reliability.md).
 
 ## Routing classes
 
-The classes and example model chains below are a target design, not implemented configuration.
+The following are design targets, not active runtime configuration.
 
 | Route | Appropriate work | Behavior |
 | --- | --- | --- |
 | `none` | Validation, provider search, filtering, sorting | Deterministic code only |
-| `economy` | Intent extraction, concise summaries, simple comparisons | Cheapest evaluated model first |
-| `quality` | Multi-constraint itinerary synthesis or difficult repair | Stronger evaluated model chain |
+| `economy` | Intent extraction, concise summaries, simple comparisons | A selected model with measured quality and cost |
+| `quality` | Multi-constraint itinerary synthesis or difficult repair | A selected model with measured quality and cost |
 
-The initial configurable model order is:
-
-| Route | Primary | First fallback | Second fallback |
-| --- | --- | --- | --- |
-| Economy | `groq:openai/gpt-oss-20b` | `google_genai:gemini-3.5-flash-lite` | `openai:gpt-5.6-luna` |
-| Quality | `google_genai:gemini-3.6-flash` | `openai:gpt-5.6-terra` | `groq:openai/gpt-oss-120b` |
-
-Model identifiers and order belong in configuration, not business logic. Availability, pricing, tool support, and output quality must be verified before each production release.
+Model identifiers, availability, pricing, tool support, and output quality must be verified before production changes.
 
 ## Decision flow
 
@@ -47,60 +30,32 @@ Model identifiers and order belong in configuration, not business logic. Availab
 flowchart TD
     A[Receive graph task] --> B{Can deterministic code solve it?}
     B -- Yes --> C[Run code or MCP tool]
-    B -- No --> D{Complex synthesis required?}
-    D -- No --> E[Select economy route]
-    D -- Yes --> F[Select quality route]
-    E --> G[Invoke configured primary]
-    F --> G
-    G --> H{Valid structured result?}
-    H -- Yes --> I[Record usage and return]
-    H -- No --> J{Error is fallback eligible?}
-    J -- No --> K[Return typed failure]
-    J -- Yes --> L{Another provider available?}
-    L -- Yes --> M[Apply bounded delay and invoke next]
-    M --> H
-    L -- No --> N[Return service unavailable]
+    B -- No --> D[Invoke Gemini with bounded input and schema]
+    D --> E{Valid structured result?}
+    E -- Yes --> F[Record usage and return]
+    E -- No --> G[Repair once or return typed failure]
 ```
 
-## Fallback eligibility
+## Provider failure behavior
 
-This table describes future per-provider retry and circuit-breaker behavior. The implemented gateway already stops on refusals and non-transient HTTP errors; it never retries the same SDK client within one gateway call.
+A single configured model vendor creates a model-service availability dependency. Gemini rate limits, outages, invalid credentials, or incompatible schemas can fail planning requests. The backend classifies these errors and surfaces a stable application failure. It does not retry against another vendor. SDK retries stay disabled to bound hidden repeated calls and latency.
 
-| Condition | Retry same provider | Try next model | Notes |
-| --- | ---: | ---: | --- |
-| Timeout or temporary network failure | Once | Yes | Respect the request deadline |
-| Rate limit or exhausted provider quota | No | Yes | Open a temporary circuit |
-| Provider 5xx or model unavailable | Once when safe | Yes | Use bounded exponential backoff |
-| Invalid or malformed structured output | One repair attempt | Yes | Do not loop indefinitely |
-| Invalid user input | No | No | Ask for or report missing input |
-| Safety refusal | No | No | Preserve the refusal semantics |
-| MCP or travel-provider failure | Provider policy | No | Changing the LLM cannot repair a tool outage |
-| Authentication or configuration error | No | No | Alert operators; do not conceal it with fallback |
-
-All retries and fallbacks must share a single end-to-end deadline. The outer graph deadline now enforces that invariant even though each individual model client retains its configured per-call timeout. Future routing should additionally pass the remaining budget to each provider for clearer telemetry and earlier rejection.
+| Condition | Runtime behavior |
+| --- | --- |
+| Timeout, network failure, 429, or 5xx | Return typed provider failure under the request deadline |
+| HTTP 400/401/403/404/413/422 | Return typed provider/configuration failure |
+| Safety refusal | Preserve refusal semantics; do not retry |
+| Invalid structured result | Use the planner's single bounded repair, then fail safely |
+| Invalid user input | Ask for missing or conflicting trip requirements |
+| MCP or travel-provider failure | Handle within the affected travel tool; changing the LLM cannot repair it |
 
 ## Stable model contract
 
-Each route exposes one internal interface:
+The gateway exposes a provider-independent interface with versioned prompts, bounded input, a Pydantic output schema, a maximum completion size, and consistent error categories. LangGraph controls tool execution; the current extraction and synthesis calls do not expose callable tools.
 
-- A versioned system instruction.
-- A constrained input context.
-- A Pydantic output schema.
-- A maximum completion size.
-- A list of allowed tools, usually empty because LangGraph controls tool execution.
-- Consistent error categories independent of provider.
+Every model or prompt change should pass the structured-output and multilingual evaluation set before release.
 
-Every configured fallback must pass the same structured-output and multilingual evaluation set before it is enabled.
-
-Google receives a simplified generation schema that preserves object structure,
-required fields, references, unions, enums and extra-property restrictions.
-Defaults, titles, string formats/patterns and size/numeric bounds are omitted
-from that provider's generation schema: the full extraction schema was rejected
-by the configured endpoint with HTTP 400. The planning workflow still validates
-returned JSON against the original Pydantic model and retains its bounded repair
-attempt, so these constraints remain enforced by the backend. Other providers
-continue receiving the original model schema. A synthetic live extraction request
-validated this compatibility path; it is not a complete travel-planning evaluation.
+Gemini receives a simplified generation schema that preserves object structure, required fields, references, unions, enums, and extra-property restrictions. Defaults, titles, formats, patterns, and size or numeric bounds are omitted from the generation schema; the full extraction schema was rejected by the configured endpoint with HTTP 400. Results are validated against the original Pydantic model in the backend, with one bounded repair attempt. This schema projection does not weaken server-side validation.
 
 ## Implemented token and admission bounds
 

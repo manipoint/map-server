@@ -21,6 +21,7 @@ class HotelSearchGuidance(BaseModel):
         "location_not_found",
         "location_ambiguous",
         "invalid_dates",
+        "unsupported_request",
     ]
     message: str = Field(min_length=1, max_length=500)
     candidates: list[LocationCandidateText] = Field(

@@ -69,8 +69,8 @@ def register_flight_tools(
         ] = "USD",
         max_results: Annotated[
             int,
-            Field(ge=1, le=10),
-        ] = 5,
+            Field(ge=1, le=100),
+        ] = 100,
     ) -> FlightSearchResult | FlightSearchGuidance | FlightSearchPreparationGuidance:
         """Resolve route locations and execute one safe flight search."""
 

@@ -41,5 +41,9 @@ class UnsupportedFlightRequestError(Exception):
     """Raised when a valid flight request exceeds configured capabilities."""
 
 
+class UnsupportedHotelRequestError(Exception):
+    """Raised when a valid hotel search exceeds provider capabilities."""
+
+
 class InvalidCursorError(ValueError):
     """Raised when a pagination cursor cannot be safely decoded."""

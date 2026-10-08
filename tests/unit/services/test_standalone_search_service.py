@@ -70,6 +70,50 @@ def test_current_weather_and_conversion_render_only_provider_data():
     client.get_current_weather.assert_awaited_once_with(city="Lahore")
 
 
+def test_hotel_request_requires_amount_for_specified_budget():
+    with pytest.raises(ValueError, match="requires max_total_price"):
+        HotelsRequest(
+            kind="hotels",
+            budget_decision="specified",
+            arguments={
+                "destination": "Lahore",
+                "check_in_date": "2026-11-07",
+                "check_out_date": "2026-11-10",
+            },
+        )
+
+
+def test_hotel_no_limit_decision_allows_unfiltered_search():
+    request = HotelsRequest(
+        kind="hotels",
+        budget_decision="no_limit",
+        arguments={
+            "destination": "Lahore",
+            "check_in_date": "2026-11-07",
+            "check_out_date": "2026-11-10",
+        },
+    )
+
+    assert request.arguments.max_total_price is None
+
+
+def test_hotel_specified_budget_preserves_total_and_currency():
+    request = HotelsRequest(
+        kind="hotels",
+        budget_decision="specified",
+        arguments={
+            "destination": "Lahore",
+            "check_in_date": "2026-11-07",
+            "check_out_date": "2026-11-10",
+            "currency": "PKR",
+            "max_total_price": "200000",
+        },
+    )
+
+    assert request.arguments.max_total_price == 200000
+    assert request.arguments.currency == "PKR"
+
+
 @pytest.mark.parametrize(
     "failure",
     [TimeoutError(), ProviderUnavailableError("private"), asyncio.CancelledError()],

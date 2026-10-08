@@ -1,6 +1,7 @@
 """Hotel-search MCP tool registration."""
 
 from datetime import date
+from decimal import Decimal
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -10,6 +11,7 @@ from app.common.exceptions import (
     AmbiguousLocationError,
     InvalidTravelDateError,
     LocationNotFoundError,
+    UnsupportedHotelRequestError,
 )
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.providers.hotels.schemas import (
@@ -33,7 +35,9 @@ def register_hotel_tools(
             "Search current hotel availability for a destination, dates, "
             "rooms, adults, and exact child ages. Include the country or "
             "region when known to avoid ambiguous destinations. A search "
-            "price is not a final booking quote. This tool does not book."
+            "price is not a final booking quote. Pass max_total_price only "
+            "when the user gave a budget for the entire stay; never infer it "
+            "from the overall trip budget. This tool does not book."
         ),
     )
     async def search_hotels(
@@ -44,7 +48,9 @@ def register_hotel_tools(
         children_ages: list[HotelChildAge] | None = None,
         rooms: Annotated[int, Field(ge=1)] = 1,
         free_cancellation_only: bool = False,
-        max_results: Annotated[int, Field(ge=1, le=10)] = 5,
+        currency: Annotated[str, Field(min_length=3, max_length=3)] = "USD",
+        max_total_price: Annotated[Decimal | None, Field(gt=0)] = None,
+        max_results: Annotated[int, Field(ge=1, le=100)] = 10,
     ) -> HotelSearchResult | HotelSearchGuidance:
         """Validate, resolve, and execute one hotel search."""
         request = HotelSearchInput(
@@ -55,6 +61,8 @@ def register_hotel_tools(
             children_ages=children_ages or [],
             rooms=rooms,
             free_cancellation_only=free_cancellation_only,
+            currency=currency,
+            max_total_price=max_total_price,
             max_results=max_results,
         )
         try:
@@ -72,3 +80,5 @@ def register_hotel_tools(
             )
         except InvalidTravelDateError as error:
             return HotelSearchGuidance(status="invalid_dates", message=str(error))
+        except UnsupportedHotelRequestError as error:
+            return HotelSearchGuidance(status="unsupported_request", message=str(error))

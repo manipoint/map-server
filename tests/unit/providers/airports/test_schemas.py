@@ -74,7 +74,7 @@ def test_airport_option_normalizes_codes_and_builds_readable_label() -> None:
 
 
 def test_airport_option_falls_back_to_country_code() -> None:
-    """Duffel options without a country name should remain valid and readable."""
+    """Airport options without a country name should remain valid and readable."""
 
     option = create_airport(
         name="Heathrow",

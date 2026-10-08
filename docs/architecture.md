@@ -129,11 +129,11 @@ The following table is the target routing policy. The current public travel flow
 
 ## Availability and degradation
 
-The bullets below are requirements, not all current capabilities. The current code has provider timeouts, bounded tool rounds, persisted idempotency, a shared graph deadline, and model-vendor fallback. It does not yet have provider retries, shared caches, circuit breakers, or partial itinerary fan-out.
+The bullets below are requirements, not all current capabilities. The current code has Gemini request timeouts, bounded tool rounds, persisted idempotency, and a shared graph deadline. It does not yet have provider retries, model-vendor fallback, shared caches, circuit breakers, or partial itinerary fan-out.
 
 - Provider timeouts are classified separately from model-provider failures.
 - Partial travel results MAY be returned when one optional provider fails.
-- Model providers use bounded retry, fallback, and circuit-breaking rules.
+- Model providers use bounded deadlines and typed failures; retries and circuit breaking require an explicit availability design.
 - No-results is a successful domain outcome, not a system exception.
 - Search and model work MUST be cancellable when the user replaces an active request.
 - Every side effect MUST use `request_id` as an idempotency key.

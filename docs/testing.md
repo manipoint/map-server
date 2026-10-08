@@ -89,7 +89,7 @@ The default authentication API tests use dependency overrides and mocks, so they
 
 ## LangGraph transition tests
 
-Current tests cover the implemented model/tool loop, tool-round bounds, responses, and model fallback. The fan-out, interrupt, cancellation/resume, and checkpoint paths below are targets.
+Current tests cover the implemented model/tool loop, tool-round bounds, responses, and typed model-provider failures. The fan-out, interrupt, cancellation/resume, and checkpoint paths below are targets.
 
 Test graphs as state machines, not only through final prose:
 
@@ -114,7 +114,7 @@ Required paths include:
 
 ## Model gateway tests
 
-Current tests cover provider ordering, success, invalid responses, exception fallback, cancellation, tool binding, the shared graph deadline, failure persistence after timeout, and lease/deadline configuration. Error-classification-, circuit-, token-, and cost-aware cases below remain targets.
+Current tests cover Gemini gateway construction, schema compatibility, extraction settings, invalid responses, cancellation, tool binding, the shared graph deadline, failure persistence after timeout, and lease/deadline configuration. Circuit-breaker and cost-aware cases remain targets.
 
 - Deterministic tasks never invoke a model.
 - Economy and quality tasks select the configured route.
@@ -122,7 +122,7 @@ Current tests cover provider ordering, success, invalid responses, exception fal
 - Invalid input and safety refusal do not fall back.
 - Total retries respect the end-to-end deadline and attempt limit.
 - Invalid structured output receives at most the configured repair attempt.
-- A successful fallback emits one final result and accurate usage metadata.
+- Provider failures return typed errors without invoking another model vendor.
 - Secrets and raw authorization data never appear in tracing metadata.
 
 ## Evaluation tests

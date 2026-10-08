@@ -2,7 +2,7 @@
 
 A Python backend for a Flutter travel-assistant application. The target system combines FastAPI, WebSockets, FastMCP, LangChain, LangGraph, LangSmith, PostgreSQL, and external travel providers to search flights, hotels, places, weather, and currency information and to build saved itineraries.
 
-> **Project status:** the FastAPI foundation, Neon PostgreSQL persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized multi-style onboarding preferences, backend-owned onboarding options, curated Home discovery, paginated destination collections, destination/place details, GCS catalogue media, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. The default LangGraph planner now collects persisted requirements, researches deterministically, validates structured synthesis, and atomically persists natural-language trips and rich replies; see [runtime and limitations](docs/langgraph.md). A shared graph deadline and ordered Google → OpenAI → Groq fallback are implemented. In-process MCP tools currently support WeatherAPI weather, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket broadcasting and durable background jobs remain planned. Database-backed generation limits and periodic cross-worker session revalidation are implemented; apply migration `d92af5b43107` before starting this version.
+> **Project status:** the FastAPI foundation, Neon PostgreSQL persistence, multi-device authentication, authenticated WebSocket chat, conversation persistence, assistant-run leases, ownership-safe trip REST operations, canonical trip-location resolution, normalized multi-style onboarding preferences, backend-owned onboarding options, curated Home discovery, paginated destination collections, destination/place details, GCS catalogue media, deterministic recommendation ranking, structured airport clarification, and versioned itinerary persistence from repository through REST routes are implemented and tested. The default LangGraph planner now collects persisted requirements, researches deterministically, validates structured synthesis, and atomically persists natural-language trips and rich replies; see [runtime and limitations](docs/langgraph.md). A shared graph deadline and Gemini-only model gateway are implemented. In-process MCP tools currently support WeatherAPI weather, Google Places, and Frankfurter currency conversion when configured. First-party Trending aggregation, search snapshots, checkpoint/resume, REST conversation APIs, distributed WebSocket broadcasting and durable background jobs remain planned. Database-backed generation limits and periodic cross-worker session revalidation are implemented; apply migration `d92af5b43107` before starting this version.
 
 ## Product scope
 
@@ -14,7 +14,6 @@ The first release is a search-and-planning assistant. It will:
 - stream progress and results to Flutter over WebSockets;
 - persist conversations, searches, selected offers, and itineraries in PostgreSQL;
 - use LLMs only when language understanding or itinerary synthesis adds value;
-- fail over between configured LLM providers for eligible availability failures;
 - trace quality, latency, token usage, and cost with LangSmith.
 
 Booking, payment, cancellation, and refund workflows are intentionally deferred until the search-and-planning MVP is stable.
@@ -55,7 +54,7 @@ Flutter never receives provider credentials and does not connect directly to MCP
 | `app/services/conversation_service.py` | Idempotently persists conversations and user messages with optional ownership-checked trip context. |
 | `app/services/conversation_processing_service.py` | Coordinates assistant-run leases and atomic reply persistence. |
 | `app/services/travel_response_service.py` | Orchestrates cached replies, graph execution, retries, and safe failures. |
-| `app/graph/` | Bounded model/tool loop, travel tools, prompts, response validation, and ordered model fallback. |
+| `app/graph/` | Bounded model/tool loop, travel tools, prompts, response validation, and Gemini gateway. |
 | `app/mcp/` | In-process FastMCP server, typed tools and schemas, and graph-facing client. |
 | `app/providers/` | WeatherAPI, Google Places, and Frankfurter adapters; see provider status below. |
 | `app/api/websocket/` | Authenticated `/ws/travel` protocol, background response tasks, and event schemas. |
@@ -111,18 +110,18 @@ The liveness endpoint is available at `http://127.0.0.1:8000/health/live`.
 | Current weather | WeatherAPI | Always initialized; `WEATHER_API_KEY` is therefore required by the current startup path. |
 | Location resolution | WeatherAPI search | Used by Google Places. |
 | Canonical trip location | Google Places Text Search | Authenticated `GET /api/v1/locations/resolve`; one provider call and no LLM/MCP call. |
-| Airport resolution | No runtime adapter | Contract and service retained; replacement pending. |
-| Flights | No runtime adapter | Tool disabled until Travelport integration is wired. |
-| Hotels | No runtime adapter | Tool disabled until a replacement is wired. |
+| Airport resolution | Local airport directory | Enabled with flight search. |
+| Flights | SerpApi Google Flights | Enable with `FLIGHT_PROVIDER=serpapi` and `SERPAPI_API_KEY`. |
+| Hotels | SerpApi Google Hotels | Enable with `HOTEL_PROVIDER=serpapi` and `SERPAPI_API_KEY`; needs a location resolver. |
 | Places | Google Places | Enabled by `PLACES_PROVIDER=google`. |
 | Currency | Frankfurter | Enabled by `CURRENCY_PROVIDER=frankfurter`. |
 
 MCP is currently an internal Python boundary: `TravelMcpClient` calls the in-process FastMCP server object. No `/internal/mcp` HTTP route is mounted yet.
 
-Travelport auth, request/response parsing and batch metadata resolution are
-implemented, but live flight search remains unwired. See
-[Travelport integration status](docs/travelport-integration.md) for completed
-components, limitations, tests and next steps.
+Flight and hotel results are search-time estimates. The app returns the provider's
+search options and external links; users complete booking with the listed provider.
+See [SerpApi integration](docs/serpapi-integration.md) for setup, result limits,
+normalization and known provider constraints.
 
 Flutter should call canonical location resolution after an explicit search submit or
 debounced selection action, not on every keystroke. The selected object can be sent
@@ -155,7 +154,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | [Phase 1 product scope](docs/phase-1-scope.md) | Included screens, deferred features, discovery rules, and implementation order. |
 | [System architecture](docs/architecture.md) | Runtime boundaries, request flow, scaling, and security assumptions. |
 | [Backend structure](docs/backend-structure.md) | Package layout and dependency direction. |
-| [LangGraph design](docs/langgraph.md) | State, nodes, conditional edges, interrupts, and fallback subgraph. |
+| [LangGraph design](docs/langgraph.md) | State, nodes, conditional edges, structured model calls, and workflow limits. |
 | [MCP server](docs/mcp-server.md) | Tool contracts, provider adapters, normalization, and error taxonomy. |
 | [WebSocket protocol](docs/websocket-protocol.md) | Message envelope, events, reconnection, cancellation, and idempotency. |
 | [Flutter location contract](docs/flutter-location-contract.md) | Text search, canonical selection, and trip create/update payloads. |
@@ -177,7 +176,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 3. MCP tools normalize provider data but do not own business persistence.
 4. PostgreSQL stores normalized business records; raw provider JSON is optional, short-lived evidence.
 5. Saved prices are snapshots, not booking guarantees, and include `observed_at` and `expires_at`.
-6. Model fallback is allowed for availability failures, never to bypass safety refusals or invalid input.
+6. Provider failures are surfaced as typed errors; model changes must preserve refusal and input-validation behavior.
 7. Internal model reasoning is neither sent to Flutter nor stored as conversation content.
 8. Every request carries an idempotent `request_id` and every conversation has a stable `conversation_id`.
 
@@ -191,7 +190,7 @@ See [Backend Structure](docs/backend-structure.md) for ownership and dependency 
 | 4 | In progress | Persisted conversational planning, deterministic research routing, bounded synthesis/repair and conversation leases are implemented; checkpoints and structured requirement forms remain. |
 | 5 | In progress | In-process FastMCP tools are complete; an authenticated mounted MCP transport is not implemented. |
 | 6 | In progress | WeatherAPI, Google Places, and Frankfurter adapters exist; provider failover and caching remain. |
-| 7 | In progress | Ordered model gateway fallback and timeout controls are complete; LangSmith traces, budgets, circuit breaking, and evaluations remain. |
+| 7 | In progress | Gemini gateway and timeout controls are complete; LangSmith traces, budgets, circuit breaking, and evaluations remain. |
 | 8 | Planned | Container deployment, monitoring, and load testing. |
 
 ## Security

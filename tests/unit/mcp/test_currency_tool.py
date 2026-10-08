@@ -101,10 +101,12 @@ def test_mcp_server_registers_currency_only_when_provider_is_available() -> None
         )
 
         assert [tool.name for tool in await weather_only.list_tools()] == [
-            "get_current_weather"
+            "get_current_weather",
+            "get_weather_forecast",
         ]
         assert [tool.name for tool in await with_currency.list_tools()] == [
             "get_current_weather",
+            "get_weather_forecast",
             "convert_currency",
         ]
 

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 
-from app.domain.planning import PlanningState
+from app.domain.planning import PendingTravelSelection, PlanningState
 from app.domain.planning_preferences import PlanningPreferences
 from app.domain.preferences import (
     BudgetTier,
@@ -83,7 +83,8 @@ def run_graph(
     ]
     research = research_service or AsyncMock()
     research.cache_key = Mock(return_value="test-research-key")
-    research.research.return_value = PlanningResearch(searched_at=datetime.now(UTC))
+    if research_service is None:
+        research.research.return_value = PlanningResearch(searched_at=datetime.now(UTC))
 
     async def persist(state, _reset_trip):
         return PlanningState.model_validate(
@@ -147,6 +148,265 @@ def test_roman_urdu_collection_preserves_slots_and_never_searches():
     assert following["planning"].requirements.duration_days == 4
     assert following["planning"].requirements.minor_ages == (7,)
     assert following["planning"].revision == 2
+
+
+def test_hotel_search_without_budget_is_saved_and_clarified_before_provider_call():
+    result, _, research = run_graph(
+        [
+            {
+                "intent": "search",
+                "language": "ur-Latn",
+                "updates": {},
+                "search": {
+                    "kind": "hotels",
+                    "budget_decision": None,
+                    "arguments": {
+                        "destination": "Hunza, Pakistan",
+                        "check_in_date": "2099-11-07",
+                        "check_out_date": "2099-11-10",
+                        "currency": "PKR",
+                    },
+                },
+            }
+        ],
+        message="Hunza mein hotel dhoondo, 7 se 10 November",
+    )
+
+    assert "hotel stay" in result["assistant_response"]
+    assert "no limit" in result["assistant_response"]
+    assert result["planning"].pending_search["kind"] == "hotels"
+    assert result["planning"].pending_search["budget_decision"] is None
+    research.research.assert_not_awaited()
+
+
+def test_flight_and_hotel_options_require_sequential_user_selection():
+    evidence = []
+    for offer_id, carrier in (("offer-a", "Air One"), ("offer-b", "Air Two")):
+        evidence.extend(
+            (
+                ResearchEvidence(
+                    id=f"{offer_id}-outbound",
+                    kind="flight",
+                    name=f"{carrier}: LHR to HND",
+                    location="HND",
+                    description="outbound 2099-11-07T08:00:00+00:00; 500 USD",
+                    source_id=offer_id,
+                ),
+                ResearchEvidence(
+                    id=f"{offer_id}-return",
+                    kind="flight",
+                    name=f"{carrier}: HND to LHR",
+                    location="LHR",
+                    description="return 2099-11-11T09:00:00+00:00; 500 USD",
+                    source_id=offer_id,
+                ),
+            )
+        )
+    evidence.extend(
+        ResearchEvidence(
+            id=f"hotel-{index}",
+            kind="hotel",
+            name=f"Hotel {index}",
+            location="Tokyo",
+            description=f"Verified hotel {index}",
+        )
+        for index in (1, 2)
+    )
+    research_result = PlanningResearch(
+        searched_at=datetime.now(UTC), evidence=tuple(evidence)
+    )
+    trip = requirements(
+        origin="LHR",
+        transport="flight",
+        cabin_class="economy",
+        needs_lodging=True,
+        rooms=1,
+        budget_decision="no_limit",
+    )
+    initial, _, _ = run_graph(
+        [{"intent": "plan", "updates": {}}],
+        planning=PlanningState(requirements=trip),
+        research_service=AsyncMock(
+            cache_key=Mock(return_value="cached-key"),
+            research=AsyncMock(return_value=research_result),
+        ),
+    )
+    assert "Choose one flight" in initial["assistant_response"]
+    assert initial["planning"].pending_travel_selection == PendingTravelSelection(
+        kind="flight",
+        option_ids=("offer-a", "offer-b"),
+        reason="choose",
+    )
+
+    flight_choice, gateway, provider = run_graph(
+        [], planning=initial["planning"], message="option 2"
+    )
+    assert "Choose one hotel" in flight_choice["assistant_response"]
+    assert flight_choice["planning"].selected_flight_id == "offer-b"
+    assert flight_choice["planning"].pending_travel_selection.kind == "hotel"
+    gateway.generate.assert_not_awaited()
+    provider.research.assert_not_awaited()
+
+    proposed = itinerary()
+    proposed["items"] = [
+        {
+            "day_number": 1,
+            "item_type": "flight",
+            "title": "Chosen outbound flight",
+            "evidence_id": "offer-b-outbound",
+        },
+        {
+            "day_number": 1,
+            "item_type": "hotel",
+            "title": "Chosen hotel",
+            "evidence_id": "hotel-1",
+        },
+        *proposed["items"][:4],
+        {
+            "day_number": 5,
+            "item_type": "flight",
+            "title": "Chosen return flight",
+            "evidence_id": "offer-b-return",
+        },
+        proposed["items"][4],
+    ]
+    hotel_choice, _, provider = run_graph(
+        [proposed],
+        planning=flight_choice["planning"],
+        message="1",
+    )
+    assert hotel_choice["planning"].selected_hotel_id == "hotel-1"
+    assert {
+        item.source_id
+        for item in hotel_choice["research"].evidence
+        if item.kind == "flight"
+    } == {"offer-b"}
+    assert {
+        item.id for item in hotel_choice["research"].evidence if item.kind == "hotel"
+    } == {"hotel-1"}
+    provider.research.assert_not_awaited()
+
+
+def test_no_verified_flights_pauses_itinerary_and_invites_requirement_change():
+    result, gateway, research = run_graph(
+        [{"intent": "plan", "updates": {}}],
+        planning=PlanningState(
+            requirements=requirements(
+                origin="LHR", transport="flight", cabin_class="economy"
+            )
+        ),
+        research_service=AsyncMock(
+            cache_key=Mock(return_value="cached-key"),
+            research=AsyncMock(
+                return_value=PlanningResearch(
+                    searched_at=datetime.now(UTC),
+                    warnings=("flights: no verified options; try another date.",),
+                )
+            ),
+        ),
+    )
+    assert "No verified flights" in result["assistant_response"]
+    assert "have not generated" in result["assistant_response"]
+    assert result["planning"].pending_travel_selection.reason == "no_results"
+    assert "generated_itinerary" not in result
+    assert gateway.generate.await_count == 1
+    research.research.assert_awaited_once()
+
+
+def test_nearby_flight_date_choice_updates_trip_then_searches_exact_dates():
+    original_requirements = requirements(
+        origin="LHR",
+        transport="flight",
+        cabin_class="economy",
+    )
+    nearby_research = PlanningResearch(
+        searched_at=datetime.now(UTC),
+        evidence=(
+            ResearchEvidence(
+                id="near-20991108-flight-1",
+                kind="flight",
+                name="Air One: LHR to HND",
+                location="HND",
+                description="Outbound date option",
+                source_id="nearby-offer",
+                alternative_start_date=date(2099, 11, 8),
+                alternative_end_date=date(2099, 11, 12),
+            ),
+            ResearchEvidence(
+                id="near-20991108-flight-1-return",
+                kind="flight",
+                name="Air One: HND to LHR",
+                location="LHR",
+                description="Return date option",
+                source_id="nearby-offer",
+                alternative_start_date=date(2099, 11, 8),
+                alternative_end_date=date(2099, 11, 12),
+            ),
+        ),
+    )
+    offered, _, _ = run_graph(
+        [{"intent": "plan", "updates": {}}],
+        planning=PlanningState(requirements=original_requirements),
+        research_service=AsyncMock(
+            cache_key=Mock(return_value="same-key"),
+            research=AsyncMock(return_value=nearby_research),
+        ),
+    )
+    assert "2099-11-08 to 2099-11-12" in offered["assistant_response"]
+    assert offered["planning"].requirements.start_date == date(2099, 11, 7)
+    assert offered["planning"].pending_travel_selection.kind == "flight_dates"
+
+    exact_research = PlanningResearch(
+        searched_at=datetime.now(UTC),
+        evidence=(
+            ResearchEvidence(
+                id="flight-1",
+                kind="flight",
+                name="Air One: LHR to HND",
+                location="HND",
+                description="Outbound flight",
+                source_id="selected-offer",
+            ),
+            ResearchEvidence(
+                id="flight-1-return",
+                kind="flight",
+                name="Air One: HND to LHR",
+                location="LHR",
+                description="Return flight",
+                source_id="selected-offer",
+            ),
+        ),
+    )
+    proposed = itinerary()
+    proposed["items"] = [
+        {
+            "day_number": 1,
+            "item_type": "flight",
+            "title": "Outbound",
+            "evidence_id": "flight-1",
+        },
+        *proposed["items"][:4],
+        {
+            "day_number": 5,
+            "item_type": "flight",
+            "title": "Return",
+            "evidence_id": "flight-1-return",
+        },
+        proposed["items"][4],
+    ]
+    generated, _, exact_search = run_graph(
+        [proposed],
+        planning=offered["planning"],
+        message="date option 1",
+        research_service=AsyncMock(
+            cache_key=Mock(return_value="fresh-key"),
+            research=AsyncMock(return_value=exact_research),
+        ),
+    )
+    assert generated["planning"].requirements.start_date == date(2099, 11, 8)
+    assert generated["planning"].requirements.resolved_end_date == date(2099, 11, 12)
+    assert generated["planning"].pending_travel_selection is None
+    exact_search.research.assert_awaited_once()
 
 
 def test_requirement_extraction_repairs_invalid_structured_output_once():

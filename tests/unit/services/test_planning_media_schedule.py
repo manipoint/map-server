@@ -144,6 +144,8 @@ def test_schedule_uses_evidence_images_preserves_offsets_and_restores_rich_conte
                     "item_type": "activity",
                     "title": "Explore",
                     "image": None,
+                    "starts_at": "2099-11-08T10:00:00+05:00",
+                    "ends_at": "2099-11-08T15:00:00+05:00",
                 },
             ],
         }
@@ -174,4 +176,10 @@ def test_schedule_uses_evidence_images_preserves_offsets_and_restores_rich_conte
     assert first.title == "Fort"
     assert first.image == verified
     assert first.starts_at.isoformat() == "2099-11-07T09:00:00+05:00"
-    assert preview.days[1].activities[0].starts_at is None
+    assert (
+        preview.days[1].activities[0].starts_at.isoformat()
+        == "2099-11-08T10:00:00+05:00"
+    )
+    assert (
+        preview.days[1].activities[0].ends_at.isoformat() == "2099-11-08T15:00:00+05:00"
+    )

@@ -11,11 +11,13 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.database.models import Conversation, Itinerary, Message, User
+from app.api.schemas.itineraries import ItineraryItemResponse
+from app.database.models import Conversation, Itinerary, ItineraryItem, Message, User
 from app.database.repositories.planning import PlanningRepository
 from app.domain.planning import PlanningState
 from app.graph.planning_builder import build_planning_graph
 from app.graph.subgraphs.model_gateway import ModelGatewayError
+from app.providers.weather.schemas import WeatherForecast
 from app.services.conversation_planning_service import ConversationPlanningService
 from app.services.conversation_processing_service import ConversationProcessingService
 from app.services.conversation_service import ConversationService
@@ -50,6 +52,8 @@ async def exercise_planning(url, migrate):
                         "day_number": n,
                         "item_type": "activity",
                         "title": "Explore at your own pace",
+                        "starts_at": f"2099-11-{n + 6:02}T10:00:00+09:00",
+                        "ends_at": f"2099-11-{n + 6:02}T15:00:00+09:00",
                     }
                     for n in range(1, 6)
                 ],
@@ -83,13 +87,40 @@ async def exercise_planning(url, migrate):
                     generated,
                 ]
             ]
+            weather_client = AsyncMock()
+            weather_client.get_weather_forecast.return_value = (
+                WeatherForecast.model_validate(
+                    {
+                        "location": "Tokyo",
+                        "time_zone": "Asia/Tokyo",
+                        "days": [
+                            {
+                                "date": "2099-11-07",
+                                "condition": "Rain",
+                                "max_temperature_c": 20,
+                                "min_temperature_c": 10,
+                                "total_precipitation_mm": 2,
+                                "hours": [
+                                    {
+                                        "local_time": "2099-11-07T14:00:00+09:00",
+                                        "condition": "Rain",
+                                        "temperature_c": 18,
+                                        "chance_of_rain_percent": 90,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                )
+            )
             graph = build_planning_graph(
                 model_gateway=gateway,
                 research_service=PlanningResearchService(
-                    client=AsyncMock(),
+                    client=weather_client,
                     places_available=False,
                     hotels_available=False,
                     round_trip_flights_available=False,
+                    weather_forecasts_available=True,
                 ),
             )
             processing = ConversationProcessingService(
@@ -139,7 +170,24 @@ async def exercise_planning(url, migrate):
             )
             assert cached.is_cached and cached.itinerary_id == result.itinerary_id
             assert cached.rich_content == result.rich_content
-            assert len(cached.rich_content.sections[-1].days[0].activities) == 1
+            day_one = cached.rich_content.sections[-1].days[0].activities
+            assert len(day_one) == 2
+            assert day_one[0].starts_at.isoformat() == "2099-11-07T10:00:00+09:00"
+            assert day_one[0].ends_at.isoformat() == "2099-11-07T15:00:00+09:00"
+            assert "90%" in day_one[1].description
+            persisted_items = list(
+                await session.scalars(
+                    select(ItineraryItem)
+                    .where(ItineraryItem.itinerary_id == result.itinerary_id)
+                    .order_by(ItineraryItem.day_number, ItineraryItem.position)
+                )
+            )
+            restored = [
+                ItineraryItemResponse.model_validate(item) for item in persisted_items
+            ]
+            assert restored[0].starts_at.isoformat() == "2099-11-07T10:00:00+09:00"
+            assert restored[0].ends_at.isoformat() == "2099-11-07T15:00:00+09:00"
+            assert "90%" in restored[1].description
             assert gateway.generate.await_count == 3
             before = await session.scalar(
                 select(Conversation.planning_state).where(

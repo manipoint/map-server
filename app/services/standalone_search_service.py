@@ -3,7 +3,7 @@
 import asyncio
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.common.exceptions import ProviderUnavailableError
 from app.common.time import utc_now
@@ -57,6 +57,23 @@ class HotelsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["hotels"]
     arguments: HotelSearchInput
+    budget_decision: Literal["specified", "no_limit"] | None = None
+
+    @model_validator(mode="after")
+    def validate_budget_decision(self) -> "HotelsRequest":
+        if (
+            self.budget_decision == "specified"
+            and self.arguments.max_total_price is None
+        ):
+            raise ValueError("specified hotel budget requires max_total_price")
+        if (
+            self.budget_decision == "no_limit"
+            and self.arguments.max_total_price is not None
+        ):
+            raise ValueError("no-limit hotel search cannot have max_total_price")
+        if self.budget_decision is None and self.arguments.max_total_price is not None:
+            raise ValueError("hotel budget amount requires an explicit decision")
+        return self
 
 
 # Literal tags remain unambiguous; a plain union emits provider-supported anyOf.
@@ -162,7 +179,7 @@ class StandaloneSearchService:
             )
         elif isinstance(result, FlightSearchResult):
             lines = []
-            for offer in result.offers[:3]:
+            for offer in result.offers:
                 if offer.expires_at is not None and offer.expires_at <= utc_now():
                     continue
                 legs = [offer.outbound] + (
@@ -172,18 +189,29 @@ class StandaloneSearchService:
                     f"{leg.segments[0].departure_airport} → {leg.segments[-1].arrival_airport}: {leg.segments[0].departure_at.isoformat()} to {leg.segments[-1].arrival_at.isoformat()}"
                     for leg in legs
                 )
+                price_text = (
+                    f"{offer.total_price} {offer.currency}"
+                    if offer.total_price is not None
+                    else "price unavailable"
+                )
                 lines.append(
-                    f"• {schedule}; {offer.total_price} {offer.currency} for {offer.traveler_count} travellers."
+                    f"• {schedule}; {price_text} for {offer.traveler_count} travellers."
                 )
             text = "\n".join(lines) or "No current flight offers were found."
             text += "\nPrices and availability may change. Nothing is booked."
         elif isinstance(result, HotelSearchResult):
             text = (
                 "\n".join(
-                    f"• {o.hotel.name}: {o.cheapest_total_price} {o.currency}."
-                    for o in result.options[:3]
+                    f"• {o.hotel.name} ({o.provider_source or 'provider'}): "
+                    + (
+                        f"{o.cheapest_total_price} {o.currency}."
+                        if o.cheapest_total_price is not None
+                        else "price unavailable."
+                    )
+                    for o in result.options
                     if o.expires_at > utc_now()
                 )
+                or result.message
                 or "No current hotel options were found."
             )
             text += "\nPrices and availability may change. Nothing is booked."

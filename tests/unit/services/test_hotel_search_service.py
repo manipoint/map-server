@@ -11,6 +11,7 @@ from app.common.exceptions import (
     InvalidTravelDateError,
     LocationNotFoundError,
     ProviderUnavailableError,
+    UnsupportedHotelRequestError,
 )
 from app.domain.hotels import HotelSearchStatus
 from app.providers.hotels.schemas import (
@@ -107,7 +108,7 @@ def test_service_rejects_invalid_search_radius(radius_km: int) -> None:
 
 @pytest.mark.parametrize("radius_km", [1, 100])
 def test_service_accepts_radius_boundaries(radius_km: int) -> None:
-    """Documented Duffel radius boundaries should remain usable."""
+    """Configured hotel-search radius boundaries should remain usable."""
 
     service, _, _ = create_service(radius_km=radius_km)
 
@@ -138,6 +139,18 @@ def test_service_rejects_unsearchable_dates_before_provider_calls(
     hotel_provider.search_hotels.assert_not_awaited()
 
 
+def test_service_rejects_unsupported_room_count_before_provider_calls() -> None:
+    """An unsupported room count should not spend location-search quota."""
+
+    service, location_provider, hotel_provider = create_service()
+
+    with pytest.raises(UnsupportedHotelRequestError, match="one room"):
+        asyncio.run(service.search_hotels(request=create_request(rooms=2, adults=2)))
+
+    location_provider.search_locations.assert_not_awaited()
+    hotel_provider.search_hotels.assert_not_awaited()
+
+
 @pytest.mark.parametrize("days_ahead", [0, 330])
 def test_service_accepts_date_window_boundaries(days_ahead: int) -> None:
     """Today and exactly 330 days ahead should reach provider resolution."""
@@ -156,7 +169,7 @@ def test_service_accepts_date_window_boundaries(days_ahead: int) -> None:
 
 
 def test_service_reports_location_not_found_without_hotel_call() -> None:
-    """An empty location search should stop before Duffel work."""
+    """An empty location search should stop before provider work."""
 
     service, location_provider, hotel_provider = create_service(candidates=[])
 
