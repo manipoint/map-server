@@ -66,6 +66,8 @@ class TripRequirements(BaseModel):
 
     start_date: date | None = None
     end_date: date | None = None
+    date_window_start: date | None = None
+    date_window_end: date | None = None
     duration_days: int | None = Field(
         default=None,
         ge=2,
@@ -153,6 +155,23 @@ class TripRequirements(BaseModel):
                 raise ValueError("duration_days must match the inclusive date range")
 
         validate_distinct_locations(self.origin, self.destination)
+
+        exact_dates_present = self.start_date is not None or self.end_date is not None
+        window_dates_present = (
+            self.date_window_start is not None or self.date_window_end is not None
+        )
+        if exact_dates_present and window_dates_present:
+            raise ValueError("exact dates and flexible window cannot be mixed")
+        if self.date_window_start is not None and self.date_window_end is not None:
+            validate_trip_dates(self.date_window_start, self.date_window_end)
+
+            window_days = inclusive_day_count(
+                self.date_window_start, self.date_window_end
+            )
+            if window_days > 31:
+                raise ValueError("flexible date window cannot exceed 31 days")
+            if self.duration_days is not None and self.duration_days > window_days:
+                raise ValueError("trip duration cannot exceed its date window")
 
         if (
             self.minor_count is not None

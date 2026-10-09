@@ -141,13 +141,17 @@ class PlanningResearchService:
         requirements: TripRequirements,
         *,
         allow_nearby_flight_dates: bool = True,
+        preselected_flight: ResearchEvidence | None = None,
     ) -> PlanningResearch:
         request = to_trip_request(requirements)
         catalogue = await self._catalogue_research(requirements.destination)
         kinds = [] if catalogue.evidence else ["places"]
         if requirements.needs_lodging:
             kinds.append("hotels")
-        if requirements.transport == TripTransport.FLIGHT:
+        if (
+            requirements.transport == TripTransport.FLIGHT
+            and preselected_flight is None
+        ):
             kinds.append("flights")
         results, (weather_forecast, weather_warning) = await asyncio.gather(
             asyncio.gather(
@@ -165,7 +169,8 @@ class PlanningResearchService:
         return PlanningResearch(
             searched_at=utc_now(),
             evidence=catalogue.evidence
-            + tuple(item for evidence, _, _ in results for item in evidence),
+            + tuple(item for evidence, _, _ in results for item in evidence)
+            + ((preselected_flight,) if preselected_flight is not None else ()),
             cover_image=catalogue.cover_image,
             guidance=tuple(reply for _, _, reply in results if reply is not None),
             time_zone=next(
@@ -262,7 +267,7 @@ class PlanningResearchService:
                 f"{kind}: live search is unavailable; availability and prices are unverified.",
                 None,
             )
-        if kind == "flights":
+        if kind == "flights" or kind == "flight":
             return await self._search_flights_with_nearby_dates(
                 request,
                 allow_nearby_dates=allow_nearby_flight_dates,
@@ -460,11 +465,11 @@ def _compact_evidence(result: object, *, now: datetime) -> list[ResearchEvidence
                         price=AssistantMoney(
                             amount=option.cheapest_total_price, currency=option.currency
                         ),
-                        image=AssistantMedia(
-                            url=hotel.photo_urls[0], alt_text=hotel.name
-                        )
-                        if hotel.photo_urls
-                        else None,
+                        image=(
+                            AssistantMedia(url=hotel.photo_urls[0], alt_text=hotel.name)
+                            if hotel.photo_urls
+                            else None
+                        ),
                         expires_at=option.expires_at,
                     ),
                 )

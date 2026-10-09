@@ -19,6 +19,7 @@ from app.providers.flights.schemas import FlightSearchInput
 from app.providers.hotels.schemas import HotelSearchInput, ResolvedHotelSearch
 from app.providers.locations.schemas import ResolvedLocation
 from app.providers.serpapi.client import SerpApiClient
+from app.providers.serpapi.deals_client import FlightDeal, SerpApiDealsClient
 from app.providers.serpapi.flight_client import SerpApiFlightClient
 from app.providers.serpapi.hotel_client import SerpApiHotelClient
 
@@ -448,3 +449,199 @@ def test_flight_results_are_bounded_by_configured_maximum():
             )
 
     assert len(asyncio.run(run()).offers) == 2
+
+
+def test_flight_deal_duration_uses_inclusive_trip_dates():
+    deal = FlightDeal(
+        origin="LHE",
+        destination="DXB",
+        start_date=date(2030, 12, 1),
+        end_date=date(2030, 12, 5),
+        price=Decimal("200"),
+        currency="USD",
+        flight_link="https://www.google.com/travel/flights?sample=1",
+    )
+
+    assert deal.duration_days == 5
+
+
+def test_deals_search_filters_route_and_window_then_sorts_all_matches():
+    payload = {
+        "search_metadata": {"status": "Success"},
+        "deals": [
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-02",
+                "end_date": "2030-12-08",
+                "price": 300,
+                "airline": "Airline A",
+                "stops": 1,
+                "flight_link": "https://www.google.com/travel/flights?deal=expensive",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-10",
+                "end_date": "2030-12-14",
+                "price": 200,
+                "airline": "Airline B",
+                "stops": 0,
+                "flight_link": "https://www.google.com/travel/flights?deal=cheap",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "LHR",
+                "start_date": "2030-12-03",
+                "end_date": "2030-12-07",
+                "price": 100,
+                "flight_link": "https://www.google.com/travel/flights?deal=wrong-route",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-30",
+                "end_date": "2031-01-04",
+                "price": 150,
+                "flight_link": "https://www.google.com/travel/flights?deal=outside",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-15",
+                "end_date": "2030-12-19",
+                "price": 120,
+                "flight_link": "https://example.com/travel/flights?deal=invalid-link",
+            },
+        ],
+    }
+    requests = []
+
+    def send(request):
+        requests.append(request)
+        return httpx.Response(200, json=payload)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as client:
+            provider = SerpApiDealsClient(http_client=client, settings=settings())
+            return await provider.search_deals(
+                origin_code="LHE",
+                destination_codes={"DXB"},
+                window_start=date(2030, 12, 1),
+                window_end=date(2030, 12, 31),
+                currency="USD",
+                adults=2,
+            )
+
+    deals = asyncio.run(run())
+
+    assert len(requests) == 1
+    assert requests[0].url.params["engine"] == "google_flights_deals"
+    assert requests[0].url.params["outbound_date"] == "2030-12-01,2030-12-31"
+    assert requests[0].url.params["adults"] == "2"
+    assert "trip_length" not in requests[0].url.params
+    assert [deal.price for deal in deals] == [Decimal("200"), Decimal("300")]
+    assert [deal.duration_days for deal in deals] == [5, 7]
+
+
+def test_deals_search_returns_empty_when_provider_has_no_matching_destination():
+    payload = {
+        "search_metadata": {"status": "Success"},
+        "deals": [
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "LHR",
+                "start_date": "2030-12-02",
+                "end_date": "2030-12-08",
+                "price": 300,
+                "flight_link": "https://www.google.com/travel/flights?deal=london",
+            }
+        ],
+    }
+
+    async def run():
+        async with httpx.AsyncClient(transport=transport_for(payload)) as client:
+            provider = SerpApiDealsClient(http_client=client, settings=settings())
+            return await provider.search_deals(
+                origin_code="LHE",
+                destination_codes={"DXB"},
+                window_start=date(2030, 12, 1),
+                window_end=date(2030, 12, 31),
+                currency="USD",
+                adults=1,
+            )
+
+    assert asyncio.run(run()) == []
+
+
+def test_deals_search_skips_invalid_prices_and_wrong_origin_without_losing_valid_deal():
+    payload = {
+        "search_metadata": {"status": "Success"},
+        "deals": [
+            {
+                "departure_airport_code": "ISB",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-02",
+                "end_date": "2030-12-08",
+                "price": 100,
+                "flight_link": "https://www.google.com/travel/flights?deal=wrong-origin",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-10",
+                "end_date": "2030-12-14",
+                "price": 200,
+                "flight_link": "https://www.google.com/travel/flights?deal=valid",
+            },
+            {
+                "departure_airport_code": "LHE",
+                "arrival_airport_code": "DXB",
+                "start_date": "2030-12-16",
+                "end_date": "2030-12-20",
+                "price": "invalid-price",
+                "flight_link": "https://www.google.com/travel/flights?deal=bad-price",
+            },
+        ],
+    }
+
+    async def run():
+        async with httpx.AsyncClient(transport=transport_for(payload)) as client:
+            provider = SerpApiDealsClient(http_client=client, settings=settings())
+            return await provider.search_deals(
+                origin_code="LHE",
+                destination_codes={"DXB"},
+                window_start=date(2030, 12, 1),
+                window_end=date(2030, 12, 31),
+                currency="USD",
+                adults=1,
+            )
+
+    deals = asyncio.run(run())
+
+    assert [deal.price for deal in deals] == [Decimal("200")]
+    assert deals[0].origin == "LHE"
+
+
+def test_deals_search_rejects_invalid_party_before_provider_call():
+    requests = []
+
+    def send(request):
+        requests.append(request)
+        return httpx.Response(200, json={"search_metadata": {"status": "Success"}})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as client:
+            provider = SerpApiDealsClient(http_client=client, settings=settings())
+            return await provider.search_deals(
+                origin_code="LHE",
+                destination_codes={"DXB"},
+                window_start=date(2030, 12, 1),
+                window_end=date(2030, 12, 31),
+                currency="USD",
+                adults=0,
+            )
+
+    with pytest.raises(ValueError):
+        asyncio.run(run())
+    assert requests == []

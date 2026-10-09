@@ -168,6 +168,7 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
         research_service=ANY,
         standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
+        deal_discovery_service=None,
     )
 
 
@@ -340,6 +341,7 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         research_service=ANY,
         standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
+        deal_discovery_service=None,
     )
     fake_http_client.aclose.assert_awaited_once_with()
 
@@ -720,6 +722,7 @@ def test_serpapi_startup_wires_search_services(monkeypatch, tmp_path) -> None:
     load_directory = AsyncMock(return_value=airport_provider)
     create_flight = MagicMock(return_value=flight_provider)
     create_hotel = MagicMock(return_value=hotel_provider)
+    build_graph = MagicMock(return_value=object())
 
     monkeypatch.setattr(
         lifespan_module, "create_database_engine", lambda settings: engine
@@ -736,6 +739,7 @@ def test_serpapi_startup_wires_search_services(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(lifespan_module, "SerpApiFlightClient", create_flight)
     monkeypatch.setattr(lifespan_module, "SerpApiHotelClient", create_hotel)
+    monkeypatch.setattr(lifespan_module, "build_travel_graph", build_graph)
 
     metadata_path = tmp_path / "flight_metadata.json"
     directory_path = tmp_path / "airport_directory.json"
@@ -762,6 +766,9 @@ def test_serpapi_startup_wires_search_services(monkeypatch, tmp_path) -> None:
         assert state.flight_search_preparation_service.flight_search_service is (
             state.flight_search_service
         )
+        deal_service = build_graph.call_args.kwargs["deal_discovery_service"]
+        assert deal_service.airports is state.airport_resolution_service
+        assert deal_service.deals.client.http_client is http_client
         load_metadata.assert_awaited_once_with(path=metadata_path)
         load_directory.assert_awaited_once_with(path=directory_path)
         create_flight.assert_called_once_with(

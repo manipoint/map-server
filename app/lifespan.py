@@ -31,10 +31,12 @@ from app.providers.flights.local_metadata_provider import LocalFlightMetadataPro
 from app.providers.hotels.client import HotelProvider
 from app.providers.locations.weatherapi_client import WeatherApiLocationClient
 from app.providers.places.google_client import GooglePlacesClient
+from app.providers.serpapi.deals_client import SerpApiDealsClient
 from app.providers.serpapi.flight_client import SerpApiFlightClient
 from app.providers.serpapi.hotel_client import SerpApiHotelClient
 from app.providers.weather.client import WeatherApiClient
 from app.services.airport_resolution_service import AirportResolutionService
+from app.services.deal_discovery_service import DealDiscoveryService
 from app.services.flight_search_preparation_service import (
     FlightSearchPreparationService,
 )
@@ -68,6 +70,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     flight_search_service: FlightSearchService | None = None
     flight_search_preparation_service: FlightSearchPreparationService | None = None
     airport_resolution_service: AirportResolutionService | None = None
+    deal_discovery_service: DealDiscoveryService | None = None
 
     if settings.database_connection_mode == "cloud_sql":
         database_engine, cloud_sql_connector = await create_cloud_sql_resources(
@@ -142,6 +145,12 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 airport_resolution_service=airport_resolution_service,
                 flight_search_service=flight_search_service,
             )
+            deal_discovery_service = DealDiscoveryService(
+                airport_resolution_service=airport_resolution_service,
+                deals_client=SerpApiDealsClient(
+                    http_client=http_client, settings=settings
+                ),
+            )
         if settings.hotel_provider == "serpapi":
             if location_provider is None:
                 location_provider = WeatherApiLocationClient(
@@ -194,6 +203,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 ),
                 weather_forecasts_available=True,
             ),
+            deal_discovery_service=deal_discovery_service,
         )
 
         application.state.database_engine = database_engine

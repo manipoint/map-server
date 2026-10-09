@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -26,7 +27,11 @@ from app.graph.planning_builder import (
 )
 from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_schemas import ResearchedItinerary
+from app.providers.airports.schemas import AirportResolution
+from app.providers.serpapi.deals_client import FlightDeal
+from app.services.deal_discovery_service import DealChoice, DealDiscoveryResult
 from app.services.planning_research_service import PlanningResearch, ResearchEvidence
+from app.services.standalone_search_service import SearchReply
 
 
 def requirements(**changes):
@@ -68,6 +73,7 @@ def run_graph(
     persist_requirements=None,
     research_service=None,
     planning_preferences=None,
+    deal_discovery_service=None,
 ):
     # Fixture payloads explicitly identify the fields intended to change.
     outputs = [
@@ -95,7 +101,11 @@ def run_graph(
         )
 
     persistence = persist_requirements or AsyncMock(side_effect=persist)
-    graph = build_planning_graph(model_gateway=gateway, research_service=research)
+    graph = build_planning_graph(
+        model_gateway=gateway,
+        research_service=research,
+        deal_discovery_service=deal_discovery_service,
+    )
     result = asyncio.run(
         graph.ainvoke(
             {
@@ -1015,3 +1025,202 @@ def test_new_trip_persistence_receives_reset_trip():
     )
 
     assert persist.await_args.args[1] is True
+
+
+def _flexible_deals() -> DealDiscoveryResult:
+    return DealDiscoveryResult(
+        status="deals_available",
+        origin=AirportResolution(status="resolved", query="Lahore", iata_code="LHE"),
+        destination=AirportResolution(
+            status="resolved", query="Dubai", iata_code="DXB"
+        ),
+        options=tuple(
+            DealChoice(
+                option_id=f"deal-{number}",
+                deal=FlightDeal(
+                    origin="LHE",
+                    destination="DXB",
+                    start_date=date(2099, 12, number),
+                    end_date=date(2099, 12, number + 4),
+                    price=Decimal(200 + number),
+                    currency="USD",
+                    airline="Example Air",
+                    flight_link="https://www.google.com/travel/flights",
+                ),
+            )
+            for number in (2, 10)
+        ),
+    )
+
+
+def _flexible_requirements() -> TripRequirements:
+    return requirements(
+        origin="Lahore",
+        destination="Dubai",
+        transport="flight",
+        cabin_class="economy",
+        start_date=None,
+        date_window_start="2099-12-01",
+        date_window_end="2099-12-31",
+    )
+
+
+def test_flexible_deals_are_bounded_and_reused_without_research():
+    deals = AsyncMock()
+    deals.discover.return_value = _flexible_deals()
+    first, _, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": _flexible_requirements().model_dump(mode="json"),
+            }
+        ],
+        deal_discovery_service=deals,
+    )
+    assert "1." in first["assistant_response"]
+    assert "2." in first["assistant_response"]
+    assert "Unverified date examples" in first["assistant_response"]
+    assert first["planning"].pending_travel_selection.option_ids == (
+        "deal-2",
+        "deal-10",
+    )
+    deals.discover.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+    repeated, _, research = run_graph(
+        [{"intent": "plan", "updates": {}}],
+        planning=first["planning"],
+        deal_discovery_service=deals,
+    )
+    assert "2." in repeated["assistant_response"]
+    deals.discover.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+
+def test_selecting_saved_deal_uses_its_dates_without_a_new_deal_search():
+    deals = AsyncMock()
+    deals.discover.return_value = _flexible_deals()
+    offered, _, _ = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": _flexible_requirements().model_dump(mode="json"),
+            }
+        ],
+        deal_discovery_service=deals,
+    )
+    research = AsyncMock()
+    research.cache_key = Mock(return_value="selected-deal-key")
+    research.research.return_value = PlanningResearch(
+        searched_at=datetime.now(UTC),
+        guidance=(SearchReply(content="Other research requires input."),),
+    )
+    selected, gateway, _ = run_graph(
+        [],
+        planning=offered["planning"],
+        message="deal 2",
+        deal_discovery_service=deals,
+        research_service=research,
+    )
+    assert selected["planning"].requirements.start_date == date(2099, 12, 10)
+    assert selected["planning"].requirements.end_date == date(2099, 12, 14)
+    assert selected["planning"].selected_deal["option_id"] == "deal-10"
+    assert (
+        research.research.await_args.kwargs["preselected_flight"].source_id == "deal-10"
+    )
+    deals.discover.assert_awaited_once()
+    gateway.generate.assert_not_awaited()
+
+
+def test_selected_deal_generates_itinerary_from_saved_flight_evidence():
+    deals = AsyncMock()
+    deals.discover.return_value = _flexible_deals()
+    offered, _, _ = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": _flexible_requirements().model_dump(mode="json"),
+            }
+        ],
+        deal_discovery_service=deals,
+    )
+    research = AsyncMock()
+    research.cache_key = Mock(return_value="deal-research-key")
+
+    async def do_research(_requirements, *, preselected_flight):
+        return PlanningResearch(
+            searched_at=datetime.now(UTC), evidence=(preselected_flight,)
+        )
+
+    research.research.side_effect = do_research
+    proposed = itinerary()
+    proposed["items"][0] = {
+        "day_number": 1,
+        "item_type": "flight",
+        "title": "Selected deal",
+        "evidence_id": "deal-deal-10",
+    }
+    result, gateway, _ = run_graph(
+        [proposed],
+        planning=offered["planning"],
+        message="deal 2",
+        deal_discovery_service=deals,
+        research_service=research,
+    )
+    assert result["planning"].phase == "generated"
+    assert result["planning"].selected_flight_id == "deal-10"
+    assert result["generated_itinerary"].items[0].title == "Example Air"
+    deals.discover.assert_awaited_once()
+    research.research.assert_awaited_once()
+    gateway.generate.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("no_deals", "No matching deals"),
+        ("airport_resolution_required", "specify the departure"),
+    ],
+)
+def test_deal_discovery_non_offer_results_pause_without_research(status, expected):
+    deals = AsyncMock()
+    deals.discover.return_value = DealDiscoveryResult(
+        status=status,
+        origin=AirportResolution(status="resolved", query="Lahore", iata_code="LHE"),
+        destination=AirportResolution(
+            status="resolved", query="Dubai", iata_code="DXB"
+        ),
+    )
+    result, _, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": _flexible_requirements().model_dump(mode="json"),
+            }
+        ],
+        deal_discovery_service=deals,
+    )
+    assert expected in result["assistant_response"]
+    assert result["planning"].pending_travel_selection is None
+    research.research.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        ({"duration_days": 31}, "at most 30 days"),
+        ({"cabin_class": "business"}, "requested cabin class"),
+    ],
+)
+def test_unsupported_flexible_trip_does_not_call_deal_provider(updates, expected):
+    deals = AsyncMock()
+    requested = TripRequirements.model_validate(
+        {**_flexible_requirements().model_dump(mode="json"), **updates}
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": requested.model_dump(mode="json")}],
+        deal_discovery_service=deals,
+    )
+    assert expected in result["assistant_response"]
+    deals.discover.assert_not_awaited()
+    research.research.assert_not_awaited()

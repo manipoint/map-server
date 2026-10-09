@@ -15,6 +15,8 @@ class TripRequirementField(StrEnum):
     DESTINATION = "destination"
     START_DATE = "start_date"
     END_DATE = "end_date"
+    DATE_WINDOW = "date_window"
+    DURATION_DAYS = "duration_days"
     ADULTS = "adults"
     MINOR_COUNT = "minor_count"
     MINOR_AGES = "minor_ages"
@@ -43,13 +45,26 @@ class TripRequirementsPolicy:
 
         if requirements.destination is None:
             missing.append(TripRequirementField.DESTINATION)
-
-        if requirements.start_date is None or requirements.start_date < today:
-            missing.append(TripRequirementField.START_DATE)
-
-        end_date = requirements.resolved_end_date
-        if end_date is None or end_date < today:
-            missing.append(TripRequirementField.END_DATE)
+        has_window = (
+            requirements.date_window_start is not None
+            or requirements.date_window_end is not None
+        )
+        if has_window:
+            if (
+                requirements.date_window_start is None
+                or requirements.date_window_end is None
+                or requirements.date_window_start < today
+                or requirements.date_window_end < today
+            ):
+                missing.append(TripRequirementField.DATE_WINDOW)
+            if requirements.duration_days is None:
+                missing.append(TripRequirementField.DURATION_DAYS)
+        else:
+            if requirements.start_date is None or requirements.start_date < today:
+                missing.append(TripRequirementField.START_DATE)
+            end_date = requirements.resolved_end_date
+            if end_date is None or end_date < today:
+                missing.append(TripRequirementField.END_DATE)
 
         if requirements.adults is None:
             missing.append(TripRequirementField.ADULTS)

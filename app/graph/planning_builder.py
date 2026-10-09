@@ -1,5 +1,6 @@
 """Deterministic conversational planner with two bounded model stages."""
 
+import hashlib
 import json
 import logging
 import re
@@ -16,10 +17,11 @@ from pydantic import BaseModel, ValidationError
 
 from app.common.time import utc_now
 from app.domain.clarifications import TravelClarification
+from app.domain.flights import FlightCabinClass
 from app.domain.itineraries import MAX_ITINERARY_ITEMS, ItineraryItemType
 from app.domain.planning import PendingTravelSelection, PlanningState
 from app.domain.planning_preferences import PlanningPreferences
-from app.domain.trip_requirements import TripRequirements
+from app.domain.trip_requirements import TripRequirements, TripTransport
 from app.domain.trip_rules import inclusive_day_count
 from app.graph.model_response import ModelResponseRefusedError, model_response_text
 from app.graph.planning_context import PlanningRuntimeContext
@@ -40,6 +42,12 @@ from app.graph.schemas.itineraries import GeneratedItinerary
 from app.graph.state import TravelGraphState
 from app.graph.subgraphs.model_gateway import ModelGateway
 from app.observability.metrics import record_metric
+from app.services.deal_discovery_service import (
+    DealChoice,
+    DealDiscoveryInput,
+    DealDiscoveryService,
+    DealDiscoverySnapshot,
+)
 from app.services.planning_research_service import (
     PlanningResearch,
     PlanningResearchService,
@@ -312,6 +320,46 @@ def _research_for_selection(
     return research.model_copy(update={"evidence": evidence})
 
 
+def _selected_deal(message: str, snapshot: DealDiscoverySnapshot) -> DealChoice | None:
+    """Resolve only an explicit displayed deal number or exact option ID."""
+    normalized = message.strip().casefold()
+    match = re.fullmatch(
+        r"(?:(?:i\s+)?(?:choose|select|pick|want|take|go\s+with)\s+)?"
+        r"(?:(?:the\s+)?deal\s+)?(?:option\s+)?(?:number\s+)?"
+        r"(10|[1-9])(?:\s+please)?[.!]?",
+        normalized,
+    )
+    if match:
+        index = int(match.group(1)) - 1
+        options = snapshot.result.options
+        return options[index] if index < len(options) else None
+    return next(
+        (
+            option
+            for option in snapshot.result.options
+            if option.option_id == normalized
+        ),
+        None,
+    )
+
+
+def _deal_evidence(choice: DealChoice) -> ResearchEvidence:
+    deal = choice.deal
+    return ResearchEvidence(
+        id=f"deal-{choice.option_id}",
+        kind="flight",
+        name=deal.airline or "Flight deal",
+        location=deal.destination,
+        description=(
+            f"Provider-reported round-trip deal {deal.origin} to {deal.destination}, "
+            f"{deal.start_date.isoformat()} to {deal.end_date.isoformat()}, "
+            f"{deal.price} {deal.currency}. Flight times and final fare are not verified."
+        ),
+        source_id=choice.option_id,
+        source_urls=(deal.flight_link,),
+    )
+
+
 class StructuredOutputValidationError(ValueError):
     """A model response failed its expected structured-output schema."""
 
@@ -397,17 +445,25 @@ def _safe_validation_detail(
     result["input_kind"] = (
         "null"
         if value is None
-        else "boolean"
-        if isinstance(value, bool)
-        else "number"
-        if isinstance(value, (int, float))
-        else "string"
-        if isinstance(value, str)
-        else "object"
-        if isinstance(value, dict)
-        else "array"
-        if isinstance(value, (list, tuple))
-        else "other"
+        else (
+            "boolean"
+            if isinstance(value, bool)
+            else (
+                "number"
+                if isinstance(value, (int, float))
+                else (
+                    "string"
+                    if isinstance(value, str)
+                    else (
+                        "object"
+                        if isinstance(value, dict)
+                        else "array"
+                        if isinstance(value, (list, tuple))
+                        else "other"
+                    )
+                )
+            )
+        )
     )
     if isinstance(value, str):
         result["input_length"] = len(value)
@@ -499,6 +555,21 @@ def merge_requirements(
     if unknown:
         raise ValueError("Unknown requirement fields")
     merged = {**current.model_dump(mode="json"), **updates}
+    exact_date_fields = {"start_date", "end_date"}
+    window_date_fields = {"date_window_start", "date_window_end"}
+    exact_supplied = any(updates.get(field) is not None for field in exact_date_fields)
+    window_supplied = any(
+        updates.get(field) is not None for field in window_date_fields
+    )
+
+    if exact_supplied and window_supplied:
+        raise ValueError("cannot update exact dates and a flexible window together")
+    if exact_supplied:
+        merged["date_window_start"] = None
+        merged["date_window_end"] = None
+    elif window_supplied:
+        merged["start_date"] = None
+        merged["end_date"] = None
     for field in ("interests", "constraints"):
         if field in updates and updates[field] is None:
             merged[field] = []
@@ -803,6 +874,34 @@ def route_planning_requirements(
             ),
         }
     requirements = current.requirements
+    if requirements.date_window_start is not None:
+        if (
+            requirements.duration_days is not None
+            and requirements.duration_days > MAX_PLANNING_DAYS
+        ):
+            return {
+                **result,
+                "route": "respond",
+                "assistant_response": f"Please split this trip into plans of at most {MAX_PLANNING_DAYS} days.",
+            }
+        if requirements.transport == TripTransport.FLIGHT:
+            if requirements.cabin_class != FlightCabinClass.ECONOMY:
+                return {
+                    **result,
+                    "route": "respond",
+                    "assistant_response": (
+                        "Flexible-date deals do not verify your requested cabin class. "
+                        "Please give exact dates so I can search matching flights."
+                    ),
+                }
+            return {**result, "route": "deal_discovery"}
+        return {
+            **result,
+            "route": "respond",
+            "assistant_response": (
+                "Please choose exact travel dates before I plan this trip."
+            ),
+        }
     days = inclusive_day_count(
         requirements.start_date,
         requirements.resolved_end_date,
@@ -828,6 +927,7 @@ def build_planning_graph(
     model_gateway: ModelGateway,
     research_service: PlanningResearchService,
     standalone_service: StandaloneSearchService | None = None,
+    deal_discovery_service: DealDiscoveryService | None = None,
 ):
     """No callable tools are attached to extraction or synthesis models."""
     graph = StateGraph(PlanningGraphState, context_schema=PlanningRuntimeContext)
@@ -842,6 +942,43 @@ def build_planning_graph(
         message_id = state.get("user_message_id")
         if message_id is not None and previous.requirements_message_id == message_id:
             return route_planning_requirements(previous, preferences=preferences)
+        if (
+            previous.pending_travel_selection
+            and previous.pending_travel_selection.kind == "deal"
+        ):
+            if previous.deal_discovery is not None:
+                snapshot = DealDiscoverySnapshot.model_validate(previous.deal_discovery)
+                choice = _selected_deal(state["latest_message"], snapshot)
+                if (
+                    choice is not None
+                    and choice.option_id in previous.pending_travel_selection.option_ids
+                ):
+                    requirements = merge_requirements(
+                        previous.requirements,
+                        {
+                            "start_date": choice.deal.start_date.isoformat(),
+                            "end_date": choice.deal.end_date.isoformat(),
+                            "duration_days": choice.deal.duration_days,
+                        },
+                    )
+                    updated = PlanningState.model_validate(
+                        {
+                            **previous.model_dump(),
+                            "requirements": requirements,
+                            "revision": previous.revision + 1,
+                            "itinerary": None,
+                            "research": None,
+                            "research_key": None,
+                            "pending_travel_selection": None,
+                            "selected_deal": choice.model_dump(mode="json"),
+                            "selected_flight_id": choice.option_id,
+                            "selected_hotel_id": None,
+                        }
+                    )
+                    return {
+                        **route_planning_requirements(updated, preferences=preferences),
+                        "requirements_changed": True,
+                    }
         if previous.pending_travel_selection and previous.research:
             stored_research = PlanningResearch.model_validate(previous.research)
             selected_id = _match_selection(
@@ -915,7 +1052,8 @@ def build_planning_graph(
             "today": utc_now().date().isoformat(),
             "profile_preferences": preferences.model_dump(mode="json"),
             "state": previous.model_dump(
-                mode="json", exclude={"itinerary", "research"}
+                mode="json",
+                exclude={"itinerary", "research", "deal_discovery", "selected_deal"},
             ),
             "recent_conversation": state.get("recent_conversation", []),
             "message": state["latest_message"],
@@ -1017,10 +1155,13 @@ def build_planning_graph(
             "destination",
             "start_date",
             "end_date",
+            "date_window_start",
+            "date_window_end",
             "duration_days",
             "adults",
             "minor_count",
             "minor_ages",
+            "infant_on_lap",
             "transport",
             "cabin_class",
             "budget_currency",
@@ -1029,6 +1170,8 @@ def build_planning_graph(
             "destination",
             "start_date",
             "end_date",
+            "date_window_start",
+            "date_window_end",
             "duration_days",
             "adults",
             "minor_count",
@@ -1045,6 +1188,7 @@ def build_planning_graph(
         if pending_selection and (
             (pending_selection.kind == "flight" and clear_flight)
             or (pending_selection.kind == "hotel" and clear_hotel)
+            or (pending_selection.kind == "deal" and clear_flight)
         ):
             pending_selection = None
         route_changed = any(
@@ -1092,6 +1236,8 @@ def build_planning_graph(
             research=base.research,
             research_key=base.research_key,
             pending_travel_selection=pending_selection,
+            deal_discovery=base.deal_discovery,
+            selected_deal=None if clear_flight else base.selected_deal,
             selected_flight_id=None if clear_flight else base.selected_flight_id,
             selected_hotel_id=None if clear_hotel else base.selected_hotel_id,
             nearby_flight_dates_checked=(
@@ -1135,8 +1281,138 @@ def build_planning_graph(
             "requirements_changed": False,
         }
 
+    async def discover_deals(state: PlanningGraphState) -> dict[str, object]:
+        planning = state["planning"]
+        req = planning.requirements
+
+        if deal_discovery_service is None:
+            return {
+                "assistant_response": "Flight deal search is currently unavailable.",
+            }
+
+        assert req.origin is not None
+        assert req.destination is not None
+        assert req.date_window_start is not None
+        assert req.date_window_end is not None
+        assert req.adults is not None
+
+        minor_ages = req.minor_ages or ()
+        infant_ages = [age for age in minor_ages if age < 2]
+        infants_on_lap = sum(req.infant_on_lap or ())
+        infants_in_seat = len(infant_ages) - infants_on_lap
+        children = len(minor_ages) - len(infant_ages)
+
+        request = DealDiscoveryInput(
+            origin=req.origin,
+            destination=req.destination,
+            window_start=req.date_window_start,
+            window_end=req.date_window_end,
+            adults=req.adults,
+            children=children,
+            infants_in_seat=infants_in_seat,
+            infants_on_lap=infants_on_lap,
+            currency=req.budget_currency or "USD",
+        )
+        request_key = hashlib.sha256(
+            request.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        cached = (
+            DealDiscoverySnapshot.model_validate(planning.deal_discovery)
+            if planning.deal_discovery is not None
+            else None
+        )
+        now = utc_now()
+        if (
+            cached is not None
+            and cached.request_key == request_key
+            and timedelta(0) <= now - cached.searched_at < timedelta(minutes=10)
+        ):
+            snapshot = cached
+        else:
+            result = await deal_discovery_service.discover(request=request)
+            snapshot = DealDiscoverySnapshot(
+                request_key=request_key, searched_at=now, result=result
+            )
+        result = snapshot.result
+
+        if result.status == "airport_resolution_required":
+            message = (
+                "Please specify the departure and destination airports "
+                "so I can search deals."
+            )
+        elif result.status == "no_deals":
+            message = (
+                "No matching deals appeared for this route and date window. "
+                "This does not mean there are no flights. Please choose exact "
+                "travel dates if you want me to check flight options."
+            )
+        else:
+            lines = ["Matching flight deals:"]
+            for index, option in enumerate(result.options, start=1):
+                deal = option.deal
+                stops = str(deal.stops) if deal.stops is not None else "unknown"
+                lines.append(
+                    f"{index}. {deal.start_date:%d %b %Y}–"
+                    f"{deal.end_date:%d %b %Y} "
+                    f"({deal.duration_days} days): "
+                    f"{deal.price} {deal.currency}; "
+                    f"{deal.airline or 'airline unspecified'}, "
+                    f"{stops} stops. {deal.flight_link}"
+                )
+            lines.append(
+                "These are provider-reported deals, not guaranteed bookings. "
+                "Reply with a deal option number or give your preferred exact dates."
+            )
+            message = "\n".join(lines)
+
+        if (
+            result.status != "airport_resolution_required"
+            and req.duration_days is not None
+        ):
+            last_start = req.date_window_end - timedelta(days=req.duration_days - 1)
+            starts = {
+                req.date_window_start,
+                req.date_window_start + (last_start - req.date_window_start) // 2,
+                last_start,
+            }
+            suggestions = sorted(starts)[:3]
+            message += (
+                "\n\nUnverified date examples for your requested trip length: "
+                + "; ".join(
+                    f"{start.isoformat()} to {(start + timedelta(days=req.duration_days - 1)).isoformat()}"
+                    for start in suggestions
+                )
+            )
+            message += ". Flight availability has not been checked for these dates."
+
+        pending = (
+            PendingTravelSelection(
+                kind="deal",
+                option_ids=tuple(option.option_id for option in result.options),
+                reason="choose",
+            )
+            if result.options
+            else None
+        )
+        updated = PlanningState.model_validate(
+            {
+                **planning.model_dump(),
+                "deal_discovery": snapshot.model_dump(mode="json"),
+                "pending_travel_selection": pending,
+            }
+        )
+        return {"assistant_response": message, "planning": updated}
+
     async def research(state: PlanningGraphState) -> dict[str, object]:
         planning = state["planning"]
+        selected_deal = (
+            DealChoice.model_validate(planning.selected_deal)
+            if planning.selected_deal is not None
+            else None
+        )
+        selected_evidence = (
+            _deal_evidence(selected_deal) if selected_deal is not None else None
+        )
         key = research_service.cache_key(planning.requirements)
         cached = (
             PlanningResearch.model_validate(planning.research)
@@ -1144,8 +1420,13 @@ def build_planning_graph(
             else None
         )
         now = utc_now()
+        cached_has_selected_deal = selected_evidence is None or (
+            cached is not None
+            and any(item.id == selected_evidence.id for item in cached.evidence)
+        )
         reusable = (
             cached is not None
+            and cached_has_selected_deal
             and planning.research_key == key
             and timedelta(0) <= now - cached.searched_at < timedelta(minutes=5)
             and not cached.warnings
@@ -1157,6 +1438,7 @@ def build_planning_graph(
         )
         reusable_for_selection = (
             cached is not None
+            and cached_has_selected_deal
             and (
                 planning.pending_travel_selection is not None
                 or planning.selected_flight_id is not None
@@ -1171,6 +1453,10 @@ def build_planning_graph(
         )
         if reusable or reusable_for_selection:
             result = cached
+        elif selected_evidence is not None:
+            result = await research_service.research(
+                planning.requirements, preselected_flight=selected_evidence
+            )
         elif planning.nearby_flight_dates_checked:
             result = await research_service.research(
                 planning.requirements,
@@ -1272,13 +1558,15 @@ def build_planning_graph(
                                     "nearby-date checks failed" in warning
                                     for warning in result.warnings
                                 )
-                                else "checked"
-                                if any(
-                                    "one-day-shifted trip dates" in warning
-                                    or "already checked" in warning
-                                    for warning in result.warnings
+                                else (
+                                    "checked"
+                                    if any(
+                                        "one-day-shifted trip dates" in warning
+                                        or "already checked" in warning
+                                        for warning in result.warnings
+                                    )
+                                    else None
                                 )
-                                else None
                             ),
                         ),
                     }
@@ -1465,13 +1753,19 @@ def build_planning_graph(
     graph.add_node("research", research)
     graph.add_node("synthesize_itinerary", synthesize)
     graph.add_node("standalone_search", standalone)
+    graph.add_node("deal_discovery", discover_deals)
 
     graph.add_edge(START, "extract_requirements")
     graph.add_edge("extract_requirements", "persist_requirements")
     graph.add_conditional_edges(
         "persist_requirements",
         lambda state: state["route"],
-        {"respond": END, "research": "research", "standalone": "standalone_search"},
+        {
+            "respond": END,
+            "research": "research",
+            "standalone": "standalone_search",
+            "deal_discovery": "deal_discovery",
+        },
     )
     graph.add_conditional_edges(
         "research",
@@ -1480,4 +1774,5 @@ def build_planning_graph(
     )
     graph.add_edge("synthesize_itinerary", END)
     graph.add_edge("standalone_search", END)
+    graph.add_edge("deal_discovery", END)
     return graph.compile()

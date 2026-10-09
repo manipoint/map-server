@@ -126,6 +126,14 @@ Expected weather coverage gaps are daily informational notes, not failure warnin
 so they do not invalidate successful search results. Transient weather failures
 still produce warnings and allow an unverified draft.
 
+The graph uses exact-date flight research as described above. The flexible-date
+deal flow is documented in
+[SerpApi integration](serpapi-integration.md#flexible-date-deal-discovery):
+the user chooses a returned deal or confirms exact dates before hotel, weather or
+itinerary work proceeds. Selecting a deal adopts its returned dates and flight
+evidence without another flight search. The Deals API response is a bounded deal
+feed, not a complete inventory of every flight in a route/date window.
+
 Evidence retains local IDs, provider source IDs, place source URLs, observation
 time and offer expiry where available. Named place/hotel/flight items must refer
 to current matching evidence. Their displayed name, location and description are

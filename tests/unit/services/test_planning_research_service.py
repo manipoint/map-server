@@ -143,6 +143,29 @@ def test_research_compacts_and_deduplicates_verified_places():
     client.get_weather_forecast.assert_not_awaited()
 
 
+def test_selected_deal_skips_exact_flight_provider_but_keeps_flight_evidence():
+    client = AsyncMock()
+    selected = ResearchEvidence(
+        id="deal-selected",
+        kind="flight",
+        name="Example Air",
+        location="DXB",
+        description="Provider-reported flight deal",
+        source_id="selected",
+    )
+    result = asyncio.run(
+        create_service(client, places_available=False).research(
+            complete_requirements(
+                destination="Dubai", transport="flight", cabin_class="economy"
+            ),
+            preselected_flight=selected,
+        )
+    )
+    assert result.evidence == (selected,)
+    client.search_flights.assert_not_awaited()
+    client.search_places.assert_not_awaited()
+
+
 def test_unavailable_roundtrip_and_hotel_providers_are_not_called():
     client = AsyncMock()
     client.search_places.return_value = place_result()

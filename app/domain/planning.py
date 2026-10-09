@@ -13,7 +13,7 @@ class PendingTravelSelection(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal["flight", "hotel", "flight_dates"]
+    kind: Literal["flight", "hotel", "flight_dates", "deal"]
     option_ids: tuple[Annotated[str, Field(max_length=300)], ...] = Field(
         default=(), max_length=10
     )
@@ -40,6 +40,8 @@ class PlanningState(BaseModel):
     research_key: str | None = None
     pending_search: dict[str, object] | None = None
     pending_travel_selection: PendingTravelSelection | None = None
+    deal_discovery: dict[str, object] | None = None
+    selected_deal: dict[str, object] | None = None
     selected_flight_id: str | None = Field(default=None, max_length=300)
     selected_hotel_id: str | None = Field(default=None, max_length=300)
     nearby_flight_dates_checked: bool = False

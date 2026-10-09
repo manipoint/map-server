@@ -3,12 +3,20 @@
 QUESTIONS = {
     "destination": ("Where would you like to travel?", "Aap kahan jana chahtay hain?"),
     "start_date": (
-        "What is your departure date, including year?",
+        "What is your departure date?",
         "Janay ki tareekh aur saal batayein.",
     ),
     "end_date": (
         "What is your return date or trip duration?",
         "Wapsi ki tareekh ya trip kitnay din ka hoga?",
+    ),
+    "date_window": (
+        "What is the earliest and latest date you can travel?",
+        "Aap kin pehli aur aakhri tareekhon ke darmiyan travel kar sakte hain?",
+    ),
+    "duration_days": (
+        "How many days should the trip be?",
+        "Trip kitne din ka hona chahiye?",
     ),
     "adults": ("How many adults are travelling?", "Kitnay adults safar karein ge?"),
     "minor_count": (
