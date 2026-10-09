@@ -3,7 +3,7 @@
 import asyncio
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.common.exceptions import ProviderUnavailableError
 from app.common.time import utc_now
@@ -27,6 +27,11 @@ from app.providers.flights.schemas import FlightSearchResult
 from app.providers.hotels.schemas import HotelSearchInput, HotelSearchResult
 from app.providers.places.schemas import PlaceSearchInput, PlaceSearchResult
 from app.providers.weather.schemas import CurrentWeather
+from app.services.deal_discovery_service import (
+    DealDiscoveryInput,
+    DealDiscoveryResult,
+    DealDiscoveryService,
+)
 
 
 class WeatherRequest(BaseModel):
@@ -76,9 +81,24 @@ class HotelsRequest(BaseModel):
         return self
 
 
+class StandaloneDealsInput(DealDiscoveryInput):
+    adults: int = Field(default=1, ge=1, le=9)
+
+
+class FlightDealsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["flight_deals"]
+    arguments: StandaloneDealsInput
+
+
 # Literal tags remain unambiguous; a plain union emits provider-supported anyOf.
 StandaloneRequest = (
-    WeatherRequest | CurrencyRequest | PlacesRequest | FlightsRequest | HotelsRequest
+    WeatherRequest
+    | CurrencyRequest
+    | PlacesRequest
+    | FlightsRequest
+    | HotelsRequest
+    | FlightDealsRequest
 )
 
 
@@ -135,10 +155,12 @@ class StandaloneSearchService:
         client: TravelMcpClient,
         enabled: frozenset[str],
         timeout_seconds: float = 15,
+        deal_discovery_service: DealDiscoveryService | None = None,
     ) -> None:
         self.client = client
         self.enabled = enabled
         self.timeout_seconds = timeout_seconds
+        self.deal_discovery_service = deal_discovery_service
 
     async def search(self, request: StandaloneRequest) -> SearchReply:
         if request.kind not in self.enabled:
@@ -159,12 +181,66 @@ class StandaloneSearchService:
                     result = await self.client.search_places(request=request.arguments)
                 elif isinstance(request, FlightsRequest):
                     result = await self.client.search_flights(request=request.arguments)
+                elif isinstance(request, FlightDealsRequest):
+                    if self.deal_discovery_service is None:
+                        return SearchReply(content="Flight deal search is unavailable.")
+                    result = await self.deal_discovery_service.discover(
+                        request=request.arguments
+                    )
                 else:
                     result = await self.client.search_hotels(request=request.arguments)
         except (ProviderUnavailableError, TimeoutError):
             return SearchReply(
                 content="Verified travel data is temporarily unavailable. Please retry later."
             )
+        if isinstance(result, DealDiscoveryResult):
+            if result.status == "airport_resolution_required":
+                requests = [
+                    choice
+                    for field, resolution in (
+                        ("origin", result.origin),
+                        ("destination", result.destination),
+                    )
+                    if (
+                        choice := build_airport_input_request(
+                            field=field, resolution=resolution
+                        )
+                    )
+                    is not None
+                ]
+                return SearchReply(
+                    content="\n".join(choice.question for choice in requests)
+                    or "Please specify the departure and destination airports.",
+                    clarification=(
+                        TravelClarification(requests=requests) if requests else None
+                    ),
+                    input_required=True,
+                )
+            if result.status == "no_deals":
+                return SearchReply(
+                    content=(
+                        "No matching deals appeared in this provider response. "
+                        "This does not mean there are no flights for the route."
+                    )
+                )
+            lines = [
+                "Provider-reported flight deals "
+                f"for {request.arguments.adults} adult(s):"
+            ]
+            for index, option in enumerate(result.options, start=1):
+                deal = option.deal
+                stops = str(deal.stops) if deal.stops is not None else "unknown"
+                lines.append(
+                    f"{index}. {deal.start_date.isoformat()} to "
+                    f"{deal.end_date.isoformat()} "
+                    f"({deal.duration_days} days), "
+                    f"{deal.price} {deal.currency}, "
+                    f"{deal.airline or 'airline unspecified'}, "
+                    f"{stops} stops. {deal.flight_link}"
+                )
+            lines.append("Prices and availability may change. Nothing is booked.")
+            return SearchReply(content="\n".join(lines))
+
         guidance = guidance_reply(result)
         if guidance is not None:
             return guidance

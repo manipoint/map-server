@@ -69,6 +69,12 @@ REQUIREMENTS_PROMPT = (
     "trip_pace for an explicit pace override. For chat return only a short "
     "clarification, acknowledgement or general travel guidance; never claim any "
     "reservation, payment, confirmed availability or verified budget."
+    " For a question asking only about flight deals for a route and flexible "
+    "date period, use intent=search with search.kind='flight_deals'. Put origin, "
+    "destination, window_start and window_end in search.arguments. Do not require "
+    "hotel, budget, cabin, interests or itinerary details. If adult count is "
+    "unstated, the standalone search defaults to one adult and the reply says so. "
+    "Do not invent a date window when the user has not supplied one."
 )
 REQUIREMENTS_PROMPT += (
     "\n\nOutput efficiency: return compact JSON without markdown or commentary. "

@@ -1,7 +1,9 @@
 """Grounded standalone results, guidance, failures and cancellation."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,15 +14,19 @@ from app.mcp.schemas.currency import CurrencyConversionGuidance
 from app.mcp.schemas.flights import FlightSearchGuidance
 from app.mcp.schemas.hotels import HotelSearchGuidance
 from app.mcp.schemas.places import PlaceSearchGuidance
+from app.providers.airports.schemas import AirportOption, AirportResolution
 from app.providers.currency.schemas import CurrencyConversionResult
 from app.providers.flights.schemas import FlightSearchResult
+from app.providers.serpapi.deals_client import FlightDeal
 from app.providers.weather.schemas import CurrentWeather
+from app.services.deal_discovery_service import DealChoice, DealDiscoveryResult
 from app.services.flight_search_preparation_service import (
     FlightSearchPreparationGuidance,
 )
 from app.services.planning_research_service import _compact_evidence
 from app.services.standalone_search_service import (
     CurrencyRequest,
+    FlightDealsRequest,
     FlightsRequest,
     HotelsRequest,
     PlacesRequest,
@@ -279,3 +285,140 @@ def test_disabled_capability_never_calls_provider():
     )
     assert "unavailable" in result.content
     client.get_current_weather.assert_not_awaited()
+
+
+def _flight_deals_request() -> FlightDealsRequest:
+    return FlightDealsRequest(
+        kind="flight_deals",
+        arguments={
+            "origin": "Lahore",
+            "destination": "Dubai",
+            "window_start": date(2099, 12, 1),
+            "window_end": date(2099, 12, 31),
+        },
+    )
+
+
+def _deal_result(status: str = "deals_available") -> DealDiscoveryResult:
+    return DealDiscoveryResult(
+        status=status,
+        origin=AirportResolution(status="resolved", query="Lahore", iata_code="LHE"),
+        destination=AirportResolution(
+            status="resolved", query="Dubai", iata_code="DXB"
+        ),
+        options=(
+            tuple(
+                DealChoice(
+                    option_id=f"option-{index}",
+                    deal=FlightDeal(
+                        origin="LHE",
+                        destination="DXB",
+                        start_date=date(2099, 12, index),
+                        end_date=date(2099, 12, index + 4),
+                        price=Decimal(200 + index),
+                        currency="USD",
+                        airline="Example Air",
+                        stops=0,
+                        flight_link="https://www.google.com/travel/flights",
+                    ),
+                )
+                for index in (2, 10)
+            )
+            if status == "deals_available"
+            else ()
+        ),
+    )
+
+
+def test_standalone_deals_default_party_and_render_every_option():
+    request = _flight_deals_request()
+    assert request.arguments.adults == 1
+    client = AsyncMock()
+    deals = SimpleNamespace(discover=AsyncMock())
+    deals.discover.return_value = _deal_result()
+    service = StandaloneSearchService(
+        client=client,
+        enabled=frozenset({"flight_deals"}),
+        deal_discovery_service=deals,
+    )
+
+    reply = asyncio.run(service.search(request))
+
+    assert "1 adult" in reply.content
+    assert "2099-12-02" in reply.content
+    assert "2099-12-10" in reply.content
+    assert "Nothing is booked" in reply.content
+    deals.discover.assert_awaited_once_with(request=request.arguments)
+    client.search_flights.assert_not_awaited()
+
+
+def test_standalone_deals_empty_feed_is_not_reported_as_no_flights():
+    deals = SimpleNamespace(discover=AsyncMock())
+    deals.discover.return_value = _deal_result("no_deals")
+    service = StandaloneSearchService(
+        client=AsyncMock(),
+        enabled=frozenset({"flight_deals"}),
+        deal_discovery_service=deals,
+    )
+
+    reply = asyncio.run(service.search(_flight_deals_request()))
+
+    assert "No matching deals" in reply.content
+    assert "does not mean there are no flights" in reply.content
+
+
+def test_standalone_deals_ambiguous_airport_returns_typed_clarification():
+    option = AirportOption(
+        provider_location_id="LHE",
+        iata_code="LHE",
+        location_type="airport",
+        name="Lahore Airport",
+        country_code="PK",
+    )
+    deals = SimpleNamespace(discover=AsyncMock())
+    deals.discover.return_value = _deal_result(
+        "airport_resolution_required"
+    ).model_copy(
+        update={
+            "origin": AirportResolution(
+                status="selection_required",
+                query="Lahore",
+                options=[
+                    option,
+                    option.model_copy(
+                        update={
+                            "provider_location_id": "LHR",
+                            "iata_code": "LHR",
+                            "name": "Other Airport",
+                        }
+                    ),
+                ],
+            )
+        }
+    )
+    service = StandaloneSearchService(
+        client=AsyncMock(),
+        enabled=frozenset({"flight_deals"}),
+        deal_discovery_service=deals,
+    )
+
+    reply = asyncio.run(service.search(_flight_deals_request()))
+
+    assert reply.input_required is True
+    assert reply.clarification is not None
+    assert "Lahore" in reply.content
+    assert any(
+        option.iata_code == "LHE" for option in reply.clarification.requests[0].options
+    )
+
+
+def test_disabled_standalone_deals_never_calls_provider():
+    deals = SimpleNamespace(discover=AsyncMock())
+    service = StandaloneSearchService(
+        client=AsyncMock(),
+        enabled=frozenset(),
+        deal_discovery_service=deals,
+    )
+    reply = asyncio.run(service.search(_flight_deals_request()))
+    assert "unavailable" in reply.content
+    deals.discover.assert_not_awaited()

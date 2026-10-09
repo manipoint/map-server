@@ -187,10 +187,12 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                     {"weather"}
                     | ({"currency"} if currency_provider else set())
                     | ({"places"} if place_search_service else set())
+                    | ({"flight_deals"} if deal_discovery_service else set())
                     | ({"flights"} if flight_search_service else set())
                     | ({"hotels"} if hotel_search_service else set())
                 ),
                 timeout_seconds=settings.provider_timeout_seconds,
+                deal_discovery_service=deal_discovery_service,
             ),
             research_service=PlanningResearchService(
                 client=mcp_client,
