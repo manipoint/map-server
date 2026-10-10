@@ -67,11 +67,11 @@ verify cabin class.
 
 There are two user intents:
 
-- **Deal discovery:** the current graph reaches deals after collecting complete
-  planning requirements. A standalone route-and-period deal query without the
-  other planning details is not wired yet. A deal card uses the provider's actual
-  dates, duration, price, airline, stops and link. It is not reshaped to fit the
-  requested duration.
+- **Deal discovery:** a standalone route-and-period query can show deals without
+  collecting the other trip-planning details first. Its conversation-scoped result
+  is saved so the user can select a deal in a later message. A deal card uses the
+  provider's actual dates, duration, price, airline, stops and link. It is not
+  reshaped to fit the requested duration.
 - **Trip planning with flexible dates:** collect route, party and other required
   trip details, then show up to three unverified calendar examples for the
   requested duration along with any matching alternative-duration deals returned
@@ -80,10 +80,11 @@ There are two user intents:
 
 If the user selects a returned deal, treat its `start_date` and `end_date` as the
 chosen trip dates and use the deal's included flight details as the flight
-evidence. Do not repeat an exact-date flight search solely to reverify the fare
-or availability. Continue with hotel search for those dates and then itinerary
-synthesis. The response must present deal price and availability as provider
-observations, not a booking or checkout guarantee. If the user declines deals
+evidence. For a standalone deal query, collect any remaining trip requirements
+before hotel search or itinerary synthesis. Do not repeat an exact-date flight
+search solely to reverify the fare or availability. The response must present deal
+price and availability as provider observations, not a booking or checkout
+guarantee. If the user declines deals
 and keeps the requested trip duration, obtain/select exact dates, run the normal
 exact-date flight search, and continue with hotels and itinerary after the flight
 choice is resolved.

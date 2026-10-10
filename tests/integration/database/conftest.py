@@ -3,7 +3,9 @@
 import os
 import socket
 import subprocess
+import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic.autogenerate import compare_metadata
@@ -18,61 +20,143 @@ from app.database.base import Base
 
 @pytest.fixture
 def postgres_url(tmp_path):
-    """Never use application credentials or an existing database."""
+    """Use only a disposable local PostgreSQL instance."""
     configured = os.environ.get("TEST_POSTGRES_BIN")
-    if not configured:
-        pytest.skip("Set TEST_POSTGRES_BIN to run isolated PostgreSQL tests")
-    binaries = Path(configured)
-    data = tmp_path / "data"
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    subprocess.run(
-        [
-            str(binaries / "initdb"),
-            "-D",
-            str(data),
-            "-U",
-            "catalogue_test",
-            "-A",
-            "trust",
-            "--no-locale",
-            "-E",
-            "UTF8",
-        ],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
-    subprocess.run(
-        [
-            str(binaries / "pg_ctl"),
-            "-D",
-            str(data),
-            "-l",
-            str(tmp_path / "postgres.log"),
-            "-o",
-            f"-h 127.0.0.1 -p {port} -F -c unix_socket_directories=''",
-            "-w",
-            "start",
-        ],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
-    try:
-        yield f"postgresql+asyncpg://catalogue_test@127.0.0.1:{port}/postgres"
-    finally:
+
+    if configured:
+        binaries = Path(configured)
+        data = tmp_path / "data"
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+
+        subprocess.run(
+            [
+                str(binaries / "initdb"),
+                "-D",
+                str(data),
+                "-U",
+                "catalogue_test",
+                "-A",
+                "trust",
+                "--no-locale",
+                "-E",
+                "UTF8",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
         subprocess.run(
             [
                 str(binaries / "pg_ctl"),
                 "-D",
                 str(data),
-                "-m",
-                "immediate",
+                "-l",
+                str(tmp_path / "postgres.log"),
+                "-o",
+                f"-h 127.0.0.1 -p {port} -F -c unix_socket_directories=''",
                 "-w",
-                "stop",
+                "start",
             ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        try:
+            yield f"postgresql+asyncpg://catalogue_test@127.0.0.1:{port}/postgres"
+        finally:
+            subprocess.run(
+                [
+                    str(binaries / "pg_ctl"),
+                    "-D",
+                    str(data),
+                    "-m",
+                    "immediate",
+                    "-w",
+                    "stop",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        return
+
+    if os.environ.get("TEST_POSTGRES_DOCKER") != "1":
+        pytest.skip(
+            "Set TEST_POSTGRES_BIN or TEST_POSTGRES_DOCKER=1 "
+            "to run isolated PostgreSQL tests"
+        )
+
+    image = os.environ.get("TEST_POSTGRES_DOCKER_IMAGE", "postgres:17")
+    name = f"map-server-test-postgres-{uuid4().hex}"
+
+    started = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--detach",
+            "--rm",
+            "--pull=never",
+            "--name",
+            name,
+            "--env",
+            "POSTGRES_USER=catalogue_test",
+            "--env",
+            "POSTGRES_DB=postgres",
+            "--env",
+            "POSTGRES_HOST_AUTH_METHOD=trust",
+            "--publish",
+            "127.0.0.1::5432",
+            image,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    container_id = started.stdout.strip()
+
+    try:
+        deadline = time.monotonic() + 45
+        while True:
+            ready = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    container_id,
+                    "pg_isready",
+                    "-U",
+                    "catalogue_test",
+                    "-d",
+                    "postgres",
+                ],
+                capture_output=True,
+                timeout=5,
+            )
+            if ready.returncode == 0:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "Disposable PostgreSQL container did not become ready"
+                )
+            time.sleep(0.25)
+
+        published = subprocess.run(
+            ["docker", "port", container_id, "5432/tcp"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # Docker publishes this container only on 127.0.0.1.
+        port = int(published.stdout.strip().rsplit(":", 1)[1])
+
+        yield f"postgresql+asyncpg://catalogue_test@127.0.0.1:{port}/postgres"
+    finally:
+        subprocess.run(
+            ["docker", "rm", "--force", container_id],
             check=True,
             capture_output=True,
             timeout=30,
