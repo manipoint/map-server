@@ -365,6 +365,8 @@ def test_standalone_deals_empty_feed_is_not_reported_as_no_flights():
 
     assert "No matching deals" in reply.content
     assert "does not mean there are no flights" in reply.content
+    assert reply.deal_result is not None
+    assert reply.deal_result.status == "no_deals"
 
 
 def test_standalone_deals_ambiguous_airport_returns_typed_clarification():

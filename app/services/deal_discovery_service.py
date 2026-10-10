@@ -64,7 +64,9 @@ class DealDiscoverySnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     request_key: str = Field(min_length=64, max_length=64)
     searched_at: AwareDatetime
+    request: DealDiscoveryInput | None = None
     result: DealDiscoveryResult
+    reply: str | None = Field(default=None, max_length=8_000)
 
 
 class DealDiscoveryService:

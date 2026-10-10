@@ -106,6 +106,7 @@ class SearchReply(BaseModel):
     content: str
     clarification: TravelClarification | None = None
     input_required: bool = False
+    deal_result: DealDiscoveryResult | None = Field(default=None, exclude=True)
 
 
 def guidance_reply(result: object) -> SearchReply | None:
@@ -131,7 +132,8 @@ def guidance_reply(result: object) -> SearchReply | None:
         )
     if isinstance(result, (PlaceSearchGuidance, HotelSearchGuidance)):
         return SearchReply(
-            content="\n".join((result.message, *result.candidates)), input_required=True
+            content="\n".join((result.message, *result.candidates)),
+            input_required=True,
         )
     if isinstance(result, (FlightSearchGuidance, CurrencyConversionGuidance)):
         if result.message == ONE_WAY_ONLY_MESSAGE:
@@ -215,13 +217,15 @@ class StandaloneSearchService:
                         TravelClarification(requests=requests) if requests else None
                     ),
                     input_required=True,
+                    deal_result=result,
                 )
             if result.status == "no_deals":
                 return SearchReply(
                     content=(
                         "No matching deals appeared in this provider response. "
                         "This does not mean there are no flights for the route."
-                    )
+                    ),
+                    deal_result=result,
                 )
             lines = [
                 "Provider-reported flight deals "
@@ -239,7 +243,7 @@ class StandaloneSearchService:
                     f"{stops} stops. {deal.flight_link}"
                 )
             lines.append("Prices and availability may change. Nothing is booked.")
-            return SearchReply(content="\n".join(lines))
+            return SearchReply(content="\n".join(lines), deal_result=result)
 
         guidance = guidance_reply(result)
         if guidance is not None:

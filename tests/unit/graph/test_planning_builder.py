@@ -74,6 +74,7 @@ def run_graph(
     research_service=None,
     planning_preferences=None,
     deal_discovery_service=None,
+    standalone_service=None,
 ):
     # Fixture payloads explicitly identify the fields intended to change.
     outputs = [
@@ -105,6 +106,7 @@ def run_graph(
         model_gateway=gateway,
         research_service=research,
         deal_discovery_service=deal_discovery_service,
+        standalone_service=standalone_service,
     )
     result = asyncio.run(
         graph.ainvoke(
@@ -1132,6 +1134,44 @@ def test_selecting_saved_deal_uses_its_dates_without_a_new_deal_search():
     gateway.generate.assert_not_awaited()
 
 
+def test_selecting_legacy_saved_deal_without_request_preserves_requirements():
+    deals = AsyncMock()
+    deals.discover.return_value = _flexible_deals()
+    offered, _, _ = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": _flexible_requirements().model_dump(mode="json"),
+            }
+        ],
+        deal_discovery_service=deals,
+    )
+    saved = offered["planning"].model_dump(mode="json")
+    saved["deal_discovery"].pop("request")
+    legacy = PlanningState.model_validate(saved)
+    research = AsyncMock()
+    research.cache_key = Mock(return_value="legacy-deal-key")
+    research.research.return_value = PlanningResearch(
+        searched_at=datetime.now(UTC),
+        guidance=(SearchReply(content="More trip details required."),),
+    )
+
+    selected, _, _ = run_graph(
+        [],
+        planning=legacy,
+        message="deal 2",
+        research_service=research,
+    )
+
+    assert selected["planning"].requirements.origin == legacy.requirements.origin
+    assert (
+        selected["planning"].requirements.destination == legacy.requirements.destination
+    )
+    assert selected["planning"].requirements.start_date == date(2099, 12, 10)
+    assert selected["planning"].requirements.end_date == date(2099, 12, 14)
+    assert selected["planning"].selected_deal["option_id"] == "deal-10"
+
+
 def test_selected_deal_generates_itinerary_from_saved_flight_evidence():
     deals = AsyncMock()
     deals.discover.return_value = _flexible_deals()
@@ -1224,3 +1264,81 @@ def test_unsupported_flexible_trip_does_not_call_deal_provider(updates, expected
     assert expected in result["assistant_response"]
     deals.discover.assert_not_awaited()
     research.research.assert_not_awaited()
+
+
+def _standalone_deal_extraction() -> dict[str, object]:
+    return {
+        "intent": "search",
+        "updates": {},
+        "search": {
+            "kind": "flight_deals",
+            "arguments": {
+                "origin": "Lahore",
+                "destination": "Dubai",
+                "window_start": "2099-12-01",
+                "window_end": "2099-12-31",
+            },
+        },
+    }
+
+
+def test_standalone_deals_reuse_saved_result_without_second_paid_search():
+    standalone = AsyncMock()
+    standalone.search.return_value = SearchReply(
+        content="Two provider-reported deals for 1 adult.",
+        deal_result=_flexible_deals(),
+    )
+    first, _, research = run_graph(
+        [_standalone_deal_extraction()],
+        standalone_service=standalone,
+    )
+    assert first["planning"].pending_travel_selection.option_ids == (
+        "deal-2",
+        "deal-10",
+    )
+    research.research.assert_not_awaited()
+
+    repeated, _, research = run_graph(
+        [_standalone_deal_extraction()],
+        planning=first["planning"],
+        standalone_service=standalone,
+    )
+    assert repeated["assistant_response"] == first["assistant_response"]
+    standalone.search.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+
+def test_standalone_deal_selection_seeds_route_party_and_dates():
+    standalone = AsyncMock()
+    standalone.search.return_value = SearchReply(
+        content="Two provider-reported deals for 1 adult.",
+        deal_result=_flexible_deals(),
+    )
+    offered, _, _ = run_graph(
+        [_standalone_deal_extraction()],
+        standalone_service=standalone,
+    )
+    research = AsyncMock()
+    research.cache_key = Mock(return_value="standalone-deal-key")
+    research.research.return_value = PlanningResearch(
+        searched_at=datetime.now(UTC),
+        guidance=(SearchReply(content="More trip details required."),),
+    )
+
+    selected, _, _ = run_graph(
+        [],
+        planning=offered["planning"],
+        message="deal 2",
+        research_service=research,
+    )
+
+    req = selected["planning"].requirements
+    assert req.origin == "Lahore"
+    assert req.destination == "Dubai"
+    assert req.adults == 1
+    assert req.minor_count == 0
+    assert req.transport == "flight"
+    assert req.start_date == date(2099, 12, 10)
+    assert req.end_date == date(2099, 12, 14)
+    assert selected["planning"].selected_deal["option_id"] == "deal-10"
+    standalone.search.assert_awaited_once()
