@@ -127,6 +127,8 @@ def postgres_url(tmp_path):
                     "exec",
                     container_id,
                     "pg_isready",
+                    "-h",
+                    "127.0.0.1",
                     "-U",
                     "catalogue_test",
                     "-d",
