@@ -11,6 +11,81 @@ Skardu is a destination while Upper Kachura Lake, Satpara Lake, Kharpocho Fort,
 and Katpana Cold Desert are places associated with Skardu. A destination
 coordinate is the map centre; each place has its own coordinate.
 
+## Planned: country-first city suggestions in conversational planning
+
+**Status: design only; not implemented in the planning runtime.** Existing Home
+and View All behavior remains unchanged. This workflow reuses saved user
+preferences, published destinations, and normalized destination interest/style
+tags; it does not add a recommendation model call or live provider search.
+
+When a user supplies a country rather than a city, the planner should ask for a
+city before collecting other missing requirements or running itinerary research.
+Details already supplied in that turn, including dates, duration, party size, and
+transport, must still be extracted, validated, and preserved.
+
+### Country identification and selection
+
+- Recognized country names and aliases map to an ISO country code. An uncertain
+  spelling correction, such as `turky`, must be presented for confirmation rather
+  than silently accepted. A small alias map is not a global country resolver.
+- Only published destinations with the requested `country_code` and
+  `destination_type=city` are eligible. A region, island, or country entry must
+  not be presented as a city. Already supplied cities bypass this stage.
+- Offer at most three eligible cities, always allowing another city. Even a
+  single candidate requires explicit selection; suggestions are not consent.
+- If no eligible catalogue cities exist, ask the user to supply a city and use
+  the existing bounded location-resolution service when needed. Catalogue absence
+  is not evidence that a destination does not exist or cannot be visited.
+- Preserve stable candidate IDs, the requested country, and option order in
+  conversation-owned pending selection state. Resolve numbered replies against
+  that stored state, recheck publication/country eligibility, and validate free
+  text instead of treating it as a catalogue ID. A city outside the requested
+  country requires clarification rather than silent adoption.
+- Country changes and explicit new trips invalidate pending suggestions. City
+  selection retains unrelated requirements and resumes ordinary missing-field
+  collection. Multi-city planning is outside this initial single-city contract.
+
+### Preference precedence and ranking
+
+Use explicit trip interests when `interests_overridden` is true, including an
+explicitly empty list. Otherwise use the saved profile interests. Saved travel
+styles are secondary ranking inputs; missing budget or pace does not block this
+interest-based workflow. Do not reuse Home's `personalization_ready` gate.
+
+Order eligible candidates by descending interest-match count, then descending
+style-match count, then ascending editorial rank and slug. This is deliberately
+separate from Home's weighted style/interest/budget score. Budget is not a verified
+price and does not determine city eligibility. Rank/filter in SQL before the
+result limit; do not fetch a global page and then filter by country or load the
+complete catalogue into Python on the request path.
+
+Explanation text may cite only the effective interest tags that actually match
+the candidate. With no interest match, describe the result as a catalogue option,
+not an interest-personalized recommendation. Return compact IDs, names, country
+codes, and matched tags; cover images and full destination details are optional
+presentation data and must not be prerequisites for a text suggestion.
+
+### Implementation sequence and validation
+
+1. Define compact typed suggestions and a pure ranking reference with unit tests.
+2. Add a bounded country/city repository query with identical ordering, plus a
+   service that applies preference precedence without another profile read.
+3. Add validated pending destination selection state and a country/city stage
+   after extraction/merge and before ordinary requirement collection/research.
+   Document backward-compatible state defaults and replay behavior.
+4. Render localized questions through the existing text completion contract.
+   Structured Flutter city-selection events are a separate contract change.
+5. Add mocked multi-turn tests and database query tests for country filtering,
+   publication, city types, partial/empty interests, deterministic ties, no
+   candidates, numbered/free-text selection, state invalidation, and preservation
+   of already supplied requirements. Confirm no research/synthesis runs while a
+   destination choice is pending.
+
+Committed seed definitions contain Istanbul, London, and Tokyo. Runtime coverage
+depends on applied migrations and current publication state; these definitions
+are not proof that the running database contains those cities. Do not fabricate
+alternative city records to fill the three-option limit.
+
 ## Collections and View All
 
 ```http

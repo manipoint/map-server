@@ -79,6 +79,23 @@ as `requirements-v6`; synthesis policy is `itinerary-v5-schedule-weather`.
 Their missing-field codes persist internally; they currently travel to Flutter as ordinary text
 completion messages, not a new structured requirements-form event.
 
+### Planned country-first destination clarification
+
+This is a design proposal, not current runtime behavior. After validated
+extraction/merge, a country-only destination should pause ordinary requirement
+questions and itinerary research while the user selects a city. Suggestions
+should come from published country-scoped city catalogue records, ranked by
+explicit trip interests or saved profile interests, without another model call.
+Persisted pending options must support safe numbered follow-ups, ownership-scoped
+replay, and invalidation on country change/new trip. Choosing a city must preserve
+dates, duration, party, and explicit transport already collected. An uncertain
+country spelling must be confirmed; no-match guidance must remain actionable.
+
+See [the planned catalogue workflow](destination-catalogue.md#planned-country-first-city-suggestions-in-conversational-planning)
+for preference precedence, ordering, fallbacks, and implementation/test sequence.
+The existing `TripRequirementsPolicy` currently treats a non-null destination
+string as supplied; country/city completeness is not yet enforced.
+
 ## Research and grounding
 
 `PlanningResearchService` maps complete requirements through `TripRequestMapper`.
