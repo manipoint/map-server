@@ -4,6 +4,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.domain.itineraries import MAX_ITINERARY_DAYS, MAX_ITINERARY_ITEMS
 from app.domain.trip_requirements import TripRequirements
@@ -56,13 +57,25 @@ class RequirementExtraction(BaseModel):
     @model_validator(mode="after")
     def validate_changes(self) -> Self:
         if (self.intent == "search") != (self.search is not None):
-            raise ValueError("Search intent requires exactly one typed search request")
+            raise PydanticCustomError(
+                "extraction_search_mismatch",
+                "Search must be present exactly when intent is search.",
+            )
+
         if len(set(self.changed_fields)) != len(self.changed_fields):
-            raise ValueError("changed_fields must be unique")
+            raise PydanticCustomError(
+                "extraction_duplicate_changed_fields",
+                "changed_fields must contain unique field names.",
+            )
+
         if any(
             name not in self.updates.model_fields_set for name in self.changed_fields
         ):
-            raise ValueError("Every changed field must have a value in updates")
+            raise PydanticCustomError(
+                "extraction_missing_update",
+                "Each changed_fields entry must have a value in updates.",
+            )
+
         return self
 
     def selected_updates(self) -> dict[str, object]:

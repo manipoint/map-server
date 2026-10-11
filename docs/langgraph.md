@@ -4,7 +4,9 @@
 
 The default lifespan graph now uses the deterministic planning workflow from the
 Roamly R&D review. Authentication, ownership, durable state and transactions remain
-in services/repositories. Models cannot create trips or commit data. A validated standalone search intent selects one of five narrow server-controlled capabilities.
+in services/repositories. Models cannot create trips or commit data. A validated
+standalone search intent selects weather, currency, places, flights, hotels or
+flight deals through narrow server-controlled capabilities.
 
 ```text
 Persist user message → reserve generation capacity → acquire ordered conversation lease → claim assistant run
@@ -70,8 +72,11 @@ locations, then collect remaining requirements. Revisions receive the previous
 draft and fresh or reusable research. Changing route or dates creates a new draft trip rather
 than rewriting an existing saved trip.
 
-Collection questions use up to three templates per turn. Their missing-field
-codes persist internally; they currently travel to Flutter as ordinary text
+Collection questions use up to three unique templates per turn in policy order.
+The compact extraction prompt and localized question renderer share this limit;
+English/Roman Urdu templates remain deterministic. Extraction policy is versioned
+as `requirements-v6`; synthesis policy is `itinerary-v5-schedule-weather`.
+Their missing-field codes persist internally; they currently travel to Flutter as ordinary text
 completion messages, not a new structured requirements-form event.
 
 ## Research and grounding

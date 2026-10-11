@@ -16,7 +16,7 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, ValidationError
 
 from app.common.time import utc_now
-from app.domain.clarifications import TravelClarification
+from app.domain.clarifications import TravelClarification, build_airport_input_request
 from app.domain.flights import FlightCabinClass
 from app.domain.itineraries import MAX_ITINERARY_ITEMS, ItineraryItemType
 from app.domain.planning import PendingTravelSelection, PlanningState
@@ -1104,9 +1104,30 @@ def build_planning_graph(
                         "errors": error.error_details,
                     }
                 )
+                repair_instructions = {
+                    "extraction_search_mismatch": (
+                        "When intent='search', provide exactly one supported typed search "
+                        "request. For every other intent, omit search or set it to null."
+                    ),
+                    "extraction_duplicate_changed_fields": (
+                        "Remove duplicate names from changed_fields. List each explicitly "
+                        "changed field exactly once."
+                    ),
+                    "extraction_missing_update": (
+                        "Include an updates property for every name in changed_fields. "
+                        "Use null only when the user explicitly clears that field. "
+                        "Remove names that the user did not change."
+                    ),
+                }
                 extraction_data["repair"] = {
                     "fields": error.error_fields,
                     "errors": error.error_types,
+                    "details": error.error_details,
+                    "instructions": [
+                        repair_instructions[error_type]
+                        for error_type in error.error_types
+                        if error_type in repair_instructions
+                    ],
                 }
                 if attempt == 0:
                     continue
@@ -1345,6 +1366,7 @@ def build_planning_graph(
         if (
             cached is not None
             and cached.request_key == request_key
+            and cached.result.status != "airport_resolution_required"
             and timedelta(0) <= now - cached.searched_at < timedelta(minutes=10)
         ):
             snapshot = cached
@@ -1355,10 +1377,36 @@ def build_planning_graph(
             )
         result = snapshot.result
 
+        clarification = None
         if result.status == "airport_resolution_required":
-            message = (
-                "Please specify the departure and destination airports "
-                "so I can search deals."
+            requests = [
+                choice
+                for field, resolution in (
+                    ("origin", result.origin),
+                    ("destination", result.destination),
+                )
+                if (
+                    choice := build_airport_input_request(
+                        field=field, resolution=resolution
+                    )
+                )
+                is not None
+            ]
+            clarification = TravelClarification(requests=requests) if requests else None
+            lines = [
+                line
+                for choice in requests
+                for line in (
+                    choice.question,
+                    *(
+                        f"{index}. {option.display_name}"
+                        for index, option in enumerate(choice.options, start=1)
+                    ),
+                )
+            ]
+            message = "\n".join(lines) or (
+                "I could not identify an airport for this route. "
+                "Please clarify the city and country."
             )
         elif result.status == "no_deals":
             message = (
@@ -1421,7 +1469,11 @@ def build_planning_graph(
                 "pending_travel_selection": pending,
             }
         )
-        return {"assistant_response": message, "planning": updated}
+        return {
+            "assistant_response": message,
+            "clarification": clarification,
+            "planning": updated,
+        }
 
     async def research(state: PlanningGraphState) -> dict[str, object]:
         planning = state["planning"]

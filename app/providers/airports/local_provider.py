@@ -13,6 +13,10 @@ from app.providers.airports.schemas import (
     AirportSearchResult,
 )
 
+# The source directory includes military facilities with IATA codes. Only verified
+# non-passenger entries belong here; do not infer eligibility from airport names.
+NON_PASSENGER_AIRPORT_CODES = frozenset({"NHD"})
+
 
 def _normalize_query(value: str) -> str:
     return " ".join(value.replace(",", " ").casefold().split())
@@ -23,12 +27,21 @@ class LocalAirportProvider:
 
     def __init__(self, *, directory: AirportDirectory) -> None:
         snapshot = AirportDirectory.model_validate(directory.model_dump())
+        passenger_airports = tuple(
+            airport
+            for airport in snapshot.airports
+            if airport.iata_code not in NON_PASSENGER_AIRPORT_CODES
+        )
+        if not passenger_airports:
+            raise ProviderConfigurationError(
+                "Airport directory contains no supported passenger airports"
+            )
         self._airport_codes = frozenset(
-            airport.iata_code for airport in snapshot.airports
+            airport.iata_code for airport in passenger_airports
         )
         index: dict[str, dict[str, AirportOption]] = {}
 
-        for airport in snapshot.airports:
+        for airport in passenger_airports:
             names = {airport.name}
 
             if airport.city_name is not None:

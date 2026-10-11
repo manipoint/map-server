@@ -21,6 +21,10 @@ timezone metadata snapshots. Generate and validate them with the existing
 tools, then configure `AIRPORT_DIRECTORY_PATH` and `FLIGHT_METADATA_PATH`.
 These datasets provide airport identifiers and timezone metadata independently
 of any search provider.
+The passenger lookup excludes known non-passenger facilities such as Al Minhad
+Air Base (`NHD`), which the source directory also lists with an IATA code. If a
+city still matches multiple supported airports, the assistant asks for the
+unresolved airport only and returns its choices as structured input.
 
 Hotel search needs a destination resolver: Google Places, or a configured
 `WEATHER_API_KEY` for WeatherAPI location search.

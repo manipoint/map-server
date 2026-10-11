@@ -78,9 +78,11 @@ def run_graph(
 ):
     # Fixture payloads explicitly identify the fields intended to change.
     outputs = [
-        {**output, "changed_fields": list(output.get("updates", {}))}
-        if "intent" in output and "changed_fields" not in output
-        else output
+        (
+            {**output, "changed_fields": list(output.get("updates", {}))}
+            if "intent" in output and "changed_fields" not in output
+            else output
+        )
         for output in outputs
     ]
     message_id = user_message_id or uuid4()
@@ -446,6 +448,197 @@ def test_requirement_extraction_repairs_invalid_structured_output_once():
     )
     assert result["planning"].requirements.destination == "Japan"
     research.research.assert_not_awaited()
+
+
+def test_extraction_repair_explains_duplicate_changed_fields():
+    result, gateway, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {"destination": "Japan"},
+                "changed_fields": ["destination", "destination"],
+            },
+            {
+                "intent": "plan",
+                "updates": {"destination": "Japan"},
+                "changed_fields": ["destination"],
+            },
+        ],
+        message="Plan a trip to Japan",
+    )
+
+    assert gateway.generate.await_count == 2
+
+    repair = json.loads(
+        gateway.generate.await_args_list[1].kwargs["messages"][1].content
+    )["repair"]
+
+    assert "extraction_duplicate_changed_fields" in repair["errors"]
+    assert any(
+        "Remove duplicate names" in instruction
+        for instruction in repair["instructions"]
+    )
+
+    assert result["planning"].requirements.destination == "Japan"
+    research.research.assert_not_awaited()
+
+
+def test_extraction_repair_explains_missing_update_values():
+    result, gateway, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {"destination": "Japan"},
+                "changed_fields": ["destination", "adults"],
+            },
+            {
+                "intent": "plan",
+                "updates": {"destination": "Japan", "adults": 2},
+                "changed_fields": ["destination", "adults"],
+            },
+        ],
+        message="Plan a trip to Japan for two adults",
+    )
+
+    assert gateway.generate.await_count == 2
+
+    repair = json.loads(
+        gateway.generate.await_args_list[1].kwargs["messages"][1].content
+    )["repair"]
+
+    assert repair["errors"] == ["extraction_missing_update"]
+    assert any(
+        "Include an updates property for every name in changed_fields" in instruction
+        for instruction in repair["instructions"]
+    )
+
+    assert result["planning"].requirements.destination == "Japan"
+    assert result["planning"].requirements.adults == 2
+    research.research.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "invalid_output",
+    [
+        {
+            "intent": "search",
+            "updates": {},
+            "changed_fields": [],
+            "search": None,
+        },
+        {
+            "intent": "chat",
+            "updates": {},
+            "changed_fields": [],
+            "search": {
+                "kind": "weather",
+                "arguments": {"city": "Lahore"},
+            },
+        },
+    ],
+    ids=["search-without-request", "non-search-with-request"],
+)
+def test_extraction_repair_explains_search_intent_mismatch(invalid_output):
+    standalone = AsyncMock()
+
+    result, gateway, research = run_graph(
+        [
+            invalid_output,
+            {
+                "intent": "chat",
+                "updates": {},
+                "changed_fields": [],
+                "reply": "Which city should I check?",
+            },
+        ],
+        message="What is the current weather?",
+        standalone_service=standalone,
+    )
+
+    assert gateway.generate.await_count == 2
+
+    repair = json.loads(
+        gateway.generate.await_args_list[1].kwargs["messages"][1].content
+    )["repair"]
+
+    assert repair["errors"] == ["extraction_search_mismatch"]
+    assert any(
+        "When intent='search', provide exactly one supported typed search"
+        in instruction
+        for instruction in repair["instructions"]
+    )
+
+    assert result["assistant_response"] == "Which city should I check?"
+    standalone.search.assert_not_awaited()
+    research.research.assert_not_awaited()
+
+
+def test_extraction_repair_includes_safe_nested_error_paths():
+    # Synthetic malformed model output, absent from the user's message.
+    private_value = "MODEL_OUTPUT_ONLY_PRIVATE_VALUE"
+
+    result, gateway, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {"adults": private_value},
+                "changed_fields": ["adults"],
+            },
+            {
+                "intent": "plan",
+                "updates": {"adults": 2},
+                "changed_fields": ["adults"],
+            },
+        ],
+        message="Two adults are travelling",
+    )
+
+    assert gateway.generate.await_count == 2
+
+    repair = json.loads(
+        gateway.generate.await_args_list[1].kwargs["messages"][1].content
+    )["repair"]
+
+    assert "int_type" in repair["errors"]
+    assert any(
+        detail["path"] == ["updates", "adults"] and detail["type"] == "int_type"
+        for detail in repair["details"]
+    )
+
+    # Feedback describes the failure without replaying its raw value.
+    assert private_value not in json.dumps(repair)
+    assert result["planning"].requirements.adults == 2
+    research.research.assert_not_awaited()
+
+
+def test_extraction_repair_failure_logs_safe_nested_paths(caplog):
+    private_value = "MODEL_OUTPUT_ONLY_PRIVATE_VALUE"
+    invalid_output = {
+        "intent": "plan",
+        "updates": {"adults": private_value},
+        "changed_fields": ["adults"],
+    }
+
+    with pytest.raises(StructuredOutputValidationError):
+        run_graph(
+            [invalid_output, invalid_output],
+            message="Two adults are travelling",
+        )
+
+    warning = next(
+        record
+        for record in caplog.records
+        if record.message == "Requirement extraction returned invalid structured output"
+    )
+
+    assert warning.attempts == 2
+    assert any(
+        detail["path"] == ["updates", "adults"] and detail["type"] == "int_type"
+        for detail in warning.validation_errors
+    )
+
+    # Check structured log fields, not just the displayed log message.
+    assert private_value not in json.dumps(warning.__dict__, default=str)
 
 
 def test_second_invalid_requirement_extraction_fails_safely(caplog):
@@ -853,9 +1046,9 @@ def test_same_message_replay_skips_extraction_and_preserves_revision(complete):
     message_id = uuid4()
     persist = AsyncMock()
     state = PlanningState(
-        requirements=requirements()
-        if complete
-        else TripRequirements(destination="Japan"),
+        requirements=(
+            requirements() if complete else TripRequirements(destination="Japan")
+        ),
         phase="ready" if complete else "collecting",
         revision=3,
         requirements_message_id=message_id,
@@ -1215,17 +1408,10 @@ def test_selected_deal_generates_itinerary_from_saved_flight_evidence():
     gateway.generate.assert_awaited_once()
 
 
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [
-        ("no_deals", "No matching deals"),
-        ("airport_resolution_required", "specify the departure"),
-    ],
-)
-def test_deal_discovery_non_offer_results_pause_without_research(status, expected):
+def test_deal_discovery_no_deals_pauses_without_research():
     deals = AsyncMock()
     deals.discover.return_value = DealDiscoveryResult(
-        status=status,
+        status="no_deals",
         origin=AirportResolution(status="resolved", query="Lahore", iata_code="LHE"),
         destination=AirportResolution(
             status="resolved", query="Dubai", iata_code="DXB"
@@ -1240,9 +1426,61 @@ def test_deal_discovery_non_offer_results_pause_without_research(status, expecte
         ],
         deal_discovery_service=deals,
     )
-    assert expected in result["assistant_response"]
+    assert "No matching deals" in result["assistant_response"]
     assert result["planning"].pending_travel_selection is None
     research.research.assert_not_awaited()
+
+
+def test_deal_discovery_asks_only_for_ambiguous_destination_airport():
+    deals = AsyncMock()
+    deals.discover.return_value = DealDiscoveryResult.model_validate(
+        {
+            "status": "airport_resolution_required",
+            "origin": {"status": "resolved", "query": "Lahore", "iata_code": "LHE"},
+            "destination": {
+                "status": "selection_required",
+                "query": "Dubai",
+                "options": [
+                    {
+                        "provider_location_id": "local:DXB",
+                        "iata_code": "DXB",
+                        "location_type": "airport",
+                        "name": "Dubai International Airport",
+                        "city_name": "Dubai",
+                        "country_code": "AE",
+                    },
+                    {
+                        "provider_location_id": "local:DWC",
+                        "iata_code": "DWC",
+                        "location_type": "airport",
+                        "name": "Al Maktoum International Airport",
+                        "city_name": "Dubai",
+                        "country_code": "AE",
+                    },
+                ],
+            },
+        }
+    )
+    extraction = {
+        "intent": "plan",
+        "updates": _flexible_requirements().model_dump(mode="json"),
+    }
+
+    first, _, research = run_graph([extraction], deal_discovery_service=deals)
+    assert "Select an airport for Dubai" in first["assistant_response"]
+    assert "DXB" in first["assistant_response"]
+    assert "DWC" in first["assistant_response"]
+    assert "departure" not in first["assistant_response"].casefold()
+    assert first["clarification"].requests[0].field == "destination_airport"
+    assert len(first["clarification"].requests) == 1
+    research.research.assert_not_awaited()
+
+    run_graph(
+        [extraction],
+        planning=first["planning"],
+        deal_discovery_service=deals,
+    )
+    assert deals.discover.await_count == 2
 
 
 @pytest.mark.parametrize(
