@@ -17,6 +17,10 @@ from pydantic import BaseModel, ValidationError
 
 from app.common.time import utc_now
 from app.domain.clarifications import TravelClarification, build_airport_input_request
+from app.domain.destination_selection import (
+    CountryRecognition,
+    PendingDestinationSelection,
+)
 from app.domain.flights import FlightCabinClass
 from app.domain.itineraries import MAX_ITINERARY_ITEMS, ItineraryItemType
 from app.domain.planning import PendingTravelSelection, PlanningState
@@ -25,6 +29,10 @@ from app.domain.trip_requirements import TripRequirements, TripTransport
 from app.domain.trip_rules import inclusive_day_count
 from app.graph.model_response import ModelResponseRefusedError, model_response_text
 from app.graph.planning_context import PlanningRuntimeContext
+from app.graph.planning_destination_questions import (
+    country_selection_text,
+    destination_selection_text,
+)
 from app.graph.planning_prompts import (
     REQUIREMENTS_PROMPT,
     REQUIREMENTS_PROMPT_VERSION,
@@ -48,6 +56,7 @@ from app.services.deal_discovery_service import (
     DealDiscoveryService,
     DealDiscoverySnapshot,
 )
+from app.services.destination_resolution_factory import DestinationResolutionFactory
 from app.services.planning_research_service import (
     PlanningResearch,
     PlanningResearchService,
@@ -849,6 +858,39 @@ def route_planning_requirements(
     preferences: PlanningPreferences | None = None,
 ) -> dict[str, object]:
     """Route validated requirements without another extraction call."""
+    if planning.pending_country_selection is not None:
+        current = PlanningState.model_validate(
+            {
+                **planning.model_dump(),
+                "phase": "collecting",
+                "pending_fields": ("destination",),
+            }
+        )
+        return {
+            "planning": current,
+            "reset_trip": reset_trip,
+            "route": "respond",
+            "assistant_response": country_selection_text(
+                planning.pending_country_selection, planning.language
+            ),
+        }
+    pending_destination = planning.pending_destination_selection
+    if pending_destination is not None:
+        current = PlanningState.model_validate(
+            {
+                **planning.model_dump(),
+                "phase": "collecting",
+                "pending_fields": ("destination",),
+            }
+        )
+        return {
+            "planning": current,
+            "reset_trip": reset_trip,
+            "route": "respond",
+            "assistant_response": destination_selection_text(
+                pending_destination, current.language
+            ),
+        }
     budget_tier = preferences.budget_tier if preferences else None
     missing = TripRequirementsPolicy.missing_fields(
         planning.requirements,
@@ -930,9 +972,202 @@ def build_planning_graph(
     research_service: PlanningResearchService,
     standalone_service: StandaloneSearchService | None = None,
     deal_discovery_service: DealDiscoveryService | None = None,
+    destination_factory: DestinationResolutionFactory | None = None,
 ):
     """No callable tools are attached to extraction or synthesis models."""
     graph = StateGraph(PlanningGraphState, context_schema=PlanningRuntimeContext)
+
+    async def route_destination_requirements(
+        planning: PlanningState,
+        *,
+        reset_trip: bool = False,
+        preferences: PlanningPreferences,
+    ) -> dict[str, object]:
+        """Resolve country inputs before ordinary questions or research."""
+        changed = False
+        if (
+            destination_factory is not None
+            and planning.requirements.destination is not None
+            and planning.pending_destination_selection is None
+            and planning.pending_country_selection is None
+        ):
+            async with destination_factory.open() as service:
+                recognition, pending = await service.prepare_country(
+                    query=planning.requirements.destination,
+                    planning=planning,
+                    preferences=preferences,
+                    allow_typo=True,
+                )
+            if pending is not None or recognition.status == "ambiguous":
+                planning = PlanningState.model_validate(
+                    {
+                        **planning.model_dump(),
+                        "pending_destination_selection": pending,
+                        "pending_country_selection": (
+                            recognition if recognition.status == "ambiguous" else None
+                        ),
+                    }
+                )
+                changed = True
+        result = route_planning_requirements(
+            planning, reset_trip=reset_trip, preferences=preferences
+        )
+        if changed:
+            result["requirements_changed"] = True
+        return result
+
+    async def destination_reply(
+        state: PlanningGraphState, preferences: PlanningPreferences
+    ) -> dict[str, object] | None:
+        """Revalidate simple selections before model extraction can clear them."""
+        previous = state["planning"]
+        country_proposals = previous.pending_country_selection
+        pending = previous.pending_destination_selection
+        if destination_factory is None or (
+            pending is None and country_proposals is None
+        ):
+            return None
+        text = state["latest_message"].strip()
+        number_match = re.fullmatch(
+            r"(?:option|city|country)?\s*([0-9]{1,3})[.]?", text, re.I
+        )
+        index = int(number_match[1]) - 1 if number_match else None
+        updated_pending = None
+        selected = None
+        country_confirmed = False
+        async with destination_factory.open() as service:
+            if country_proposals is not None:
+                if index is not None:
+                    choice = (
+                        country_proposals.matches[index]
+                        if 0 <= index < len(country_proposals.matches)
+                        else None
+                    )
+                else:
+                    choice = next(
+                        (
+                            match
+                            for match in country_proposals.matches
+                            if text.casefold()
+                            in {
+                                match.country_code.casefold(),
+                                match.country_name.casefold(),
+                            }
+                        ),
+                        None,
+                    )
+                if choice is None:
+                    return (
+                        route_planning_requirements(previous, preferences=preferences)
+                        if number_match
+                        else None
+                    )
+                updated_pending = await service.confirm_country(
+                    recognition=country_proposals,
+                    selected_code=choice.country_code,
+                    planning=previous,
+                    preferences=preferences,
+                )
+                country_confirmed = True
+            elif pending is not None:
+                if pending.country.requires_confirmation and text.casefold() in {
+                    "yes",
+                    "yes please",
+                    "haan",
+                    "han",
+                    "ji",
+                }:
+                    updated_pending = await service.confirm_country(
+                        recognition=CountryRecognition(
+                            status="confirmation_required", matches=(pending.country,)
+                        ),
+                        selected_code=pending.country.country_code,
+                        planning=previous,
+                        preferences=preferences,
+                    )
+                    country_confirmed = True
+                else:
+                    if index is not None:
+                        if not 0 <= index < len(pending.options):
+                            return route_planning_requirements(
+                                previous, preferences=preferences
+                            )
+                        selected = await service.select_offered_city(
+                            pending=pending,
+                            destination_id=pending.options[index].destination_id,
+                        )
+                        if selected is None:
+                            updated_pending = PendingDestinationSelection(
+                                country=pending.country,
+                                options=tuple(
+                                    option
+                                    for offset, option in enumerate(pending.options)
+                                    if offset != index
+                                ),
+                            )
+                    elif 2 <= len(text) <= 120:
+                        matches = await service.resolve_city_name(
+                            pending=pending, query=text
+                        )
+                        if len(matches) == 1:
+                            selected = matches[0]
+                        elif len(matches) > 1:
+                            updated_pending = PendingDestinationSelection(
+                                country=pending.country, options=matches
+                            )
+                    if selected is None and updated_pending is None:
+                        return None
+        if selected is not None:
+            updates: dict[str, object] = {"destination": selected.name}
+            if (
+                previous.transport_inferred
+                and selected.name != previous.requirements.destination
+            ):
+                updates.update(transport=None, cabin_class=None)
+            try:
+                requirements = merge_requirements(previous.requirements, updates)
+            except (ValueError, ValidationError):
+                return route_planning_requirements(previous, preferences=preferences)
+            current = PlanningState.model_validate(
+                {
+                    **previous.model_dump(),
+                    "requirements": requirements,
+                    "pending_destination_selection": None,
+                    "pending_country_selection": None,
+                    "transport_inferred": False
+                    if "transport" in updates
+                    else previous.transport_inferred,
+                    "revision": previous.revision + 1,
+                    "itinerary": None,
+                    "research": None,
+                    "research_key": None,
+                    "pending_travel_selection": None,
+                    "selected_deal": None,
+                    "deal_discovery": None,
+                    "selected_flight_id": None,
+                    "selected_hotel_id": None,
+                    "nearby_flight_dates_checked": False,
+                }
+            )
+        else:
+            requirements = previous.requirements
+            if updated_pending is not None and country_confirmed:
+                requirements = merge_requirements(
+                    requirements, {"destination": updated_pending.country.country_name}
+                )
+            current = PlanningState.model_validate(
+                {
+                    **previous.model_dump(),
+                    "requirements": requirements,
+                    "pending_country_selection": None,
+                    "pending_destination_selection": updated_pending,
+                    "revision": previous.revision + 1,
+                }
+            )
+        return {
+            **route_planning_requirements(current, preferences=preferences),
+            "requirements_changed": True,
+        }
 
     async def extract(state: PlanningGraphState) -> dict[str, object]:
         default_updates: dict[str, object] = {}
@@ -943,7 +1178,12 @@ def build_planning_graph(
         previous = state["planning"]
         message_id = state.get("user_message_id")
         if message_id is not None and previous.requirements_message_id == message_id:
-            return route_planning_requirements(previous, preferences=preferences)
+            return await route_destination_requirements(
+                previous, preferences=preferences
+            )
+        destination_update = await destination_reply(state, preferences)
+        if destination_update is not None:
+            return destination_update
         if (
             previous.pending_travel_selection
             and previous.pending_travel_selection.kind == "deal"
@@ -996,7 +1236,9 @@ def build_planning_graph(
                         }
                     )
                     return {
-                        **route_planning_requirements(updated, preferences=preferences),
+                        **await route_destination_requirements(
+                            updated, preferences=preferences
+                        ),
                         "requirements_changed": True,
                     }
         if previous.pending_travel_selection and previous.research:
@@ -1044,7 +1286,7 @@ def build_planning_graph(
                         }
                     )
                     return {
-                        **route_planning_requirements(
+                        **await route_destination_requirements(
                             updated,
                             preferences=preferences,
                         ),
@@ -1063,7 +1305,7 @@ def build_planning_graph(
                         else previous.selected_hotel_id
                     ),
                 }
-                return route_planning_requirements(
+                return await route_destination_requirements(
                     previous.model_copy(update=selection_update),
                     preferences=preferences,
                 )
@@ -1191,6 +1433,51 @@ def build_planning_graph(
             ]
         extracted_updates = extraction.selected_updates()
         updates = {**default_updates, **extracted_updates}
+        verified_city = False
+        replacement_pending = None
+        proposed_destination = updates.get("destination")
+        if (
+            destination_factory is None
+            and isinstance(proposed_destination, str)
+            and proposed_destination != base.requirements.destination
+            and (base.pending_destination_selection or base.pending_country_selection)
+        ):
+            # A direct caller without the resolver must fail closed rather than
+            # accept an unverified city from model output.
+            updates.pop("destination", None)
+            extracted_updates.pop("destination", None)
+        if (
+            destination_factory is not None
+            and isinstance(proposed_destination, str)
+            and proposed_destination != base.requirements.destination
+            and (base.pending_destination_selection or base.pending_country_selection)
+        ):
+            async with destination_factory.open() as service:
+                recognized = service.country_recognition.recognize(proposed_destination)
+                # Explicit country changes restart country-to-city collection.
+                if recognized.status != "exact":
+                    matches = (
+                        await service.resolve_city_name(
+                            pending=base.pending_destination_selection,
+                            query=proposed_destination,
+                        )
+                        if base.pending_destination_selection is not None
+                        else ()
+                    )
+                    if len(matches) == 1:
+                        updates["destination"] = matches[0].name
+                        extracted_updates["destination"] = matches[0].name
+                        verified_city = True
+                    else:
+                        # Retain unrelated validated updates, but never let an
+                        # unverified city erase country/selection context.
+                        updates.pop("destination", None)
+                        extracted_updates.pop("destination", None)
+                        if matches and base.pending_destination_selection is not None:
+                            replacement_pending = PendingDestinationSelection(
+                                country=base.pending_destination_selection.country,
+                                options=matches,
+                            )
         changed_flight_fields = {
             "origin",
             "destination",
@@ -1260,6 +1547,20 @@ def build_planning_graph(
                     else "Some trip details conflict. Please correct only the detail that is wrong."
                 ),
             }
+        pending_destination = base.pending_destination_selection
+        pending_country = base.pending_country_selection
+
+        destination_changed = requirements.destination != base.requirements.destination
+        interests_changed = requirements.interests != base.requirements.interests
+
+        if destination_changed or (
+            interests_changed and destination_factory is not None
+        ):
+            pending_destination = None
+        if destination_changed:
+            pending_country = None
+        if replacement_pending is not None:
+            pending_destination = replacement_pending
         planning = PlanningState(
             requirements=requirements,
             transport_inferred=transport_inferred,
@@ -1277,6 +1578,8 @@ def build_planning_graph(
             research=base.research,
             research_key=base.research_key,
             pending_travel_selection=pending_selection,
+            pending_destination_selection=pending_destination,
+            pending_country_selection=pending_country,
             deal_discovery=base.deal_discovery,
             selected_deal=None if clear_flight else base.selected_deal,
             selected_flight_id=None if clear_flight else base.selected_flight_id,
@@ -1285,14 +1588,20 @@ def build_planning_graph(
                 False if clear_flight else base.nearby_flight_dates_checked
             ),
         )
-        return {
-            **route_planning_requirements(
+        result = (
+            route_planning_requirements(
                 planning,
                 reset_trip=extraction.intent == "new_trip",
                 preferences=preferences,
-            ),
-            "requirements_changed": True,
-        }
+            )
+            if verified_city
+            else await route_destination_requirements(
+                planning,
+                reset_trip=extraction.intent == "new_trip",
+                preferences=preferences,
+            )
+        )
+        return {**result, "requirements_changed": True}
 
     async def persist_requirements(
         state: PlanningGraphState,

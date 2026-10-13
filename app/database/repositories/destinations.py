@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from pydantic import TypeAdapter
 from sqlalchemy import and_, case, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
@@ -15,6 +16,11 @@ from app.database.models.destination import (
     DestinationPlaceMedia,
     DestinationStyle,
     MediaAsset,
+)
+from app.domain.city_suggestions import (
+    MAX_CITY_SUGGESTIONS,
+    CityCandidate,
+    CitySuggestion,
 )
 from app.domain.destination_ranking import (
     BUDGET_ADJACENT_SCORE,
@@ -38,6 +44,7 @@ from app.domain.preferences import (
     TravelStyle,
     UserPreferenceSnapshot,
 )
+from app.domain.value_objects import CountryCode
 
 MAX_GALLERY_IMAGES = 12
 MAX_DESTINATION_PLACES = 100
@@ -48,6 +55,191 @@ class DestinationRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def list_city_candidates(
+        self,
+        *,
+        country_code: CountryCode,
+        interests: tuple[TravelInterest, ...],
+        travel_styles: tuple[TravelStyle, ...] = (),
+        limit: int = MAX_CITY_SUGGESTIONS,
+    ) -> list[CityCandidate]:
+        """Rank published cities within one country before limiting results."""
+        if not 1 <= limit <= MAX_CITY_SUGGESTIONS:
+            raise ValueError("limit must be between 1 and 3")
+
+        normalized_country = TypeAdapter(CountryCode).validate_python(country_code)
+        interest_values = sorted({interest.value for interest in interests})
+        style_values = sorted({style.value for style in travel_styles})
+
+        interest_matches = (
+            select(func.count())
+            .select_from(DestinationInterest)
+            .where(
+                DestinationInterest.destination_id == Destination.id,
+                DestinationInterest.interest.in_(interest_values),
+            )
+            .correlate(Destination)
+            .scalar_subquery()
+        )
+        style_matches = (
+            select(func.count())
+            .select_from(DestinationStyle)
+            .where(
+                DestinationStyle.destination_id == Destination.id,
+                DestinationStyle.style.in_(style_values),
+            )
+            .correlate(Destination)
+            .scalar_subquery()
+        )
+
+        # Filter and rank the eligible set before selecting the bounded page.
+        page = (
+            select(
+                Destination.id,
+                Destination.editorial_rank,
+                Destination.slug,
+                interest_matches.label("interest_matches"),
+                style_matches.label("style_matches"),
+            )
+            .where(
+                Destination.is_published.is_(True),
+                Destination.destination_type == DestinationType.CITY.value,
+                Destination.country_code == normalized_country,
+            )
+            .order_by(
+                interest_matches.desc(),
+                style_matches.desc(),
+                Destination.editorial_rank,
+                Destination.slug,
+            )
+            .limit(limit)
+            .subquery()
+        )
+
+        # Aggregate each tag collection independently, avoiding duplicated rows
+        # from a destination_interests × destination_styles join.
+        city_interests = (
+            select(func.array_agg(DestinationInterest.interest))
+            .where(DestinationInterest.destination_id == Destination.id)
+            .correlate(Destination)
+            .scalar_subquery()
+        )
+        city_styles = (
+            select(func.array_agg(DestinationStyle.style))
+            .where(DestinationStyle.destination_id == Destination.id)
+            .correlate(Destination)
+            .scalar_subquery()
+        )
+
+        statement = (
+            select(
+                Destination.id,
+                Destination.slug,
+                Destination.name,
+                Destination.country_code,
+                Destination.editorial_rank,
+                city_interests.label("interests"),
+                city_styles.label("styles"),
+            )
+            .join(page, page.c.id == Destination.id)
+            .order_by(
+                page.c.interest_matches.desc(),
+                page.c.style_matches.desc(),
+                page.c.editorial_rank,
+                page.c.slug,
+            )
+        )
+
+        result = await self.session.execute(statement)
+
+        return [
+            CityCandidate(
+                id=row.id,
+                slug=row.slug,
+                name=row.name,
+                country_code=row.country_code,
+                editorial_rank=row.editorial_rank,
+                interests=tuple(
+                    sorted(
+                        {TravelInterest(value) for value in (row.interests or ())},
+                        key=lambda interest: interest.value,
+                    )
+                ),
+                styles=tuple(
+                    sorted(
+                        {TravelStyle(value) for value in (row.styles or ())},
+                        key=lambda style: style.value,
+                    )
+                ),
+            )
+            for row in result
+        ]
+
+    async def get_published_city(
+        self, *, destination_id: UUID, country_code: CountryCode
+    ) -> CitySuggestion | None:
+        """Recheck one city's identity, publication, type, and country."""
+        normalized_country = TypeAdapter(CountryCode).validate_python(country_code)
+        result = await self.session.execute(
+            select(
+                Destination.id,
+                Destination.name,
+                Destination.country_code,
+            ).where(
+                Destination.id == destination_id,
+                Destination.is_published.is_(True),
+                Destination.destination_type == DestinationType.CITY.value,
+                Destination.country_code == normalized_country,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return CitySuggestion(
+            destination_id=row.id,
+            name=row.name,
+            country_code=row.country_code,
+        )
+
+    async def find_published_cities(
+        self, *, query: str, country_code: CountryCode | None
+    ) -> tuple[CitySuggestion, ...]:
+        """Find exact published city names/slugs, optionally scoped to a country."""
+        normalized_query = query.strip().lower()
+        if not 2 <= len(normalized_query) <= 120:
+            raise ValueError("city query must contain between 2 and 120 characters")
+        filters = [
+            Destination.is_published.is_(True),
+            Destination.destination_type == DestinationType.CITY.value,
+        ]
+        if country_code is not None:
+            normalized_country = TypeAdapter(CountryCode).validate_python(country_code)
+            filters.append(Destination.country_code == normalized_country)
+        result = await self.session.execute(
+            select(
+                Destination.id,
+                Destination.name,
+                Destination.country_code,
+            )
+            .where(
+                *filters,
+                or_(
+                    func.lower(Destination.name) == normalized_query,
+                    Destination.slug == normalized_query,
+                ),
+            )
+            .order_by(Destination.editorial_rank, Destination.slug)
+            .limit(2)
+        )
+        return tuple(
+            CitySuggestion(
+                destination_id=row.id,
+                name=row.name,
+                country_code=row.country_code,
+            )
+            for row in result
+        )
 
     async def list_ranked(
         self,

@@ -5,6 +5,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.destination_selection import (
+    CountryRecognition,
+    PendingDestinationSelection,
+)
 from app.domain.trip_requirements import TripRequirements
 
 
@@ -34,6 +38,8 @@ class PlanningState(BaseModel):
     requirements_message_id: UUID | None = None
     context_start_message_id: UUID | None = None
     pending_fields: tuple[str, ...] = Field(default=(), max_length=20)
+    pending_destination_selection: PendingDestinationSelection | None = None
+    pending_country_selection: CountryRecognition | None = None
     # Compact, validated result retained for revisions; not raw tool transcripts.
     itinerary: dict[str, object] | None = None
     research: dict[str, object] | None = None

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, Mock
@@ -10,6 +11,12 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 
+from app.database.repositories.destinations import DestinationRepository
+from app.domain.city_suggestions import CityCandidate, CitySuggestion
+from app.domain.destination_selection import (
+    CountryMatch,
+    PendingDestinationSelection,
+)
 from app.domain.planning import PendingTravelSelection, PlanningState
 from app.domain.planning_preferences import PlanningPreferences
 from app.domain.preferences import (
@@ -29,7 +36,9 @@ from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_schemas import ResearchedItinerary
 from app.providers.airports.schemas import AirportResolution
 from app.providers.serpapi.deals_client import FlightDeal
+from app.services.country_recognition_service import CountryRecognitionService
 from app.services.deal_discovery_service import DealChoice, DealDiscoveryResult
+from app.services.destination_resolution_service import DestinationResolutionService
 from app.services.planning_research_service import PlanningResearch, ResearchEvidence
 from app.services.standalone_search_service import SearchReply
 
@@ -75,6 +84,7 @@ def run_graph(
     planning_preferences=None,
     deal_discovery_service=None,
     standalone_service=None,
+    destination_factory=None,
 ):
     # Fixture payloads explicitly identify the fields intended to change.
     outputs = [
@@ -109,6 +119,7 @@ def run_graph(
         research_service=research,
         deal_discovery_service=deal_discovery_service,
         standalone_service=standalone_service,
+        destination_factory=destination_factory,
     )
     result = asyncio.run(
         graph.ainvoke(
@@ -130,6 +141,448 @@ def run_graph(
         )
     )
     return result, gateway, research
+
+
+def destination_dependencies():
+    """Real recognition/service logic with an isolated mocked catalogue."""
+    cities = {
+        code: CityCandidate(
+            id=uuid4(),
+            slug=name.lower(),
+            name=name,
+            country_code=code,
+            interests=(TravelInterest.HISTORY,),
+            styles=(),
+            editorial_rank=1,
+        )
+        for code, name in {
+            "GB": "London",
+            "TR": "Istanbul",
+            "JP": "Tokyo",
+            "KR": "Seoul",
+        }.items()
+    }
+    repository = Mock(spec=DestinationRepository)
+
+    async def candidates(**kwargs):
+        city = cities.get(kwargs["country_code"])
+        return [city] if city else []
+
+    async def find(*, query, country_code):
+        return tuple(
+            CitySuggestion(destination_id=city.id, name=city.name, country_code=code)
+            for code, city in cities.items()
+            if query.strip().casefold() == city.name.casefold()
+            and (country_code is None or country_code == code)
+        )
+
+    async def get(*, destination_id, country_code):
+        city = cities.get(country_code)
+        return (
+            CitySuggestion(
+                destination_id=city.id, name=city.name, country_code=country_code
+            )
+            if city and city.id == destination_id
+            else None
+        )
+
+    repository.list_city_candidates = AsyncMock(side_effect=candidates)
+    repository.find_published_cities = AsyncMock(side_effect=find)
+    repository.get_published_city = AsyncMock(side_effect=get)
+    service = DestinationResolutionService(
+        repository=repository, country_recognition=CountryRecognitionService()
+    )
+    factory = Mock()
+    factory.active = False
+
+    @asynccontextmanager
+    async def open_scope():
+        assert not factory.active
+        factory.active = True
+        try:
+            yield service
+        finally:
+            factory.active = False
+
+    factory.open = Mock(side_effect=open_scope)
+    return factory, repository, cities
+
+
+def test_country_input_creates_persisted_city_choices_before_other_questions():
+    factory, repository, _ = destination_dependencies()
+    persistence = AsyncMock(side_effect=lambda state, reset: state)
+    result, gateway, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {"destination": "UK", "duration_days": 7, "adults": 2},
+            }
+        ],
+        message="Plan UK for seven days and two adults",
+        destination_factory=factory,
+        persist_requirements=persistence,
+        planning_preferences=PlanningPreferences(interests=(TravelInterest.HISTORY,)),
+    )
+    planning = result["planning"]
+    assert planning.pending_destination_selection.country.country_code == "GB"
+    assert planning.pending_destination_selection.options[0].matched_interests == (
+        TravelInterest.HISTORY,
+    )
+    assert planning.requirements.duration_days == 7
+    assert planning.requirements.adults == 2
+    assert planning.pending_fields == ("destination",)
+    assert "London" in result["assistant_response"]
+    assert "departure date" not in result["assistant_response"]
+    assert persistence.await_args.args[0].pending_destination_selection is not None
+    assert not factory.active
+    assert gateway.generate.await_count == 1
+    repository.list_city_candidates.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+
+def test_typo_country_is_a_proposal_not_an_automatic_city_choice():
+    factory, _, _ = destination_dependencies()
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": "turky"}}],
+        destination_factory=factory,
+    )
+    assert result["planning"].requirements.destination == "turky"
+    assert result[
+        "planning"
+    ].pending_destination_selection.country.requires_confirmation
+    assert "Did you mean" in result["assistant_response"]
+    research.research.assert_not_awaited()
+
+
+@pytest.mark.parametrize("message", ["1", "city 1", "London"])
+def test_city_reply_is_revalidated_before_extraction_and_preserves_facts(message):
+    factory, repository, cities = destination_dependencies()
+    pending = PendingDestinationSelection(
+        country=CountryMatch(
+            country_code="GB", country_name="United Kingdom", query="UK"
+        ),
+        options=(
+            CitySuggestion(
+                destination_id=cities["GB"].id, name="London", country_code="GB"
+            ),
+        ),
+    )
+    initial = PlanningState(
+        requirements=TripRequirements(
+            destination="UK", duration_days=7, adults=2, transport="own_arrangements"
+        ),
+        pending_destination_selection=pending,
+    )
+    result, gateway, research = run_graph(
+        [],
+        planning=initial,
+        message=message,
+        destination_factory=factory,
+    )
+    current = result["planning"]
+    assert current.requirements.destination == "London"
+    assert current.requirements.adults == 2
+    assert current.requirements.duration_days == 7
+    assert current.requirements.transport == "own_arrangements"
+    assert current.pending_destination_selection is None
+    gateway.generate.assert_not_awaited()
+    research.research.assert_not_awaited()
+    if "1" in message:
+        repository.get_published_city.assert_awaited_once_with(
+            destination_id=cities["GB"].id, country_code="GB"
+        )
+    else:
+        repository.find_published_cities.assert_awaited_once_with(
+            query="London", country_code="GB"
+        )
+
+
+def test_stale_city_number_keeps_country_context_and_blocks_research():
+    factory, repository, cities = destination_dependencies()
+    repository.get_published_city.side_effect = None
+    repository.get_published_city.return_value = None
+    initial = PlanningState(
+        requirements=requirements(destination="UK"),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=cities["GB"].id, name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    result, gateway, research = run_graph(
+        [], planning=initial, message="1", destination_factory=factory
+    )
+    assert result["planning"].requirements.destination == "UK"
+    assert result["planning"].pending_destination_selection.options == ()
+    assert "Please name the city" in result["assistant_response"]
+    gateway.generate.assert_not_awaited()
+    research.research.assert_not_awaited()
+
+
+def test_valid_city_is_persisted_before_research_and_needs_no_extraction():
+    factory, _, cities = destination_dependencies()
+    initial = PlanningState(
+        requirements=requirements(destination="UK"),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=cities["GB"].id, name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    research = AsyncMock()
+    research.research.return_value = PlanningResearch(searched_at=datetime.now(UTC))
+
+    async def persist(state, reset):
+        assert not factory.active
+        assert state.requirements.destination == "London"
+        assert state.pending_destination_selection is None
+        research.research.assert_not_awaited()
+        return state
+
+    result, gateway, _ = run_graph(
+        [itinerary()],
+        planning=initial,
+        message="1",
+        destination_factory=factory,
+        research_service=research,
+        persist_requirements=AsyncMock(side_effect=persist),
+    )
+    assert result["planning"].phase == "generated"
+    research.research.assert_awaited_once()
+    assert gateway.generate.await_count == 1  # synthesis only
+
+
+def test_destination_choice_persistence_failure_prevents_research():
+    factory, _, _ = destination_dependencies()
+    research = AsyncMock()
+    with pytest.raises(RuntimeError, match="synthetic save failure"):
+        run_graph(
+            [{"intent": "plan", "updates": {"destination": "UK"}}],
+            destination_factory=factory,
+            research_service=research,
+            persist_requirements=AsyncMock(
+                side_effect=RuntimeError("synthetic save failure")
+            ),
+        )
+    assert not factory.active
+    research.research.assert_not_awaited()
+
+
+@pytest.mark.parametrize("destination", ["London", "Tokyo"])
+def test_combined_reply_cannot_bypass_country_scoped_city_validation(destination):
+    factory, repository, cities = destination_dependencies()
+    initial = PlanningState(
+        requirements=TripRequirements(destination="UK"),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=cities["GB"].id, name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": destination, "adults": 2}}],
+        planning=initial,
+        message=f"{destination}, and two adults",
+        destination_factory=factory,
+    )
+    assert result["planning"].requirements.adults == 2
+    assert result["planning"].requirements.destination == (
+        "London" if destination == "London" else "UK"
+    )
+    assert (result["planning"].pending_destination_selection is None) == (
+        destination == "London"
+    )
+    repository.find_published_cities.assert_any_await(
+        query=destination, country_code="GB"
+    )
+    research.research.assert_not_awaited()
+
+
+def test_ambiguous_country_is_persisted_and_confirmed_without_model_choice():
+    factory, _, _ = destination_dependencies()
+    offered, _, _ = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Korea", "adults": 2}}],
+        destination_factory=factory,
+    )
+    proposals = offered["planning"].pending_country_selection
+    assert {match.country_code for match in proposals.matches} == {"KR", "KP"}
+    selected, gateway, research = run_graph(
+        [],
+        planning=offered["planning"],
+        message="KR",
+        destination_factory=factory,
+    )
+    assert selected["planning"].pending_country_selection is None
+    assert (
+        selected["planning"].pending_destination_selection.country.country_code == "KR"
+    )
+    assert not selected[
+        "planning"
+    ].pending_destination_selection.country.requires_confirmation
+    assert selected["planning"].requirements.adults == 2
+    gateway.generate.assert_not_awaited()
+    research.research.assert_not_awaited()
+
+
+def test_pending_country_replay_does_not_repeat_extraction_or_catalogue_queries():
+    factory, _, _ = destination_dependencies()
+    message_id = uuid4()
+    offered, _, _ = run_graph(
+        [{"intent": "plan", "updates": {"destination": "UK"}}],
+        user_message_id=message_id,
+        destination_factory=factory,
+    )
+    factory.open.reset_mock()
+    replayed, gateway, research = run_graph(
+        [],
+        planning=offered["planning"],
+        user_message_id=message_id,
+        destination_factory=factory,
+    )
+    assert (
+        replayed["planning"].pending_destination_selection
+        == offered["planning"].pending_destination_selection
+    )
+    factory.open.assert_not_called()
+    gateway.generate.assert_not_awaited()
+    research.research.assert_not_awaited()
+
+
+def test_pending_city_change_fails_closed_without_destination_factory():
+    initial = PlanningState(
+        requirements=requirements(destination="UK"),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=uuid4(), name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": "London"}}],
+        planning=initial,
+        message="London",
+    )
+    assert result["planning"].requirements.destination == "UK"
+    assert (
+        result["planning"].pending_destination_selection
+        == initial.pending_destination_selection
+    )
+    research.research.assert_not_awaited()
+
+
+def test_catalogue_failure_during_city_validation_cannot_start_research():
+    factory, repository, cities = destination_dependencies()
+    repository.get_published_city.side_effect = RuntimeError(
+        "synthetic catalogue outage"
+    )
+    initial = PlanningState(
+        requirements=requirements(destination="UK"),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=cities["GB"].id, name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    research = AsyncMock()
+    with pytest.raises(RuntimeError, match="synthetic catalogue outage"):
+        run_graph(
+            [],
+            planning=initial,
+            message="1",
+            destination_factory=factory,
+            research_service=research,
+        )
+    assert not factory.active
+    research.research.assert_not_awaited()
+
+
+def test_explicit_new_trip_discards_old_country_and_city_choices():
+    factory, _, cities = destination_dependencies()
+    initial = PlanningState(
+        requirements=TripRequirements(destination="UK", adults=2),
+        pending_destination_selection=PendingDestinationSelection(
+            country=CountryMatch(
+                country_code="GB", country_name="United Kingdom", query="UK"
+            ),
+            options=(
+                CitySuggestion(
+                    destination_id=cities["GB"].id, name="London", country_code="GB"
+                ),
+            ),
+        ),
+    )
+    result, _, research = run_graph(
+        [{"intent": "new_trip", "updates": {"destination": "Japan"}}],
+        planning=initial,
+        message="Start a new trip to Japan",
+        destination_factory=factory,
+    )
+    assert result["planning"].pending_destination_selection.country.country_code == "JP"
+    assert result["planning"].requirements.adults is None
+    assert result["reset_trip"] is True
+    research.research.assert_not_awaited()
+
+
+def test_known_city_is_not_reinterpreted_as_a_country_typo():
+    name, country_code = "Bali", "ID"
+    factory, repository, _ = destination_dependencies()
+    repository.find_published_cities.side_effect = None
+    repository.find_published_cities.return_value = (
+        CitySuggestion(destination_id=uuid4(), name=name, country_code=country_code),
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": name}}],
+        destination_factory=factory,
+    )
+    assert result["planning"].requirements.destination == name
+    assert result["planning"].pending_destination_selection is None
+    repository.list_city_candidates.assert_not_awaited()
+    research.research.assert_not_awaited()
+
+
+def test_city_country_name_collision_requires_country_clarification():
+    factory, repository, _ = destination_dependencies()
+    repository.find_published_cities.side_effect = None
+    repository.find_published_cities.return_value = (
+        CitySuggestion(destination_id=uuid4(), name="Liberia", country_code="CR"),
+    )
+    result, _, research = run_graph(
+        [{"intent": "plan", "updates": {"destination": "Liberia"}}],
+        destination_factory=factory,
+    )
+    assert result["planning"].pending_destination_selection is None
+    assert {
+        match.country_code
+        for match in result["planning"].pending_country_selection.matches
+    } == {"CR", "LR"}
+    assert "Which country" in result["assistant_response"]
+    repository.list_city_candidates.assert_not_awaited()
+    research.research.assert_not_awaited()
 
 
 def test_roman_urdu_collection_preserves_slots_and_never_searches():
@@ -1580,3 +2033,101 @@ def test_standalone_deal_selection_seeds_route_party_and_dates():
     assert req.end_date == date(2099, 12, 14)
     assert selected["planning"].selected_deal["option_id"] == "deal-10"
     standalone.search.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("intent", "updates", "preserve"),
+    [
+        ("plan", {"adults": 2}, True),
+        ("plan", {"destination": "London"}, False),
+        ("plan", {"interests": ["shopping"]}, False),
+        ("new_trip", {"adults": 2}, False),
+    ],
+)
+def test_extraction_preserves_or_invalidates_pending_destination(
+    intent,
+    updates,
+    preserve,
+):
+    factory, _, _ = destination_dependencies()
+    pending = PendingDestinationSelection(
+        country=CountryMatch(
+            country_code="GB",
+            country_name="United Kingdom",
+            query="UK",
+        ),
+        options=(
+            CitySuggestion(
+                destination_id=uuid4(),
+                name="London",
+                country_code="GB",
+            ),
+        ),
+    )
+    initial = PlanningState(
+        requirements=TripRequirements(
+            destination="UK",
+            interests=("history",),
+        ),
+        interests_overridden=True,
+        pending_destination_selection=pending,
+    )
+
+    result, gateway, research = run_graph(
+        [
+            {
+                "intent": intent,
+                "updates": updates,
+                "reply": "",
+            }
+        ],
+        planning=initial,
+        message="Update my trip details",
+        destination_factory=factory,
+    )
+
+    if "interests" in updates:
+        refreshed = result["planning"].pending_destination_selection
+        assert refreshed is not None
+        assert refreshed != pending
+        assert refreshed.options[0].matched_interests == ()
+    else:
+        expected = pending if preserve else None
+        assert result["planning"].pending_destination_selection == expected
+    assert gateway.generate.await_count == 1
+    research.research.assert_not_awaited()
+
+
+def test_pending_destination_blocks_research_with_complete_requirements():
+    pending = PendingDestinationSelection(
+        country=CountryMatch(
+            country_code="GB",
+            country_name="United Kingdom",
+            query="UK",
+        ),
+        options=(
+            CitySuggestion(
+                destination_id=uuid4(),
+                name="London",
+                country_code="GB",
+            ),
+        ),
+    )
+    initial = PlanningState(
+        requirements=requirements(destination="UK"),
+        pending_destination_selection=pending,
+    )
+
+    result, gateway, research = run_graph(
+        [{"intent": "plan", "updates": {}, "reply": ""}],
+        planning=initial,
+        message="Continue planning",
+    )
+
+    assert result["route"] == "respond"
+    assert result["planning"].phase == "collecting"
+    assert result["planning"].pending_fields == ("destination",)
+    assert result["planning"].pending_destination_selection == pending
+    assert "London" in result["assistant_response"]
+    assert gateway.generate.await_count == 1
+    research.research.assert_not_awaited()

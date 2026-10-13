@@ -169,7 +169,11 @@ def test_lifespan_builds_one_shared_travel_graph(monkeypatch) -> None:
         standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
         deal_discovery_service=None,
+        destination_factory=ANY,
     )
+    destination_factory = build_graph.call_args.kwargs["destination_factory"]
+    assert destination_factory.country_recognition is not None
+    assert destination_factory.session_factory is application.state.session_factory
 
 
 def test_lifespan_exposes_and_closes_weather_mcp_resources(monkeypatch) -> None:
@@ -342,6 +346,7 @@ def test_lifespan_wires_enabled_google_places_service_into_mcp(
         standalone_service=ANY,
         max_tool_rounds=settings.max_tool_rounds,
         deal_discovery_service=None,
+        destination_factory=ANY,
     )
     fake_http_client.aclose.assert_awaited_once_with()
 

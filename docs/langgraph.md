@@ -79,22 +79,31 @@ as `requirements-v6`; synthesis policy is `itinerary-v5-schedule-weather`.
 Their missing-field codes persist internally; they currently travel to Flutter as ordinary text
 completion messages, not a new structured requirements-form event.
 
-### Planned country-first destination clarification
+### Country-first destination clarification
 
-This is a design proposal, not current runtime behavior. After validated
-extraction/merge, a country-only destination should pause ordinary requirement
-questions and itinerary research while the user selects a city. Suggestions
-should come from published country-scoped city catalogue records, ranked by
+With the destination factory configured (as in the default lifespan), validated
+country-only input pauses ordinary requirement questions and itinerary research
+while the user selects a city. Suggestions
+come from published country-scoped city catalogue records, ranked by
 explicit trip interests or saved profile interests, without another model call.
 Persisted pending options must support safe numbered follow-ups, ownership-scoped
 replay, and invalidation on country change/new trip. Choosing a city must preserve
 dates, duration, party, and explicit transport already collected. An uncertain
 country spelling must be confirmed; no-match guidance must remain actionable.
 
-See [the planned catalogue workflow](destination-catalogue.md#planned-country-first-city-suggestions-in-conversational-planning)
+Simple selections are handled before extraction and rechecked against current
+published city records; combined destination updates are validated before merging.
+Ambiguous countries and city options persist in separate owned planning-state
+fields. The existing requirement-persistence node commits newly created choices
+before response/research routing, and message replay reuses those choices.
+The factory opens a fresh short-lived database session for each operation.
+
+See [the catalogue workflow](destination-catalogue.md#country-first-city-suggestions-in-conversational-planning)
 for preference precedence, ordering, fallbacks, and implementation/test sequence.
-The existing `TripRequirementsPolicy` currently treats a non-null destination
-string as supplied; country/city completeness is not yet enforced.
+The pure `TripRequirementsPolicy` still treats a non-null destination string as
+supplied; the graph's destination stage and pending-choice gate add country/city
+clarification. Free-text cities outside the catalogue require further provider
+city-type validation and remain unresolved in this selection stage.
 
 ## Research and grounding
 

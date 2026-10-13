@@ -11,9 +11,10 @@ Skardu is a destination while Upper Kachura Lake, Satpara Lake, Kharpocho Fort,
 and Katpana Cold Desert are places associated with Skardu. A destination
 coordinate is the map centre; each place has its own coordinate.
 
-## Planned: country-first city suggestions in conversational planning
+## Country-first city suggestions in conversational planning
 
-**Status: design only; not implemented in the planning runtime.** Existing Home
+**Status: implemented for catalogue-backed city selection when the destination
+factory is configured (the default lifespan does so).** Existing Home
 and View All behavior remains unchanged. This workflow reuses saved user
 preferences, published destinations, and normalized destination interest/style
 tags; it does not add a recommendation model call or live provider search.
@@ -28,14 +29,20 @@ transport, must still be extracted, validated, and preserved.
 - Recognized country names and aliases map to an ISO country code. An uncertain
   spelling correction, such as `turky`, must be presented for confirmation rather
   than silently accepted. A small alias map is not a global country resolver.
+- A published city protects against fuzzy country reinterpretation. An exact
+  city/country-name collision spanning different countries creates country
+  proposals instead of silently choosing either interpretation.
 - Only published destinations with the requested `country_code` and
   `destination_type=city` are eligible. A region, island, or country entry must
   not be presented as a city. Already supplied cities bypass this stage.
 - Offer at most three eligible cities, always allowing another city. Even a
   single candidate requires explicit selection; suggestions are not consent.
-- If no eligible catalogue cities exist, ask the user to supply a city and use
-  the existing bounded location-resolution service when needed. Catalogue absence
-  is not evidence that a destination does not exist or cannot be visited.
+- If no eligible catalogue cities exist, ask the user to supply a city. Cities
+  outside the published catalogue are not accepted by this selection stage;
+  provider-backed city-type validation remains deferred because the current
+  canonical provider contract does not distinguish cities from countries/regions.
+  Catalogue absence is not evidence that a destination does not exist or cannot
+  be visited.
 - Preserve stable candidate IDs, the requested country, and option order in
   conversation-owned pending selection state. Resolve numbered replies against
   that stored state, recheck publication/country eligibility, and validate free
@@ -44,6 +51,20 @@ transport, must still be extracted, validated, and preserved.
 - Country changes and explicit new trips invalidate pending suggestions. City
   selection retains unrelated requirements and resumes ordinary missing-field
   collection. Multi-city planning is outside this initial single-city contract.
+- Simple city names/numbers and country choices are resolved before extraction;
+  combined replies still extract unrelated facts, but their destination update is
+  validated within the pending country before it can clear the gate. Stale numbered
+  options are removed and research remains paused. A missing resolver fails closed
+  for destination changes while a selection is pending.
+- Ambiguous country proposals persist separately as `pending_country_selection`;
+  city choices persist as `pending_destination_selection`. Both are additive JSON
+  state fields defaulting to null for older records. Older workers using strict
+  schemas cannot read the new fields: deploy compatible workers together.
+- New choices commit through the existing requirement-persistence callback before
+  research/response routing. Replaying an already-persisted message reuses its
+  pending choices instead of re-extracting or re-querying the catalogue. Catalogue
+  reads use short-lived sessions; publication is rechecked at selection time, not
+  guaranteed permanently after that read.
 
 ### Preference precedence and ranking
 

@@ -36,7 +36,9 @@ from app.providers.serpapi.flight_client import SerpApiFlightClient
 from app.providers.serpapi.hotel_client import SerpApiHotelClient
 from app.providers.weather.client import WeatherApiClient
 from app.services.airport_resolution_service import AirportResolutionService
+from app.services.country_recognition_service import CountryRecognitionService
 from app.services.deal_discovery_service import DealDiscoveryService
+from app.services.destination_resolution_factory import DestinationResolutionFactory
 from app.services.flight_search_preparation_service import (
     FlightSearchPreparationService,
 )
@@ -206,6 +208,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 weather_forecasts_available=True,
             ),
             deal_discovery_service=deal_discovery_service,
+            destination_factory=DestinationResolutionFactory(
+                session_factory=session_factory,
+                country_recognition=CountryRecognitionService(),
+            ),
         )
 
         application.state.database_engine = database_engine
