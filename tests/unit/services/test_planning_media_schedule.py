@@ -14,7 +14,7 @@ from app.domain.assistant_content import AssistantRichContent
 from app.domain.destinations import MediaAssetValue
 from app.domain.media import AssistantMedia
 from app.domain.trip_requirements import TripRequirements
-from app.graph.planning_builder import validate_researched_itinerary
+from app.graph.planning.itinerary_validation import validate_researched_itinerary
 from app.graph.planning_schemas import ResearchedItinerary
 from app.services.assistant_rich_content_mapper import build_itinerary_rich_content
 from app.services.planning_research_service import (

@@ -14,10 +14,10 @@ from app.domain.planning import PlanningState
 from app.domain.planning_preferences import PlanningPreferences
 from app.domain.trip_requirements import TripRequirements
 from app.graph.google_schema import google_generation_schema
+from app.graph.planning.itinerary_validation import validate_researched_itinerary
 from app.graph.planning_builder import (
     build_planning_graph,
     merge_requirements,
-    validate_researched_itinerary,
 )
 from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_schemas import RequirementExtraction, ResearchedItinerary

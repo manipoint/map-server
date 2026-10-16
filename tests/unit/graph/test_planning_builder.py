@@ -26,11 +26,12 @@ from app.domain.preferences import (
     TripPace,
 )
 from app.domain.trip_requirements import TripRequirements
+from app.graph.planning.itinerary_validation import validate_researched_itinerary
+from app.graph.planning.research_workflow import ResearchWorkflowResult
+from app.graph.planning.structured_output import StructuredOutputValidationError
 from app.graph.planning_builder import (
-    StructuredOutputValidationError,
     build_planning_graph,
     merge_requirements,
-    validate_researched_itinerary,
 )
 from app.graph.planning_context import PlanningRuntimeContext
 from app.graph.planning_schemas import ResearchedItinerary
@@ -237,6 +238,55 @@ def test_country_input_creates_persisted_city_choices_before_other_questions():
     assert not factory.active
     assert gateway.generate.await_count == 1
     repository.list_city_candidates.assert_awaited_once()
+    research.research.assert_not_awaited()
+
+
+def test_graph_research_node_delegates_to_research_workflow(monkeypatch):
+    expected_research = PlanningResearch(searched_at=datetime.now(UTC))
+    expected_planning = PlanningState(
+        requirements=requirements(), research_key="workflow-key"
+    )
+    expected_result: ResearchWorkflowResult = {
+        "research": expected_research,
+        "route": "respond",
+        "planning": expected_planning,
+        "assistant_response": "Research workflow response",
+    }
+    workflow = Mock()
+    workflow.run = AsyncMock(return_value=expected_result)
+    constructor = Mock(return_value=workflow)
+    monkeypatch.setattr(
+        "app.graph.planning_builder.PlanningResearchWorkflow", constructor
+    )
+
+    result, _, research = run_graph(
+        [
+            {
+                "intent": "plan",
+                "updates": {
+                    "destination": "Japan",
+                    "start_date": "2099-11-07",
+                    "duration_days": 5,
+                },
+            }
+        ],
+        planning=PlanningState(
+            requirements=requirements(
+                destination="Japan",
+                start_date=date(2099, 11, 7),
+                duration_days=5,
+            )
+        ),
+    )
+
+    assert result["planning"] == expected_planning
+    assert result["research"] == expected_research
+    assert result["assistant_response"] == "Research workflow response"
+    workflow.run.assert_awaited_once()
+    assert (
+        workflow.run.await_args.kwargs["planning"].requirements.destination == "Japan"
+    )
+    constructor.assert_called_once()
     research.research.assert_not_awaited()
 
 

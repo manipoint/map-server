@@ -107,6 +107,10 @@ city-type validation and remain unresolved in this selection stage.
 
 ## Research and grounding
 
+The research node delegates to `graph/planning/research_workflow.py`, which owns
+conversation-scoped cache reuse, flight/hotel selection, and filtering selected
+evidence before synthesis. Provider calls remain in `PlanningResearchService`.
+
 `PlanningResearchService` maps complete requirements through `TripRequestMapper`.
 It runs relevant enabled searches concurrently, with a 15-second bound per ordinary
 branch. A flight branch with no exact-date offers may spend up to eight additional

@@ -8,7 +8,7 @@ import pytest
 
 from app.common.exceptions import ProviderUnavailableError
 from app.domain.planning import PlanningState
-from app.graph.planning_builder import validate_researched_itinerary
+from app.graph.planning.itinerary_validation import validate_researched_itinerary
 from app.graph.planning_schemas import ResearchedItinerary
 from app.providers.weather.schemas import WeatherForecast
 from app.services.planning_research_service import (

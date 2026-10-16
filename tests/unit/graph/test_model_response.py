@@ -15,7 +15,7 @@ from app.graph.model_response import (
     response_diagnostics,
 )
 from app.graph.nodes.responses import build_assistant_response
-from app.graph.planning_builder import (
+from app.graph.planning.structured_output import (
     StructuredOutputValidationError,
     structured_call,
 )
